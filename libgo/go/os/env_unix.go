@@ -1,19 +1,20 @@
-// Copyright 2009 The Go Authors. All rights reserved.
+// Copyright 2010 The Go Authors.  All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Environment variables.
+// Unix environment variables.
 
 package os
 
 import (
-	"once"
+	"sync"
 )
 
 // ENOENV is the Error indicating that an environment variable does not exist.
 var ENOENV = NewError("no such environment variable")
 
 var env map[string]string
+var once sync.Once
 
 
 func copyenv() {
@@ -83,4 +84,13 @@ func Environ() []string {
 		}
 	}
 	return a[0:i]
+}
+
+// TempDir returns the default directory to use for temporary files.
+func TempDir() string {
+	dir := Getenv("TMPDIR")
+	if dir == "" {
+		dir = "/tmp"
+	}
+	return dir
 }
