@@ -12,6 +12,7 @@ package time
 import (
 	"io/ioutil"
 	"os"
+	"sync"
 )
 
 const (
@@ -240,4 +241,22 @@ func lookupTimezone(sec int64) (zone string, offset int) {
 	}
 	z := tz[0].zone
 	return z.name, z.utcoff
+}
+
+// lookupByName returns the time offset for the
+// time zone with the given abbreviation. It only considers
+// time zones that apply to the current system.
+// For example, for a system configured as being in New York,
+// it only recognizes "EST" and "EDT".
+// For a system in San Francisco, "PST" and "PDT".
+// For a system in Sydney, "EST" and "EDT", though they have
+// different meanings than they do in New York.
+func lookupByName(name string) (off int, found bool) {
+	onceSetupZone.Do(setupZone)
+	for _, z := range zones {
+		if name == z.zone.name {
+			return z.zone.utcoff, true
+		}
+	}
+	return 0, false
 }
