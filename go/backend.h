@@ -1,97 +1,119 @@
 // backend.h -- Go frontend interface to backend  -*- C++ -*-
 
-// Copyright 2009 The Go Authors. All rights reserved.
+// Copyright 2011 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
 #ifndef GO_BACKEND_H
 #define GO_BACKEND_H
 
-// A backend type.  This is an abstract class that a specific backend
-// will implement.  This simply holds the information which a backend
-// needs for a type.
+class Function_type;
+class Struct_type;
+class Interface_type;
 
-class Backend_type
-{
-};
+// Pointers to these types are created by the backend, passed to the
+// frontend, and passed back to the backend.  The types must be
+// defined by the backend using these names.
 
-// A backend expression.
+// The backend representation of a type.
+class Btype;
 
-class Backend_expression
-{
-};
+// The backend represention of an expression.
+class Bexpression;
 
-// A list of Backend_type pointers.
+// The backend representation of a statement.
+class Bstatement;
 
-typedef std::vector<Backend_type*> Backend_types;
+// A list of backend types.
+typedef std::vector<Btype*> Btypes;
 
-// Convert a Type to a Backend_type
+// The backend interface.  This is a pure abstract class that a
+// specific backend will implement.
 
-class Backend_type_generator
+class Backend
 {
  public:
+  virtual ~Backend() { }
+
+  // Types.
+
   // Produce an error type.  Actually the backend could probably just
   // crash if this is called.
-  virtual Backend_type*
+  virtual Btype*
   error_type() = 0;
 
   // Get a void type.  This is used in (at least) two ways: 1) as the
   // return type of a function with no result parameters; 2)
   // unsafe.Pointer is represented as *void.
-  virtual Backend_type*
+  virtual Btype*
   void_type() = 0;
 
   // Get the unnamed boolean type.
-  virtual Backend_type*
+  virtual Btype*
   bool_type() = 0;
 
   // Get an unnamed integer type with the given signedness and number
   // of bits.
-  virtual Backend_type*
+  virtual Btype*
   integer_type(bool is_unsigned, int bits) = 0;
 
   // Get an unnamed floating point type with the given number of bits.
-  virtual Backend_type*
+  virtual Btype*
   float_type(int bits) = 0;
 
   // Get the unnamed string type.
-  virtual Backend_type*
+  virtual Btype*
   string_type() = 0;
 
   // Get a function type.  The receiver, parameter, and results are
   // generated from the types in the Function_type.  The Function_type
   // is provided so that the names are available.
-  virtual Backend_type*
-  function_type(const Function_type*, Backend_type* receiver,
-		const Backend_types* parameters,
-		const Backend_types* results) = 0;
+  virtual Btype*
+  function_type(const Function_type*, Btype* receiver,
+		const Btypes* parameters,
+		const Btypes* results) = 0;
 
-  // Get a struct type.
-  virtual Backend_type*
-  struct_type(const Struct_type*, const Backend_types* field_types) = 0;
+  // Get a struct type.  The Struct_type is provided to get the field
+  // names.
+  virtual Btype*
+  struct_type(const Struct_type*, const Btypes* field_types) = 0;
 
   // Get an array type.
-  virtual Backend_type*
-  array_type(const Array_type*, const Backend_type* element_type,
-	     const Backend_expression* length) = 0;
+  virtual Btype*
+  array_type(const Btype* element_type, const Bexpression* length) = 0;
 
   // Get a slice type.
-  virtual Backend_type*
-  slice_type(const Array_type*, const Backend_type* element_type) = 0;
+  virtual Btype*
+  slice_type(const Btype* element_type) = 0;
 
   // Get a map type.
-  virtual Backend_type*
-  map_type(const Map_type*, const Backend_type* key_type,
-	   const Backend_type* value_type) = 0;
+  virtual Btype*
+  map_type(const Btype* key_type, const Btype* value_type, source_location) = 0;
 
   // Get a channel type.
-  virtual Backend_type*
-  channel_type(const Channel_type*, const Backend_type* element_type) = 0;
+  virtual Btype*
+  channel_type(const Btype* element_type) = 0;
 
-  // Get an interface type.
-  virtual Backend_type*
-  interface_type(const Interface_type*,
-		 const Backend_types* method_types) = 0;
+  // Get an interface type.  The Interface_type is provided to get the
+  // method names.
+  virtual Btype*
+  interface_type(const Interface_type*, const Btypes* method_types) = 0;
+
+  // Statements.
+
+  // Create an assignment statement.
+  virtual Bstatement*
+  assignment(Bexpression* lhs, Bexpression* rhs, source_location location) = 0;
 };
+
+// The backend interface has to define this function.
+
+extern Backend* go_get_backend();
+
+// FIXME: Temporary helper functions while converting to new backend
+// interface.
+
+extern Bexpression* tree_to_expr(tree);
+extern tree statement_to_tree(Bstatement*);
 
 #endif // !defined(GO_BACKEND_H)
