@@ -505,6 +505,18 @@ CFLAGS="$CFLAGS -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE"
 AC_CHECK_TYPES(off64_t)
 CFLAGS=$CFLAGS_hold
 
+dnl Work out the offset of the fd field in the epoll_events struct on
+dnl GNU/Linux.
+AC_CACHE_CHECK([epoll_event data.fd offset],
+[libgo_cv_c_epoll_events_fd_offset],
+[AC_COMPUTE_INT(libgo_cv_c_epoll_events_fd_offset,
+[offsetof (struct epoll_event, data.fd)],
+[#include <stddef.h>
+#include <sys/epoll.h>],
+[libgo_cv_c_epoll_events_fd_offset=0])])
+EPOLL_EVENTS_FD_OFFSET=${libgo_cv_c_epoll_events_fd_offset}
+AC_SUBST(EPOLL_EVENTS_FD_OFFSET)
+
 AC_CACHE_SAVE
 
 if test ${multilib} = yes; then
