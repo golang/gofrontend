@@ -1592,13 +1592,18 @@ s-epoll: Makefile
 	echo 'package syscall' > epoll.go.tmp
 	echo 'type EpollEvent struct {' >> epoll.go.tmp
 	echo '	Events uint32' >> epoll.go.tmp
-	case $(EPOLL_EVENTS_FD_OFFSET) in \
-	0) echo 1>&2 "*** struct epoll_event data.fd offset unknown"; \
+	case "$(SIZEOF_STRUCT_EPOLL_EVENT),$(STRUCT_EPOLL_EVENT_FD_OFFSET)" in \
+	0,0) echo 1>&2 "*** struct epoll_event data.fd offset unknown"; \
 	   exit 1; ;; \
-	4) echo '	Fd int32' >> epoll.go.tmp; ;; \
-	8) echo '	Pad 4[byte]' >> epoll.go.tmp; \
+	8,4) echo '	Fd int32' >> epoll.go.tmp; ;; \
+	12,4) echo '	Fd int32' >> epoll.go.tmp; \
+	   echo '	Pad [4]byte' >> epoll.go.tmp; ;; \
+	12,8) echo '	Pad [4]byte' >> epoll.go.tmp; \
 	   echo '	Fd int32' >> epoll.go.tmp; ;; \
-	*) echo 1>&2 "*** struct epoll_event data.fd offset unsupported"; \
+	16,8) echo '	Pad [4]byte' >> epoll.go.tmp; \
+	   echo '	Fd int32' >> epoll.go.tmp; \
+	   echo '	Pad2 [4]byte' >> epoll.go.tmp; ;; \
+	*) echo 1>&2 "*** struct epoll_event unsupported"; \
 	   exit 1; ;; \
 	esac
 	echo '}' >> epoll.go.tmp
