@@ -1129,7 +1129,14 @@ runtime_newm(void)
 		   there is not enough stack space left.  Add it back
 		   in if we can, in case the program uses a lot of TLS
 		   space.  */
-		extern void _dl_get_tls_static_info(size_t*, size_t*);
+#ifndef internal_function
+#ifdef __i386__
+#define internal_function __attribute__ ((regparm (3), stdcall))
+#else
+#define internal_function
+#endif
+#endif
+		extern void _dl_get_tls_static_info(size_t*, size_t*) internal_function;
 		size_t tlssize, tlsalign;
 		_dl_get_tls_static_info(&tlssize, &tlsalign);
 		stacksize += tlssize;
