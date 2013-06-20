@@ -1,0 +1,95 @@
+Some notes on development of the Go frontend
+Ian Lance Taylor
+iant@golang.org
+
+The Go frontend currently only works with GCC.  I want to make it more
+portable, but that work is not complete.
+
+
+Go frontend as part of GCC
+--------------------------
+
+There is a copy of the Go frontend in the GCC source code.  However,
+the Go frontend source code repository is not the GCC source code
+repository.  This means that if you want to modify the Go frontend,
+you need to do some setup.  This is how I do it.
+
+The Go frontend sources are stored using Mercurial hosted at
+code.google.com.  To check out the source code:
+
+hg clone https://code.google.com/p/gofrontend/
+
+That gives you the frontend only.  Now you need a copy of the GCC
+source code.  See http://gcc.gnu.org/svn.html for details, or simply:
+
+svn checkout svn://gcc.gnu.org/svn/gcc/trunk
+
+The GCC source code will have a copy of the Go frontend, but because
+you want to change the Go frontend, you will need to replace that copy
+with your own.  I do this using symlinks.  Symlinking the Go frontend
+proper is trivial.  Symlinking libgo is a bit harder, because
+convenient use of automake and autoconf requires that they be able to
+see the sources in top level of the GCC repository.  So this is what I
+do:
+
+rm -rf gcc/go/gofrontend
+ln -s GOFRONTEND/go gcc/go/gofrontend
+rm -rf libgo
+for f in GOFRONTEND/libgo/*; do ln -s $f `basename $f`; done
+
+You can then build GCC as usual, with --enable-languages=go.  The
+build will use the Go frontend in your Mercurial repository.
+
+This is all you need to build gccgo yourself and develop your own
+patches.  To get your patch committed, send them in using "hg mail" as
+described at http://golang.org/doc/gccgo_contribute.html ; it's the
+same process as changes for the regular Go repository.
+
+At present I am the only person who commits changes to the Go frontend
+repository.  Because the GCC repository has a copy of the Go frontend,
+I need to commit changes to both repositories.  To do this, I have
+added this to my .hg/hgrc file in my clone of the gofrontend
+repository:
+
+--------------------------------------------------
+[hooks]
+commit = /home/iant/bin/gofrontend-commit
+--------------------------------------------------
+
+gofrontend-commit is a simple shell script:
+
+--------------------------------------------------
+#!/bin/sh
+
+# This script is called when I commit a change to the gofrontend
+# repository.  The script applies the patch to the gcc trunk.
+
+hg diff -c $HG_NODE | sed -e 's|\(^[-+][-+][-+] [ab]\)/go|\1/gcc/go/gofrontend|' | \
+   (cd /home/iant/gcc/trunk && patch -p1)
+hg log -v -r $HG_NODE | tail -n +7 | sed -e '/^R=/,$ d' | head -n -1 > /home/iant/gcc/trunk/svn-commit.tmp
+--------------------------------------------------
+
+(When I'm working with a GCC release branch, I have variants which do
+the same thing with my copy of the GCC release branch.)
+
+Now every time I "hg submit" a change to the gofrontend repository,
+the change is automatically applied to my copy of the GCC repository,
+and the commit message is stored in svn-commit.tmp in the GCC
+repository.  I don't automatically commit to both hg and svn at once
+because some gofrontend changes require changes to other parts of GCC,
+and an automatic commit to GCC would mean that GCC was temporarily
+broken.  So instead after running "hg submit" I run "svn commit".  GCC
+rules require that all GCC patches be sent to the mailing list
+gcc-patches@gcc.gnu.org with an explanation, so I do that as well when
+I run "svn commit".
+
+In summary, there are three steps to every change to the gofrontend:
+1) hg submit
+2) svn commit
+3) send e-mail to gcc-patches@gcc.gnu.org
+
+For the convenience of people who want to use gccgo without waiting
+for a release and without living on tip, I maintain a gccgo branch of
+GCC.  This lives at svn://svn/gcc/branches/gccgo.  I maintain it using
+the general GCC branch policies described at
+http://gcc.gnu.org/wiki/SvnBranch .
