@@ -35,7 +35,8 @@ do:
 rm -rf gcc/go/gofrontend
 ln -s GOFRONTEND/go gcc/go/gofrontend
 rm -rf libgo
-for f in GOFRONTEND/libgo/*; do ln -s $f `basename $f`; done
+mkdir libgo
+for f in GOFRONTEND/libgo/*; do ln -s $f libgo/`basename $f`; done
 
 You can then build GCC as usual, with --enable-languages=go.  The
 build will use the Go frontend in your Mercurial repository.
