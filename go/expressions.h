@@ -107,7 +107,8 @@ class Expression
     EXPRESSION_STRUCT_FIELD_OFFSET,
     EXPRESSION_MAP_DESCRIPTOR,
     EXPRESSION_LABEL_ADDR,
-    EXPRESSION_CONDITIONAL
+    EXPRESSION_CONDITIONAL,
+    EXPRESSION_COMPOUND
   };
 
   Expression(Expression_classification, Location);
@@ -392,6 +393,10 @@ class Expression
   // Make a conditional expression.
   static Expression*
   make_conditional(Expression*, Expression*, Expression*, Location);
+
+  // Make a compound expression.
+  static Expression*
+  make_compound(Expression*, Expression*, Location);
 
   // Return the expression classification.
   Expression_classification

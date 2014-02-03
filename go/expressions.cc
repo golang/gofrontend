@@ -15052,12 +15052,14 @@ class Conditional_expression : public Expression
   {}
 
  protected:
+  int
+  do_traverse(Traverse*);
+
   Type*
   do_type();
 
   void
-  do_determine_type(const Type_context*)
-  { }
+  do_determine_type(const Type_context*);
 
   Expression*
   do_copy()
@@ -15081,6 +15083,18 @@ class Conditional_expression : public Expression
   Expression* else_;
 };
 
+// Traversal.
+
+int
+Conditional_expression::do_traverse(Traverse* traverse)
+{
+  if (Expression::traverse(&this->cond_, traverse) == TRAVERSE_EXIT
+      || Expression::traverse(&this->then_, traverse) == TRAVERSE_EXIT
+      || Expression::traverse(&this->else_, traverse) == TRAVERSE_EXIT)
+    return TRAVERSE_EXIT;
+  return TRAVERSE_CONTINUE;
+}
+
 // Return the type of the conditional expression.
 
 Type*
@@ -15095,6 +15109,16 @@ Conditional_expression::do_type()
                    ? this->then_->type()
                    : this->else_->type());
   return result_type;
+}
+
+// Determine type for a conditional expression.
+
+void
+Conditional_expression::do_determine_type(const Type_context* context)
+{
+  this->cond_->determine_type_no_context();
+  this->then_->determine_type(context);
+  this->else_->determine_type(context);
 }
 
 // Get the backend representation of a conditional expression.
@@ -15135,6 +15159,108 @@ Expression::make_conditional(Expression* cond, Expression* then,
                              Expression* else_expr, Location location)
 {
   return new Conditional_expression(cond, then, else_expr, location);
+}
+
+// Compound expressions.
+
+class Compound_expression : public Expression
+{
+ public:
+  Compound_expression(Expression* init, Expression* expr, Location location)
+      : Expression(EXPRESSION_COMPOUND, location), init_(init), expr_(expr)
+  {}
+
+ protected:
+  int
+  do_traverse(Traverse*);
+
+  Type*
+  do_type();
+
+  void
+  do_determine_type(const Type_context*);
+
+  Expression*
+  do_copy()
+  {
+    return new Compound_expression(this->init_->copy(), this->expr_->copy(),
+                                   this->location());
+  }
+
+  tree
+  do_get_tree(Translate_context* context);
+
+  void
+  do_dump_expression(Ast_dump_context*) const;
+
+ private:
+  // The expression that is evaluated first and discarded.
+  Expression* init_;
+  // The expression that is evaluated and returned.
+  Expression* expr_;
+};
+
+// Traversal.
+
+int
+Compound_expression::do_traverse(Traverse* traverse)
+{
+  if (Expression::traverse(&this->init_, traverse) == TRAVERSE_EXIT
+      || Expression::traverse(&this->expr_, traverse) == TRAVERSE_EXIT)
+    return TRAVERSE_EXIT;
+  return TRAVERSE_CONTINUE;
+}
+
+// Return the type of the compound expression.
+
+Type*
+Compound_expression::do_type()
+{
+  return this->expr_->type();
+}
+
+// Determine type for a compound expression.
+
+void
+Compound_expression::do_determine_type(const Type_context* context)
+{
+  this->init_->determine_type_no_context();
+  this->expr_->determine_type(context);
+}
+
+// Get the backend representation of a compound expression.
+
+tree
+Compound_expression::do_get_tree(Translate_context* context)
+{
+  Gogo* gogo = context->gogo();
+  Bexpression* binit = tree_to_expr(this->init_->get_tree(context));
+  Bstatement* init_stmt = gogo->backend()->expression_statement(binit);
+  Bexpression* bexpr = tree_to_expr(this->expr_->get_tree(context));
+  Bexpression* ret = gogo->backend()->compound_expression(init_stmt, bexpr,
+                                                          this->location());
+  return expr_to_tree(ret);
+}
+
+// Dump ast representation of a conditional expression.
+
+void
+Compound_expression::do_dump_expression(
+    Ast_dump_context* ast_dump_context) const
+{
+  ast_dump_context->ostream() << "(";
+  ast_dump_context->dump_expression(this->init_);
+  ast_dump_context->ostream() << ",";
+  ast_dump_context->dump_expression(this->expr_);
+  ast_dump_context->ostream() << ") ";
+}
+
+// Make a compound expression.
+
+Expression*
+Expression::make_compound(Expression* init, Expression* expr, Location location)
+{
+  return new Compound_expression(init, expr, location);
 }
 
 // Import an expression.  This comes at the end in order to see the
