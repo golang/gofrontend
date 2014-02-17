@@ -61,6 +61,14 @@ import time
 from mercurial import commands as hg_commands
 from mercurial import util as hg_util
 
+# bind Plan 9 preferred dotfile location
+if os.sys.platform == 'plan9':
+	try:
+		import plan9
+		n = plan9.bind(os.path.expanduser("~/lib"), os.path.expanduser("~"), plan9.MBEFORE|plan9.MCREATE)
+	except ImportError:
+		pass
+
 defaultcc = None
 codereview_disabled = None
 real_rollback = None
@@ -155,7 +163,8 @@ default_to_utf8()
 global_status = None
 
 def set_status(s):
-	# print >>sys.stderr, "\t", time.asctime(), s
+	if verbosity > 0:
+		print >>sys.stderr, time.asctime(), s
 	global global_status
 	global_status = s
 
@@ -544,7 +553,7 @@ def LoadCL(ui, repo, name, web=True):
 		cl.private = d.get('private', False) != False
 		cl.lgtm = []
 		for m in d.get('messages', []):
-			if m.get('approval', False) == True:
+			if m.get('approval', False) == True or m.get('disapproval', False) == True:
 				who = re.sub('@.*', '', m.get('sender', ''))
 				text = re.sub("\n(.|\n)*", '', m.get('text', ''))
 				cl.lgtm.append((who, text))
@@ -711,7 +720,10 @@ Examples:
 '''
 
 def promptyesno(ui, msg):
-	return ui.promptchoice(msg, ["&yes", "&no"], 0) == 0
+	if hgversion >= "2.7":
+		return ui.promptchoice(msg + " $$ &yes $$ &no", 0) == 0
+	else:
+		return ui.promptchoice(msg, ["&yes", "&no"], 0) == 0
 
 def promptremove(ui, repo, f):
 	if promptyesno(ui, "hg remove %s (y/n)?" % (f,)):
@@ -807,7 +819,7 @@ def EditCL(ui, repo, cl):
 # For use by submit, etc. (NOT by change)
 # Get change list number or list of files from command line.
 # If files are given, make a new change list.
-def CommandLineCL(ui, repo, pats, opts, defaultcc=None):
+def CommandLineCL(ui, repo, pats, opts, op="verb", defaultcc=None):
 	if len(pats) > 0 and GoodCLName(pats[0]):
 		if len(pats) != 1:
 			return None, "cannot specify change number and file names"
@@ -821,7 +833,7 @@ def CommandLineCL(ui, repo, pats, opts, defaultcc=None):
 		cl.local = True
 		cl.files = ChangedFiles(ui, repo, pats, taken=Taken(ui, repo))
 		if not cl.files:
-			return None, "no files changed"
+			return None, "no files changed (use hg %s <number> to use existing CL)" % op
 	if opts.get('reviewer'):
 		cl.reviewer = Add(cl.reviewer, SplitCommaSpace(opts.get('reviewer')))
 	if opts.get('cc'):
@@ -972,7 +984,7 @@ def ReadContributors(ui, repo):
 			f = open(repo.root + '/CONTRIBUTORS', 'r')
 	except:
 		ui.write("warning: cannot open %s: %s\n" % (opening, ExceptionDetail()))
-		return
+		return {}
 
 	contributors = {}
 	for line in f:
@@ -1027,12 +1039,12 @@ def FindContributor(ui, repo, user=None, warn=True):
 
 hgversion = hg_util.version()
 
-# We require Mercurial 1.9 and suggest Mercurial 2.0.
+# We require Mercurial 1.9 and suggest Mercurial 2.1.
 # The details of the scmutil package changed then,
 # so allowing earlier versions would require extra band-aids below.
 # Ubuntu 11.10 ships with Mercurial 1.9.1 as the default version.
 hg_required = "1.9"
-hg_suggested = "2.0"
+hg_suggested = "2.1"
 
 old_message = """
 
@@ -1167,6 +1179,25 @@ def hg_pull(ui, repo, **opts):
 		ui.write(line + '\n')
 	return err
 
+def hg_update(ui, repo, **opts):
+	w = uiwrap(ui)
+	ui.quiet = False
+	ui.verbose = True  # for file list
+	err = hg_commands.update(ui, repo, **opts)
+	for line in w.output().split('\n'):
+		if isNoise(line):
+			continue
+		if line.startswith('moving '):
+			line = 'mv ' + line[len('moving '):]
+		if line.startswith('getting ') and line.find(' to ') >= 0:
+			line = 'mv ' + line[len('getting '):]
+		if line.startswith('getting '):
+			line = '+ ' + line[len('getting '):]
+		if line.startswith('removing '):
+			line = '- ' + line[len('removing '):]
+		ui.write(line + '\n')
+	return err
+
 def hg_push(ui, repo, **opts):
 	w = uiwrap(ui)
 	ui.quiet = False
@@ -1186,6 +1217,10 @@ def hg_commit(ui, repo, *pats, **opts):
 commit_okay = False
 
 def precommithook(ui, repo, **opts):
+	if hgversion >= "2.1":
+		from mercurial import phases
+		if repo.ui.config('phases', 'new-commit') >= phases.secret:
+			return False
 	if commit_okay:
 		return False  # False means okay.
 	ui.write("\ncodereview extension enabled; use mail, upload, or submit instead of commit\n\n")
@@ -1569,24 +1604,24 @@ def clpatch_or_undo(ui, repo, clname, opts, mode):
 			return "local repository is out of date; sync to get %s" % (vers)
 		patch1, err = portPatch(repo, patch, vers, id)
 		if err != "":
-			if not opts["ignore_hgpatch_failure"]:
+			if not opts["ignore_hgapplydiff_failure"]:
 				return "codereview issue %s is out of date: %s (%s->%s)" % (clname, err, vers, id)
 		else:
 			patch = patch1
-	argv = ["hgpatch"]
+	argv = ["hgapplydiff"]
 	if opts["no_incoming"] or mode == "backport":
 		argv += ["--checksync=false"]
 	try:
 		cmd = subprocess.Popen(argv, shell=False, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None, close_fds=sys.platform != "win32")
 	except:
-		return "hgpatch: " + ExceptionDetail() + "\nInstall hgpatch with:\n$ go get code.google.com/p/go.codereview/cmd/hgpatch\n"
+		return "hgapplydiff: " + ExceptionDetail() + "\nInstall hgapplydiff with:\n$ go get code.google.com/p/go.codereview/cmd/hgapplydiff\n"
 
 	out, err = cmd.communicate(patch)
-	if cmd.returncode != 0 and not opts["ignore_hgpatch_failure"]:
-		return "hgpatch failed"
+	if cmd.returncode != 0 and not opts["ignore_hgapplydiff_failure"]:
+		return "hgapplydiff failed"
 	cl.local = True
 	cl.files = out.strip().split()
-	if not cl.files and not opts["ignore_hgpatch_failure"]:
+	if not cl.files and not opts["ignore_hgapplydiff_failure"]:
 		return "codereview issue %s has no changed files" % clname
 	files = ChangedFiles(ui, repo, [])
 	extra = Sub(cl.files, files)
@@ -1761,7 +1796,8 @@ def gofmt(ui, repo, *pats, **opts):
 	files = ChangedExistingFiles(ui, repo, pats, opts)
 	files = gofmt_required(files)
 	if not files:
-		return "no modified go files"
+		ui.status("no modified go files\n")
+		return
 	cwd = os.getcwd()
 	files = [RelativePath(repo.root + '/' + f, cwd) for f in files]
 	try:
@@ -1792,7 +1828,7 @@ def mail(ui, repo, *pats, **opts):
 	if codereview_disabled:
 		raise hg_util.Abort(codereview_disabled)
 
-	cl, err = CommandLineCL(ui, repo, pats, opts, defaultcc=defaultcc)
+	cl, err = CommandLineCL(ui, repo, pats, opts, op="mail", defaultcc=defaultcc)
 	if err != "":
 		raise hg_util.Abort(err)
 	cl.Upload(ui, repo, gofmt_just_warn=True)
@@ -1881,7 +1917,7 @@ def submit(ui, repo, *pats, **opts):
 	if not opts["no_incoming"] and hg_incoming(ui, repo):
 		need_sync()
 
-	cl, err = CommandLineCL(ui, repo, pats, opts, defaultcc=defaultcc)
+	cl, err = CommandLineCL(ui, repo, pats, opts, op="submit", defaultcc=defaultcc)
 	if err != "":
 		raise hg_util.Abort(err)
 
@@ -1958,6 +1994,9 @@ def submit(ui, repo, *pats, **opts):
 				# Remote repository had changes we missed.
 				need_sync()
 			raise
+		except urllib2.HTTPError, e:
+			print >>sys.stderr, "pushing to remote server failed; do you have commit permissions?"
+			raise
 	except:
 		real_rollback()
 		raise
@@ -2010,7 +2049,19 @@ def sync(ui, repo, **opts):
 		raise hg_util.Abort(codereview_disabled)
 
 	if not opts["local"]:
-		err = hg_pull(ui, repo, update=True)
+		# If there are incoming CLs, pull -u will do the update.
+		# If there are no incoming CLs, do hg update to make sure
+		# that an update always happens regardless. This is less
+		# surprising than update depending on incoming CLs.
+		# It is important not to do both hg pull -u and hg update
+		# in the same command, because the hg update will end
+		# up marking resolve conflicts from the hg pull -u as resolved,
+		# causing files with <<< >>> markers to not show up in 
+		# hg resolve -l. Yay Mercurial.
+		if hg_incoming(ui, repo):
+			err = hg_pull(ui, repo, update=True)
+		else:
+			err = hg_update(ui, repo)
 		if err:
 			return err
 	sync_changes(ui, repo)
@@ -2099,7 +2150,7 @@ cmdtable = {
 	"^clpatch": (
 		clpatch,
 		[
-			('', 'ignore_hgpatch_failure', None, 'create CL metadata even if hgpatch fails'),
+			('', 'ignore_hgapplydiff_failure', None, 'create CL metadata even if hgapplydiff fails'),
 			('', 'no_incoming', None, 'disable check for incoming changes'),
 		],
 		"change#"
@@ -2158,7 +2209,7 @@ cmdtable = {
 	"^release-apply": (
 		release_apply,
 		[
-			('', 'ignore_hgpatch_failure', None, 'create CL metadata even if hgpatch fails'),
+			('', 'ignore_hgapplydiff_failure', None, 'create CL metadata even if hgapplydiff fails'),
 			('', 'no_incoming', None, 'disable check for incoming changes'),
 		],
 		"change#"
@@ -2181,7 +2232,7 @@ cmdtable = {
 	"^undo": (
 		undo,
 		[
-			('', 'ignore_hgpatch_failure', None, 'create CL metadata even if hgpatch fails'),
+			('', 'ignore_hgapplydiff_failure', None, 'create CL metadata even if hgapplydiff fails'),
 			('', 'no_incoming', None, 'disable check for incoming changes'),
 		],
 		"change#"
@@ -2213,8 +2264,9 @@ def reposetup(ui, repo):
 	if codereview_init:
 		return
 	codereview_init = True
+	start_status_thread()
 
-	# Read repository-specific options from lib/codereview/codereview.cfg or codereview.cfg.
+	# Read repository-specific options from support/codereview/codereview.cfg or codereview.cfg.
 	root = ''
 	try:
 		root = repo.root
@@ -2350,7 +2402,7 @@ def IsRietveldSubmitted(ui, clname, hex):
 		return False
 	for msg in dict.get("messages", []):
 		text = msg.get("text", "")
-		m = re.match('\*\*\* Submitted as [^*]*?([0-9a-f]+) \*\*\*', text)
+		m = re.match('\*\*\* Submitted as [^*]*?r=([0-9a-f]+)[^ ]* \*\*\*', text)
 		if m is not None and len(m.group(1)) >= 8 and hex.startswith(m.group(1)):
 			return True
 	return False
@@ -2444,6 +2496,8 @@ def MySend1(request_path, payload=None,
 		self._Authenticate()
 	if request_path is None:
 		return
+	if timeout is None:
+		timeout = 30 # seconds
 
 	old_timeout = socket.getdefaulttimeout()
 	socket.setdefaulttimeout(timeout)
