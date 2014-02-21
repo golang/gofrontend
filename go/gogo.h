@@ -612,12 +612,6 @@ class Gogo
   void
   build_interface_method_tables();
 
-  // Build an interface method table for a type: a list of function
-  // pointers, one for each interface method.  This returns a decl.
-  tree
-  interface_method_table_for_type(const Interface_type*, Type*,
-				  bool is_pointer);
-
   // Return a tree which allocate SIZE bytes to hold values of type
   // TYPE.
   tree

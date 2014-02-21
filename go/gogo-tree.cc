@@ -1160,8 +1160,8 @@ Variable::get_init_tree(Gogo* gogo, Named_object* function)
       Translate_context context(gogo, function, NULL, NULL);
       tree rhs_tree = this->init_->get_tree(&context);
       return Expression::convert_for_assignment(&context, this->type(),
-						this->init_->type(),
-						rhs_tree, this->location());
+                                                this->init_->type(),
+                                                rhs_tree, this->location());
     }
 }
 
@@ -1202,7 +1202,7 @@ Variable::get_init_block(Gogo* gogo, Named_object* function, tree var_decl)
       else
 	{
 	  tree val = Expression::convert_for_assignment(&context, this->type(),
-							this->init_->type(),
+                                                        this->init_->type(),
 							rhs_tree,
 							this->location());
 	  if (val == error_mark_node)
@@ -2046,136 +2046,6 @@ Gogo::slice_constructor(tree slice_type_tree, tree values, tree count,
   elt->value = fold_convert(TREE_TYPE(field), capacity);
 
   return build_constructor(slice_type_tree, init);
-}
-
-// Build an interface method table for a type: a list of function
-// pointers, one for each interface method.  This is used for
-// interfaces.
-
-tree
-Gogo::interface_method_table_for_type(const Interface_type* interface,
-				      Type* type, bool is_pointer)
-{
-  const Typed_identifier_list* interface_methods = interface->methods();
-  go_assert(!interface_methods->empty());
-
-  std::string mangled_name = ((is_pointer ? "__go_pimt__" : "__go_imt_")
-			      + interface->mangled_name(this)
-			      + "__"
-			      + type->mangled_name(this));
-
-  tree id = get_identifier_from_string(mangled_name);
-
-  // See whether this interface has any hidden methods.
-  bool has_hidden_methods = false;
-  for (Typed_identifier_list::const_iterator p = interface_methods->begin();
-       p != interface_methods->end();
-       ++p)
-    {
-      if (Gogo::is_hidden_name(p->name()))
-	{
-	  has_hidden_methods = true;
-	  break;
-	}
-    }
-
-  // We already know that the named type is convertible to the
-  // interface.  If the interface has hidden methods, and the named
-  // type is defined in a different package, then the interface
-  // conversion table will be defined by that other package.
-  if (has_hidden_methods
-      && type->named_type() != NULL
-      && type->named_type()->named_object()->package() != NULL)
-    {
-      tree array_type = build_array_type(const_ptr_type_node, NULL);
-      tree decl = build_decl(BUILTINS_LOCATION, VAR_DECL, id, array_type);
-      TREE_READONLY(decl) = 1;
-      TREE_CONSTANT(decl) = 1;
-      TREE_PUBLIC(decl) = 1;
-      DECL_EXTERNAL(decl) = 1;
-      go_preserve_from_gc(decl);
-      return decl;
-    }
-
-  size_t count = interface_methods->size();
-  vec<constructor_elt, va_gc> *pointers;
-  vec_alloc(pointers, count + 1);
-
-  // The first element is the type descriptor.
-  constructor_elt empty = {NULL, NULL};
-  constructor_elt* elt = pointers->quick_push(empty);
-  elt->index = size_zero_node;
-  Type* td_type;
-  if (!is_pointer)
-    td_type = type;
-  else
-    td_type = Type::make_pointer_type(type);
-
-  Location loc = Linemap::predeclared_location();
-  Bexpression* tdp_bexpr = td_type->type_descriptor_pointer(this, loc);
-  tree tdp = expr_to_tree(tdp_bexpr);
-  elt->value = fold_convert(const_ptr_type_node, tdp);
-
-  Named_type* nt = type->named_type();
-  Struct_type* st = type->struct_type();
-  go_assert(nt != NULL || st != NULL);
-  size_t i = 1;
-  for (Typed_identifier_list::const_iterator p = interface_methods->begin();
-       p != interface_methods->end();
-       ++p, ++i)
-    {
-      bool is_ambiguous;
-      Method* m;
-      if (nt != NULL)
-	m = nt->method_function(p->name(), &is_ambiguous);
-      else
-	m = st->method_function(p->name(), &is_ambiguous);
-      go_assert(m != NULL);
-
-      Named_object* no = m->named_object();
-      Bfunction* bf;
-      if (no->is_function())
-	bf = no->func_value()->get_or_make_decl(this, no);
-      else if (no->is_function_declaration())
-	bf = no->func_declaration_value()->get_or_make_decl(this, no);
-      else
-	go_unreachable();
-      tree fndecl = build_fold_addr_expr(function_to_tree(bf));
-
-      elt = pointers->quick_push(empty);
-      elt->index = size_int(i);
-      elt->value = fold_convert(const_ptr_type_node, fndecl);
-    }
-  go_assert(i == count + 1);
-
-  tree array_type = build_array_type(const_ptr_type_node,
-				     build_index_type(size_int(count)));
-  tree constructor = build_constructor(array_type, pointers);
-
-  tree decl = build_decl(BUILTINS_LOCATION, VAR_DECL, id, array_type);
-  TREE_STATIC(decl) = 1;
-  TREE_USED(decl) = 1;
-  TREE_READONLY(decl) = 1;
-  TREE_CONSTANT(decl) = 1;
-  DECL_INITIAL(decl) = constructor;
-
-  // If the interface type has hidden methods, and the table is for a
-  // named type, then this is the only definition of the table.
-  // Otherwise it is a comdat table which may be defined in multiple
-  // packages.
-  if (has_hidden_methods && type->named_type() != NULL)
-    TREE_PUBLIC(decl) = 1;
-  else
-    {
-      make_decl_one_only(decl, DECL_ASSEMBLER_NAME(decl));
-      resolve_unique_section(decl, 1, 0);
-    }
-
-  rest_of_decl_compilation(decl, 1, 0);
-
-  go_preserve_from_gc(decl);
-
-  return decl;
 }
 
 // Mark a function as a builtin library function.

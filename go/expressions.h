@@ -104,6 +104,7 @@ class Expression
     EXPRESSION_TYPE_INFO,
     EXPRESSION_SLICE_INFO,
     EXPRESSION_INTERFACE_INFO,
+    EXPRESSION_INTERFACE_MTABLE,
     EXPRESSION_STRUCT_FIELD_OFFSET,
     EXPRESSION_MAP_DESCRIPTOR,
     EXPRESSION_LABEL_ADDR,
@@ -373,6 +374,13 @@ class Expression
 
   static Expression*
   make_interface_info(Expression* iface, Interface_info, Location);
+
+  // Make an expression that builds a reference to the interface method table
+  // for TYPE that satisfies interface ITYPE. IS_POINTER is true if this is a
+  // reference to the interface method table for the pointer receiver type.
+  static Expression*
+  make_interface_mtable_ref(Interface_type* itype, Type* type,
+                            bool is_pointer, Location);
 
   // Make an expression which evaluates to the offset of a field in a
   // struct.  This is only used for type descriptors, so there is no

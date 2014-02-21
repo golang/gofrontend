@@ -3330,6 +3330,7 @@ Build_method_tables::type(Type* type)
   Struct_type* st = type->struct_type();
   if (nt != NULL || st != NULL)
     {
+      Translate_context context(this->gogo_, NULL, NULL, NULL);
       for (std::vector<Interface_type*>::const_iterator p =
 	     this->interfaces_.begin();
 	   p != this->interfaces_.end();
@@ -3343,8 +3344,8 @@ Build_method_tables::type(Type* type)
 	      if ((*p)->implements_interface(Type::make_pointer_type(nt),
 					     NULL))
 		{
-		  nt->interface_method_table(this->gogo_, *p, false);
-		  nt->interface_method_table(this->gogo_, *p, true);
+		  nt->interface_method_table(*p, false)->get_tree(&context);
+                  nt->interface_method_table(*p, true)->get_tree(&context);
 		}
 	    }
 	  else
@@ -3352,8 +3353,8 @@ Build_method_tables::type(Type* type)
 	      if ((*p)->implements_interface(Type::make_pointer_type(st),
 					     NULL))
 		{
-		  st->interface_method_table(this->gogo_, *p, false);
-		  st->interface_method_table(this->gogo_, *p, true);
+		  st->interface_method_table(*p, false)->get_tree(&context);
+		  st->interface_method_table(*p, true)->get_tree(&context);
 		}
 	    }
 	}

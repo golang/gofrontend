@@ -286,13 +286,9 @@ Expression::convert_type_to_interface(Translate_context* context,
   // An interface is a tuple.  If LHS_TYPE is an empty interface type,
   // then the first field is the type descriptor for RHS_TYPE.
   // Otherwise it is the interface method table for RHS_TYPE.
-  tree first_field_value;
+  Expression* first_field;
   if (lhs_is_empty)
-    {
-      Bexpression* rhs_bexpr =
-          rhs_type->type_descriptor_pointer(gogo, location);
-      first_field_value = expr_to_tree(rhs_bexpr);
-    }
+    first_field = Expression::make_type_descriptor(rhs_type, location);
   else
     {
       // Build the interface method table for this interface and this
@@ -307,20 +303,19 @@ Expression::convert_type_to_interface(Translate_context* context,
 	  rhs_struct_type = rhs_type->deref()->struct_type();
 	  is_pointer = true;
 	}
-      tree method_table;
+
       if (rhs_named_type != NULL)
-	method_table =
-	  rhs_named_type->interface_method_table(gogo, lhs_interface_type,
-						 is_pointer);
+	first_field =
+            rhs_named_type->interface_method_table(lhs_interface_type,
+                                                   is_pointer);
       else if (rhs_struct_type != NULL)
-	method_table =
-	  rhs_struct_type->interface_method_table(gogo, lhs_interface_type,
-						  is_pointer);
+	first_field =
+            rhs_struct_type->interface_method_table(lhs_interface_type,
+                                                    is_pointer);
       else
-	method_table = null_pointer_node;
-      first_field_value = fold_convert_loc(location.gcc_location(),
-                                           const_ptr_type_node, method_table);
+        first_field = Expression::make_nil(location);
     }
+  tree first_field_value = first_field->get_tree(context);
   if (first_field_value == error_mark_node)
     return error_mark_node;
 
@@ -14854,6 +14849,205 @@ Expression::make_interface_info(Expression* iface, Interface_info iface_info,
                                 Location location)
 {
   return new Interface_info_expression(iface, iface_info, location);
+}
+
+// An interface method table for a pair of types: an interface type and a type
+// that implements that interface.
+
+class Interface_mtable_expression : public Expression
+{
+ public:
+  Interface_mtable_expression(Interface_type* itype, Type* type,
+                              bool is_pointer, Location location)
+      : Expression(EXPRESSION_INTERFACE_MTABLE, location),
+        itype_(itype), type_(type), is_pointer_(is_pointer),
+	method_table_type_(NULL), bvar_(NULL)
+  { }
+
+ protected:
+  int
+  do_traverse(Traverse*);
+
+  Type*
+  do_type();
+
+  bool
+  is_immutable() const
+  { return true; }
+
+  void
+  do_determine_type(const Type_context*)
+  { go_unreachable(); }
+
+  Expression*
+  do_copy()
+  {
+    return new Interface_mtable_expression(this->itype_, this->type_,
+                                           this->is_pointer_, this->location());
+  }
+
+  tree
+  do_get_tree(Translate_context* context);
+
+  void
+  do_dump_expression(Ast_dump_context*) const;
+
+ private:
+  // The interface type for which the methods are defined.
+  Interface_type* itype_;
+  // The type to construct the interface method table for.
+  Type* type_;
+  // Whether this table contains the method set for the receiver type or the
+  // pointer receiver type.
+  bool is_pointer_;
+  // The type of the method table.
+  Type* method_table_type_;
+  // The backend variable that refers to the interface method table.
+  Bvariable* bvar_;
+};
+
+int
+Interface_mtable_expression::do_traverse(Traverse* traverse)
+{
+  if (Type::traverse(this->itype_, traverse) == TRAVERSE_EXIT
+      || Type::traverse(this->type_, traverse) == TRAVERSE_EXIT)
+    return TRAVERSE_EXIT;
+  return TRAVERSE_CONTINUE;
+}
+
+Type*
+Interface_mtable_expression::do_type()
+{
+  if (this->method_table_type_ != NULL)
+    return this->method_table_type_;
+
+  const Typed_identifier_list* interface_methods = this->itype_->methods();
+  go_assert(!interface_methods->empty());
+
+  Struct_field_list* sfl = new Struct_field_list;
+  Typed_identifier tid("__type_descriptor", Type::make_type_descriptor_ptr_type(),
+                       this->location());
+  sfl->push_back(Struct_field(tid));
+  for (Typed_identifier_list::const_iterator p = interface_methods->begin();
+       p != interface_methods->end();
+       ++p)
+    sfl->push_back(Struct_field(*p));
+  this->method_table_type_ = Type::make_struct_type(sfl, this->location());
+  return this->method_table_type_;
+}
+
+tree
+Interface_mtable_expression::do_get_tree(Translate_context* context)
+{
+  Gogo* gogo = context->gogo();
+  Bexpression* ret;
+  Location loc = Linemap::predeclared_location();
+  if (this->bvar_ != NULL)
+    {
+      ret = gogo->backend()->var_expression(this->bvar_, this->location());
+      return expr_to_tree(ret);
+    }
+
+  const Typed_identifier_list* interface_methods = this->itype_->methods();
+  go_assert(!interface_methods->empty());
+
+  std::string mangled_name = ((this->is_pointer_ ? "__go_pimt__" : "__go_imt_")
+			      + this->itype_->mangled_name(gogo)
+			      + "__"
+			      + this->type_->mangled_name(gogo));
+
+  // See whether this interface has any hidden methods.
+  bool has_hidden_methods = false;
+  for (Typed_identifier_list::const_iterator p = interface_methods->begin();
+       p != interface_methods->end();
+       ++p)
+    {
+      if (Gogo::is_hidden_name(p->name()))
+	{
+	  has_hidden_methods = true;
+	  break;
+	}
+    }
+
+  // We already know that the named type is convertible to the
+  // interface.  If the interface has hidden methods, and the named
+  // type is defined in a different package, then the interface
+  // conversion table will be defined by that other package.
+  if (has_hidden_methods
+      && this->type_->named_type() != NULL
+      && this->type_->named_type()->named_object()->package() != NULL)
+    {
+      Btype* btype = this->type()->get_backend(gogo);
+      this->bvar_ =
+          gogo->backend()->immutable_struct_reference(mangled_name, btype, loc);
+      ret = gogo->backend()->var_expression(this->bvar_, this->location());
+      return expr_to_tree(ret);
+    }
+
+  // The first element is the type descriptor.
+  Type* td_type;
+  if (!this->is_pointer_)
+    td_type = this->type_;
+  else
+    td_type = Type::make_pointer_type(this->type_);
+
+  // Build an interface method table for a type: a type descriptor followed by a
+  // list of function pointers, one for each interface method.  This is used for
+  // interfaces.
+  Expression_list* svals = new Expression_list();
+  svals->push_back(Expression::make_type_descriptor(td_type, loc));
+
+  Named_type* nt = this->type_->named_type();
+  Struct_type* st = this->type_->struct_type();
+  go_assert(nt != NULL || st != NULL);
+
+  for (Typed_identifier_list::const_iterator p = interface_methods->begin();
+       p != interface_methods->end();
+       ++p)
+    {
+      bool is_ambiguous;
+      Method* m;
+      if (nt != NULL)
+	m = nt->method_function(p->name(), &is_ambiguous);
+      else
+	m = st->method_function(p->name(), &is_ambiguous);
+      go_assert(m != NULL);
+      Named_object* no = m->named_object();
+
+      go_assert(no->is_function() || no->is_function_declaration());
+      svals->push_back(Expression::make_func_code_reference(no, loc));
+    }
+
+  Btype* btype = this->type()->get_backend(gogo);
+  Expression* mtable = Expression::make_struct_composite_literal(this->type(),
+                                                                 svals, loc);
+  Bexpression* ctor = tree_to_expr(mtable->get_tree(context));
+
+  bool is_public = has_hidden_methods && this->type_->named_type() != NULL;
+  this->bvar_ = gogo->backend()->immutable_struct(mangled_name, false,
+						  !is_public, btype, loc);
+  gogo->backend()->immutable_struct_set_init(this->bvar_, mangled_name, false,
+                                             !is_public, btype, loc, ctor);
+  ret = gogo->backend()->var_expression(this->bvar_, loc);
+  return expr_to_tree(ret);
+}
+
+void
+Interface_mtable_expression::do_dump_expression(
+    Ast_dump_context* ast_dump_context) const
+{
+  ast_dump_context->ostream() << "__go_"
+                              << (this->is_pointer_ ? "pimt__" : "imt_");
+  ast_dump_context->dump_type(this->itype_);
+  ast_dump_context->ostream() << "__";
+  ast_dump_context->dump_type(this->type_);
+}
+
+Expression*
+Expression::make_interface_mtable_ref(Interface_type* itype, Type* type,
+                                      bool is_pointer, Location location)
+{
+  return new Interface_mtable_expression(itype, type, is_pointer, location);
 }
 
 // An expression which evaluates to the offset of a field within a
