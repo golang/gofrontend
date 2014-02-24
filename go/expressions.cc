@@ -3752,7 +3752,7 @@ class Unary_expression : public Expression
 };
 
 // If we are taking the address of a composite literal, and the
-// contents are not constant, then we want to make a heap composite
+// contents are not constant, then we want to make a heap expression
 // instead.
 
 Expression*
@@ -6879,7 +6879,7 @@ Bound_method_expression::do_get_tree(Translate_context* context)
   vals->push_back(val);
 
   Expression* ret = Expression::make_struct_composite_literal(st, vals, loc);
-  ret = Expression::make_heap_composite(ret, loc);
+  ret = Expression::make_heap_expression(ret, loc);
 
   tree ret_tree = ret->get_tree(context);
 
@@ -11832,7 +11832,7 @@ Interface_field_reference_expression::do_get_tree(Translate_context* context)
   vals->push_back(this->expr_);
 
   Expression* expr = Expression::make_struct_composite_literal(st, vals, loc);
-  expr = Expression::make_heap_composite(expr, loc);
+  expr = Expression::make_heap_expression(expr, loc);
 
   Bexpression* bclosure = tree_to_expr(expr->get_tree(context));
   Expression* nil_check =
@@ -13566,7 +13566,7 @@ Composite_literal_expression::do_lower(Gogo* gogo, Named_object* function,
     }
 
   if (is_pointer)
-    ret = Expression::make_heap_composite(ret, this->location());
+    ret = Expression::make_heap_expression(ret, this->location());
 
   return ret;
 }
@@ -14247,16 +14247,16 @@ Expression::make_type_guard(Expression* expr, Type* type,
   return new Type_guard_expression(expr, type, location);
 }
 
-// Class Heap_composite_expression.
+// Class Heap_expression.
 
-// When you take the address of a composite literal, it is allocated
+// When you take the address of an escaping expression, it is allocated
 // on the heap.  This class implements that.
 
-class Heap_composite_expression : public Expression
+class Heap_expression : public Expression
 {
  public:
-  Heap_composite_expression(Expression* expr, Location location)
-    : Expression(EXPRESSION_HEAP_COMPOSITE, location),
+  Heap_expression(Expression* expr, Location location)
+    : Expression(EXPRESSION_HEAP, location),
       expr_(expr)
   { }
 
@@ -14276,8 +14276,8 @@ class Heap_composite_expression : public Expression
   Expression*
   do_copy()
   {
-    return Expression::make_heap_composite(this->expr_->copy(),
-					   this->location());
+    return Expression::make_heap_expression(this->expr_->copy(),
+                                            this->location());
   }
 
   tree
@@ -14293,14 +14293,14 @@ class Heap_composite_expression : public Expression
   do_dump_expression(Ast_dump_context*) const;
 
  private:
-  // The composite literal which is being put on the heap.
+  // The expression which is being put on the heap.
   Expression* expr_;
 };
 
-// Return a tree which allocates a composite literal on the heap.
+// Return a tree which allocates an expression on the heap.
 
 tree
-Heap_composite_expression::do_get_tree(Translate_context* context)
+Heap_expression::do_get_tree(Translate_context* context)
 {
   tree expr_tree = this->expr_->get_tree(context);
   if (expr_tree == error_mark_node || TREE_TYPE(expr_tree) == error_mark_node)
@@ -14321,10 +14321,10 @@ Heap_composite_expression::do_get_tree(Translate_context* context)
   return ret;
 }
 
-// Dump ast representation for a heap composite expression.
+// Dump ast representation for a heap expression.
 
 void
-Heap_composite_expression::do_dump_expression(
+Heap_expression::do_dump_expression(
     Ast_dump_context* ast_dump_context) const
 {
   ast_dump_context->ostream() << "&(";
@@ -14332,12 +14332,12 @@ Heap_composite_expression::do_dump_expression(
   ast_dump_context->ostream() << ")";
 }
 
-// Allocate a composite literal on the heap.
+// Allocate an expression on the heap.
 
 Expression*
-Expression::make_heap_composite(Expression* expr, Location location)
+Expression::make_heap_expression(Expression* expr, Location location)
 {
-  return new Heap_composite_expression(expr, location);
+  return new Heap_expression(expr, location);
 }
 
 // Class Receive_expression.

@@ -2187,7 +2187,7 @@ Thunk_statement::simplify_statement(Gogo* gogo, Named_object* function,
 					      location);
 
   // Allocate the initialized struct on the heap.
-  constructor = Expression::make_heap_composite(constructor, location);
+  constructor = Expression::make_heap_expression(constructor, location);
 
   // Look up the thunk.
   Named_object* named_thunk = gogo->lookup(thunk_name, NULL);

@@ -98,7 +98,7 @@ class Expression
     EXPRESSION_OPEN_ARRAY_CONSTRUCTION,
     EXPRESSION_MAP_CONSTRUCTION,
     EXPRESSION_COMPOSITE_LITERAL,
-    EXPRESSION_HEAP_COMPOSITE,
+    EXPRESSION_HEAP,
     EXPRESSION_RECEIVE,
     EXPRESSION_TYPE_DESCRIPTOR,
     EXPRESSION_TYPE_INFO,
@@ -314,9 +314,9 @@ class Expression
   static Expression*
   make_slice_composite_literal(Type*, Expression_list*, Location);
 
-  // Take a composite literal and allocate it on the heap.
+  // Take an expression and allocate it on the heap.
   static Expression*
-  make_heap_composite(Expression*, Location);
+  make_heap_expression(Expression*, Location);
 
   // Make a receive expression.  VAL is NULL for a unary receive.
   static Receive_expression*
