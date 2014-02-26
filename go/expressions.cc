@@ -177,38 +177,15 @@ Expression::convert_for_assignment(Translate_context* context, Type* lhs_type,
     }
   else if (lhs_type->is_slice_type() && rhs_type->is_nil_type())
     {
-      // Assigning nil to an open array.
-      go_assert(TREE_CODE(lhs_type_tree) == RECORD_TYPE);
-
-      vec<constructor_elt, va_gc> *init;
-      vec_alloc(init, 3);
-
-      constructor_elt empty = {NULL, NULL};
-      constructor_elt* elt = init->quick_push(empty);
-      tree field = TYPE_FIELDS(lhs_type_tree);
-      go_assert(strcmp(IDENTIFIER_POINTER(DECL_NAME(field)),
-			"__values") == 0);
-      elt->index = field;
-      elt->value = fold_convert(TREE_TYPE(field), null_pointer_node);
-
-      elt = init->quick_push(empty);
-      field = DECL_CHAIN(field);
-      go_assert(strcmp(IDENTIFIER_POINTER(DECL_NAME(field)),
-			"__count") == 0);
-      elt->index = field;
-      elt->value = fold_convert(TREE_TYPE(field), integer_zero_node);
-
-      elt = init->quick_push(empty);
-      field = DECL_CHAIN(field);
-      go_assert(strcmp(IDENTIFIER_POINTER(DECL_NAME(field)),
-			"__capacity") == 0);
-      elt->index = field;
-      elt->value = fold_convert(TREE_TYPE(field), integer_zero_node);
-
-      tree val = build_constructor(lhs_type_tree, init);
-      TREE_CONSTANT(val) = 1;
-
-      return val;
+      // Assigning nil to a slice.
+      mpz_t zval;
+      mpz_init_set_ui(zval, 0UL);
+      Expression* zero = Expression::make_integer(&zval, NULL, location);
+      mpz_clear(zval);
+      Expression* nil = Expression::make_nil(location);
+      Expression* slice_val = Expression::make_slice_value(lhs_type, nil, zero,
+                                                           zero, location);
+      return slice_val->get_tree(context);
     }
   else if (rhs_type->is_nil_type())
     {
@@ -14544,6 +14521,101 @@ Expression::make_slice_info(Expression* slice, Slice_info slice_info,
   return new Slice_info_expression(slice, slice_info, location);
 }
 
+// An expression that represents a slice value: a struct with value pointer,
+// length, and capacity fields.
+
+class Slice_value_expression : public Expression
+{
+ public:
+  Slice_value_expression(Type* type, Expression* valptr, Expression* len,
+                         Expression* cap, Location location)
+      : Expression(EXPRESSION_SLICE_VALUE, location),
+        type_(type), valptr_(valptr), len_(len), cap_(cap)
+  { }
+
+ protected:
+  int
+  do_traverse(Traverse*);
+
+  Type*
+  do_type()
+  { return this->type_; }
+
+  void
+  do_determine_type(const Type_context*)
+  { go_unreachable(); }
+
+  Expression*
+  do_copy()
+  {
+    return new Slice_value_expression(this->type_, this->valptr_->copy(),
+                                      this->len_->copy(), this->cap_->copy(),
+                                      this->location());
+  }
+
+  tree
+  do_get_tree(Translate_context* context);
+
+  void
+  do_dump_expression(Ast_dump_context*) const;
+
+ private:
+  // The type of the slice value.
+  Type* type_;
+  // The pointer to the values in the slice.
+  Expression* valptr_;
+  // The length of the slice.
+  Expression* len_;
+  // The capacity of the slice.
+  Expression* cap_;
+};
+
+int
+Slice_value_expression::do_traverse(Traverse* traverse)
+{
+  if (Expression::traverse(&this->valptr_, traverse) == TRAVERSE_EXIT
+      || Expression::traverse(&this->len_, traverse) == TRAVERSE_EXIT
+      || Expression::traverse(&this->cap_, traverse) == TRAVERSE_EXIT)
+    return TRAVERSE_EXIT;
+  return TRAVERSE_CONTINUE;
+}
+
+tree
+Slice_value_expression::do_get_tree(Translate_context* context)
+{
+  std::vector<Bexpression*> vals(3);
+  vals[0] = tree_to_expr(this->valptr_->get_tree(context));
+  vals[1] = tree_to_expr(this->len_->get_tree(context));
+  vals[2] = tree_to_expr(this->cap_->get_tree(context));
+
+  Gogo* gogo = context->gogo();
+  Btype* btype = this->type_->get_backend(gogo);
+  Bexpression* ret =
+      gogo->backend()->constructor_expression(btype, vals, this->location());
+  return expr_to_tree(ret);
+}
+
+void
+Slice_value_expression::do_dump_expression(
+    Ast_dump_context* ast_dump_context) const
+{
+  ast_dump_context->ostream() << "slicevalue(";
+  ast_dump_context->ostream() << "values: ";
+  this->valptr_->dump_expression(ast_dump_context);
+  ast_dump_context->ostream() << ", length: ";
+  this->len_->dump_expression(ast_dump_context);
+  ast_dump_context->ostream() << ", capacity: ";
+  this->cap_->dump_expression(ast_dump_context);
+  ast_dump_context->ostream() << ")";
+}
+
+Expression*
+Expression::make_slice_value(Type* at, Expression* valptr, Expression* len,
+                             Expression* cap, Location location)
+{
+  go_assert(at->is_slice_type());
+  return new Slice_value_expression(at, valptr, len, cap, location);
+}
 
 // An expression that evaluates to some characteristic of a non-empty interface.
 // This is used to access the method table or underlying object of an interface.

@@ -103,6 +103,7 @@ class Expression
     EXPRESSION_TYPE_DESCRIPTOR,
     EXPRESSION_TYPE_INFO,
     EXPRESSION_SLICE_INFO,
+    EXPRESSION_SLICE_VALUE,
     EXPRESSION_INTERFACE_INFO,
     EXPRESSION_INTERFACE_VALUE,
     EXPRESSION_INTERFACE_MTABLE,
@@ -361,6 +362,10 @@ class Expression
   static Expression*
   make_slice_info(Expression* slice, Slice_info, Location);
 
+  // Make an expression for a slice value.
+  static Expression*
+  make_slice_value(Type*, Expression* valptr, Expression* len, Expression* cap,
+                   Location);
 
   // Make an expression that evaluates to some characteristic of an
   // interface.  For simplicity, the enum values must match the field indexes
