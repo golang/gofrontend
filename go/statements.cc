@@ -638,13 +638,16 @@ Assignment_statement::do_check_types(Gogo*)
 Bstatement*
 Assignment_statement::do_get_backend(Translate_context* context)
 {
-  tree rhs_tree = this->rhs_->get_tree(context);
   if (this->lhs_->is_sink_expression())
-    return context->backend()->expression_statement(tree_to_expr(rhs_tree));
+    {
+      tree rhs_tree = this->rhs_->get_tree(context);
+      return context->backend()->expression_statement(tree_to_expr(rhs_tree));
+    }
+
   tree lhs_tree = this->lhs_->get_tree(context);
-  rhs_tree = Expression::convert_for_assignment(context, this->lhs_->type(),
-						this->rhs_->type(), rhs_tree,
-						this->location());
+  tree rhs_tree =
+      Expression::convert_for_assignment(context, this->lhs_->type(),
+                                         this->rhs_, this->location());
   return context->backend()->assignment_statement(tree_to_expr(lhs_tree),
 						  tree_to_expr(rhs_tree),
 						  this->location());

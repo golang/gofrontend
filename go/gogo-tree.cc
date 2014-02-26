@@ -1158,10 +1158,9 @@ Variable::get_init_tree(Gogo* gogo, Named_object* function)
   else
     {
       Translate_context context(gogo, function, NULL, NULL);
-      tree rhs_tree = this->init_->get_tree(&context);
-      return Expression::convert_for_assignment(&context, this->type(),
-                                                this->init_->type(),
-                                                rhs_tree, this->location());
+      Expression* init = Expression::make_cast(this->type(), this->init_,
+                                               this->location());
+      return init->get_tree(&context);
     }
 }
 
@@ -1202,8 +1201,7 @@ Variable::get_init_block(Gogo* gogo, Named_object* function, tree var_decl)
       else
 	{
 	  tree val = Expression::convert_for_assignment(&context, this->type(),
-                                                        this->init_->type(),
-							rhs_tree,
+                                                        this->init_,
 							this->location());
 	  if (val == error_mark_node)
 	    return error_mark_node;

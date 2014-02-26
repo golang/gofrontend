@@ -312,6 +312,13 @@ class Backend
   binary_expression(Operator op, Bexpression* left, Bexpression* right,
                     Location) = 0;
 
+  // Return an expression that constructs BTYPE with VALS.  BTYPE must be the
+  // backend representation a of struct.  VALS must be in the same order as the
+  // corresponding fields in BTYPE.
+  virtual Bexpression*
+  constructor_expression(Btype* btype, const std::vector<Bexpression*>& vals,
+                         Location) = 0;
+
   // Statements.
 
   // Create an error statement.  This is used for cases which should

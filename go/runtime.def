@@ -270,7 +270,7 @@ DEF_GO_RUNTIME(IFACEI2T2, "runtime.ifaceI2T2", P3(TYPE, IFACE, POINTER),
 
 // A type assertion from one interface type to another.  This is
 // used for a type assertion.
-DEF_GO_RUNTIME(ASSERT_INTERFACE, "__go_assert_interface", P2(TYPE, TYPE), R0())
+DEF_GO_RUNTIME(ASSERT_INTERFACE, "__go_assert_interface", P2(TYPE, TYPE), R1(POINTER))
 
 // Convert one interface type to another.  This is used for an
 // assignment.

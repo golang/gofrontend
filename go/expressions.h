@@ -104,6 +104,7 @@ class Expression
     EXPRESSION_TYPE_INFO,
     EXPRESSION_SLICE_INFO,
     EXPRESSION_INTERFACE_INFO,
+    EXPRESSION_INTERFACE_VALUE,
     EXPRESSION_INTERFACE_MTABLE,
     EXPRESSION_STRUCT_FIELD_OFFSET,
     EXPRESSION_MAP_DESCRIPTOR,
@@ -361,19 +362,25 @@ class Expression
   make_slice_info(Expression* slice, Slice_info, Location);
 
 
-  // Make an expression that evaluates to some characteristic of a
+  // Make an expression that evaluates to some characteristic of an
   // interface.  For simplicity, the enum values must match the field indexes
-  // of a non-empty interface in the underlying struct.
+  // in the underlying struct.
   enum Interface_info
     {
+      // The type descriptor of an empty interface.
+      INTERFACE_INFO_TYPE_DESCRIPTOR = 0,
       // The methods of an interface.
-      INTERFACE_INFO_METHODS,
+      INTERFACE_INFO_METHODS = 0,
       // The first argument to pass to an interface method.
       INTERFACE_INFO_OBJECT
     };
 
   static Expression*
   make_interface_info(Expression* iface, Interface_info, Location);
+
+  // Make an expression for an interface value.
+  static Expression*
+  make_interface_value(Type*, Expression*, Expression*, Location);
 
   // Make an expression that builds a reference to the interface method table
   // for TYPE that satisfies interface ITYPE. IS_POINTER is true if this is a
@@ -716,16 +723,16 @@ class Expression
   // Return a tree handling any conversions which must be done during
   // assignment.
   static tree
-  convert_for_assignment(Translate_context*, Type* lhs_type, Type* rhs_type,
-			 tree rhs_tree, Location location);
+  convert_for_assignment(Translate_context*, Type* lhs_type, Expression* rhs,
+                         Location location);
 
-  // Return a tree converting a value of one interface type to another
+  // Return an expression converting a value of one interface type to another
   // interface type.  If FOR_TYPE_GUARD is true this is for a type
   // assertion.
-  static tree
-  convert_interface_to_interface(Translate_context*, Type* lhs_type,
-				 Type* rhs_type, tree rhs_tree,
-				 bool for_type_guard, Location);
+  static Expression*
+  convert_interface_to_interface(Type* lhs_type,
+                                 Expression* rhs, bool for_type_guard,
+                                 Location);
 
   // Return a backend expression implementing the comparison LEFT OP RIGHT.
   // TYPE is the type of both sides.
@@ -894,17 +901,14 @@ class Expression
 	    : NULL);
   }
 
-  static tree
-  convert_type_to_interface(Translate_context*, Type*, Type*, tree,
-			    Location);
+  static Expression*
+  convert_type_to_interface(Type*, Expression*, Location);
 
-  static tree
-  get_interface_type_descriptor(Translate_context*, Type*, tree,
-				Location);
+  static Expression*
+  get_interface_type_descriptor(Expression*);
 
-  static tree
-  convert_interface_to_type(Translate_context*, Type*, Type*, tree,
-			    Location);
+  static Expression*
+  convert_interface_to_type(Type*, Expression*, Location);
 
   // The expression classification.
   Expression_classification classification_;
@@ -2242,6 +2246,9 @@ class Type_guard_expression : public Expression
  protected:
   int
   do_traverse(Traverse* traverse);
+
+  Expression*
+  do_flatten(Gogo*, Named_object*, Statement_inserter*);
 
   Type*
   do_type()
