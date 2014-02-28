@@ -1200,9 +1200,10 @@ Variable::get_init_block(Gogo* gogo, Named_object* function, tree var_decl)
 	append_to_statement_list(rhs_tree, &statements);
       else
 	{
-	  tree val = Expression::convert_for_assignment(&context, this->type(),
-                                                        this->init_,
-							this->location());
+          Expression* val_expr =
+              Expression::convert_for_assignment(&context, this->type(),
+                                                 this->init_, this->location());
+          tree val = val_expr->get_tree(&context);
 	  if (val == error_mark_node)
 	    return error_mark_node;
 	  tree set = fold_build2_loc(this->location().gcc_location(),

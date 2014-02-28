@@ -725,9 +725,9 @@ class Expression
   tree
   get_tree(Translate_context*);
 
-  // Return a tree handling any conversions which must be done during
+  // Return an expression handling any conversions which must be done during
   // assignment.
-  static tree
+  static Expression*
   convert_for_assignment(Translate_context*, Type* lhs_type, Expression* rhs,
                          Location location);
 
@@ -1860,7 +1860,7 @@ class Map_index_expression : public Expression
 		       Location location)
     : Expression(EXPRESSION_MAP_INDEX, location),
       map_(map), index_(index), is_lvalue_(false),
-      is_in_tuple_assignment_(false)
+      is_in_tuple_assignment_(false), value_pointer_(NULL)
   { }
 
   // Return the map.
@@ -1903,17 +1903,20 @@ class Map_index_expression : public Expression
   set_is_in_tuple_assignment()
   { this->is_in_tuple_assignment_ = true; }
 
-  // Return a tree for the map index.  This returns a tree which
+  // Return an expression for the map index.  This returns an expression which
   // evaluates to a pointer to a value in the map.  If INSERT is true,
   // the key will be inserted if not present, and the value pointer
   // will be zero initialized.  If INSERT is false, and the key is not
   // present in the map, the pointer will be NULL.
-  tree
-  get_value_pointer(Translate_context*, bool insert);
+  Expression*
+  get_value_pointer(bool insert);
 
  protected:
   int
   do_traverse(Traverse*);
+
+  Expression*
+  do_flatten(Gogo*, Named_object*, Statement_inserter*);
 
   Type*
   do_type();
@@ -1956,6 +1959,8 @@ class Map_index_expression : public Expression
   bool is_lvalue_;
   // Whether this is in a tuple assignment to a pair of values.
   bool is_in_tuple_assignment_;
+  // A pointer to the value at this index.
+  Expression* value_pointer_;
 };
 
 // An expression which represents a method bound to its first

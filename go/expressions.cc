@@ -140,41 +140,31 @@ Expression::determine_type_no_context()
   this->do_determine_type(&context);
 }
 
-// Return a tree handling any conversions which must be done during
+// Return an expression handling any conversions which must be done during
 // assignment.
 
-tree
+Expression*
 Expression::convert_for_assignment(Translate_context* context, Type* lhs_type,
 				   Expression* rhs, Location location)
 {
   Type* rhs_type = rhs->type();
-  if (lhs_type->is_error() || rhs_type->is_error())
-    return error_mark_node;
-
-  Gogo* gogo = context->gogo();
-  tree lhs_type_tree = type_to_tree(lhs_type->get_backend(gogo));
-  if (lhs_type_tree == error_mark_node)
-    return error_mark_node;
+  if (lhs_type->is_error()
+      || rhs_type->is_error()
+      || rhs->is_error_expression())
+    return Expression::make_error(location);
 
   if (lhs_type->forwarded() != rhs_type->forwarded()
       && lhs_type->interface_type() != NULL)
     {
-      Expression* convert;
       if (rhs_type->interface_type() == NULL)
-	convert = Expression::convert_type_to_interface(lhs_type, rhs,
-                                                        location);
+        return Expression::convert_type_to_interface(lhs_type, rhs, location);
       else
-	convert = Expression::convert_interface_to_interface(lhs_type, rhs,
-                                                             false, location);
-      return convert->get_tree(context);
+        return Expression::convert_interface_to_interface(lhs_type, rhs, false,
+                                                          location);
     }
   else if (lhs_type->forwarded() != rhs_type->forwarded()
 	   && rhs_type->interface_type() != NULL)
-    {
-      Expression* i2t =
-          Expression::convert_interface_to_type(lhs_type, rhs, location);
-      return i2t->get_tree(context);
-    }
+    return Expression::convert_interface_to_type(lhs_type, rhs, location);
   else if (lhs_type->is_slice_type() && rhs_type->is_nil_type())
     {
       // Assigning nil to a slice.
@@ -183,54 +173,40 @@ Expression::convert_for_assignment(Translate_context* context, Type* lhs_type,
       Expression* zero = Expression::make_integer(&zval, NULL, location);
       mpz_clear(zval);
       Expression* nil = Expression::make_nil(location);
-      Expression* slice_val = Expression::make_slice_value(lhs_type, nil, zero,
-                                                           zero, location);
-      return slice_val->get_tree(context);
+      return Expression::make_slice_value(lhs_type, nil, zero, zero, location);
     }
   else if (rhs_type->is_nil_type())
-    {
-      // The left hand side should be a pointer type at the tree
-      // level.
-      go_assert(POINTER_TYPE_P(lhs_type_tree));
-      return fold_convert(lhs_type_tree, null_pointer_node);
-    }
-
-  tree rhs_tree = rhs->get_tree(context);
-  if (rhs_tree == error_mark_node || TREE_TYPE(rhs_tree) == error_mark_node)
-    return error_mark_node;
-  if (lhs_type_tree == TREE_TYPE(rhs_tree))
+    return Expression::make_nil(location);
+  else if (Type::are_identical(lhs_type, rhs_type, false, NULL))
     {
       // No conversion is needed.
-      return rhs_tree;
+      return rhs;
     }
-  else if (POINTER_TYPE_P(lhs_type_tree)
-	   || INTEGRAL_TYPE_P(lhs_type_tree)
-	   || SCALAR_FLOAT_TYPE_P(lhs_type_tree)
-	   || COMPLEX_FLOAT_TYPE_P(lhs_type_tree))
-    return fold_convert_loc(location.gcc_location(), lhs_type_tree, rhs_tree);
-  else if ((TREE_CODE(lhs_type_tree) == RECORD_TYPE
-	    && TREE_CODE(TREE_TYPE(rhs_tree)) == RECORD_TYPE)
-	   || (TREE_CODE(lhs_type_tree) == ARRAY_TYPE
-	       && TREE_CODE(TREE_TYPE(rhs_tree)) == ARRAY_TYPE))
+  else if (lhs_type->points_to() != NULL)
+    return Expression::make_unsafe_cast(lhs_type, rhs, location);
+  else if (lhs_type->is_numeric_type())
+    return Expression::make_cast(lhs_type, rhs, location);
+  else if ((lhs_type->struct_type() != NULL
+            && rhs_type->struct_type() != NULL)
+           || (lhs_type->array_type() != NULL
+               && rhs_type->array_type() != NULL))
     {
       // Avoid confusion from zero sized variables which may be
       // represented as non-zero-sized.
-      if (int_size_in_bytes(lhs_type_tree) == 0
-	  || int_size_in_bytes(TREE_TYPE(rhs_tree)) == 0)
-	return rhs_tree;
+      // TODO(cmang): This check is for a GCC-specific issue, and should be
+      // removed from the frontend.  FIXME.
+      Gogo* gogo = context->gogo();
+      size_t lhs_size = gogo->backend()->type_size(lhs_type->get_backend(gogo));
+      size_t rhs_size = gogo->backend()->type_size(rhs_type->get_backend(gogo));
+      if (rhs_size == 0 || lhs_size == 0)
+	return rhs;
 
       // This conversion must be permitted by Go, or we wouldn't have
       // gotten here.
-      go_assert(int_size_in_bytes(lhs_type_tree)
-		== int_size_in_bytes(TREE_TYPE(rhs_tree)));
-      return fold_build1_loc(location.gcc_location(), VIEW_CONVERT_EXPR,
-                             lhs_type_tree, rhs_tree);
+      return Expression::make_unsafe_cast(lhs_type, rhs, location);
     }
   else
-    {
-      go_assert(useless_type_conversion_p(lhs_type_tree, TREE_TYPE(rhs_tree)));
-      return rhs_tree;
-    }
+    return rhs;
 }
 
 // Return an expression for a conversion from a non-interface type to an
@@ -3161,8 +3137,12 @@ Type_conversion_expression::do_get_tree(Translate_context* context)
   Type* expr_type = this->expr_->type();
   tree ret;
   if (type->interface_type() != NULL || expr_type->interface_type() != NULL)
-    ret = Expression::convert_for_assignment(context, type, this->expr_,
+    {
+      Expression* conversion =
+          Expression::convert_for_assignment(context, type, this->expr_,
                                              this->location());
+      ret = conversion->get_tree(context);
+    }
   else if (type->integer_type() != NULL)
     {
       if (expr_type->integer_type() != NULL
@@ -3263,8 +3243,12 @@ Type_conversion_expression::do_get_tree(Translate_context* context)
     ret = fold_convert_loc(this->location().gcc_location(), type_tree,
                            expr_tree);
   else
-    ret = Expression::convert_for_assignment(context, type, this->expr_,
+    {
+      Expression* conversion =
+          Expression::convert_for_assignment(context, type, this->expr_,
                                              this->location());
+      ret = conversion->get_tree(context);
+    }
 
   return ret;
 }
@@ -3392,6 +3376,25 @@ Unsafe_type_conversion_expression::do_get_tree(Translate_context* context)
   if (t->is_slice_type())
     {
       go_assert(et->is_slice_type());
+      use_view_convert = true;
+    }
+  else if (t->array_type() != NULL && !t->is_slice_type())
+    {
+      go_assert(et->array_type() != NULL && !et->is_slice_type());
+      use_view_convert = true;
+    }
+  else if (t->struct_type() != NULL)
+    {
+      if (t->named_type() != NULL
+          && et->named_type() != NULL
+          && !Type::are_convertible(t, et, NULL))
+	{
+	  go_assert(saw_errors());
+	  return error_mark_node;
+	}
+
+      go_assert(et->struct_type() != NULL
+                && Type::are_convertible(t, et, NULL));
       use_view_convert = true;
     }
   else if (t->map_type() != NULL)
@@ -8520,8 +8523,8 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 	Expression* arg = args->front();
 	Type *empty =
 	  Type::make_empty_interface_type(Linemap::predeclared_location());
-	tree arg_tree = Expression::convert_for_assignment(context, empty,
-                                                           arg, location);
+        arg = Expression::convert_for_assignment(context, empty, arg, location);
+        tree arg_tree = arg->get_tree(context);
 	if (arg_tree == error_mark_node)
 	  return error_mark_node;
 
@@ -8558,9 +8561,8 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 	tree empty_tree = type_to_tree(empty->get_backend(context->gogo()));
 
 	Expression* nil = Expression::make_nil(location);
-	tree empty_nil_tree = Expression::convert_for_assignment(context,
-								 empty, nil,
-								 location);
+	nil = Expression::convert_for_assignment(context, empty, nil, location);
+        tree empty_nil_tree = nil->get_tree(context);
 
 	// We need to handle a deferred call to recover specially,
 	// because it changes whether it can recover a panic or not.
@@ -9580,8 +9582,10 @@ Call_expression::do_get_tree(Translate_context* context)
       for (; pe != this->args_->end(); ++pe, ++pp, ++i)
 	{
 	  go_assert(pp != params->end());
-	  args[i] = Expression::convert_for_assignment(context, pp->type(), *pe,
-						       location);
+          Expression* arg =
+              Expression::convert_for_assignment(context, pp->type(), *pe,
+                                                 location);
+          args[i] = arg->get_tree(context);
 	  if (args[i] == error_mark_node)
 	    return error_mark_node;
 	}
@@ -11006,6 +11010,44 @@ Map_index_expression::do_traverse(Traverse* traverse)
   return Expression::traverse(&this->index_, traverse);
 }
 
+// We need to pass in a pointer to the key, so flatten the index into a
+// temporary variable if it isn't already.  The value pointer will be
+// dereferenced and checked for nil, so flatten into a temporary to avoid
+// recomputation.
+
+Expression*
+Map_index_expression::do_flatten(Gogo* gogo, Named_object*,
+                                 Statement_inserter* inserter)
+{
+  Map_type* mt = this->get_map_type();
+  if (this->index_->type() != mt->key_type())
+    this->index_ = Expression::make_cast(mt->key_type(), this->index_,
+                                         this->location());
+
+  if (!this->index_->is_variable())
+    {
+      Temporary_statement* temp = Statement::make_temporary(NULL, this->index_,
+                                                            this->location());
+      inserter->insert(temp);
+      this->index_ = Expression::make_temporary_reference(temp,
+                                                          this->location());
+    }
+
+  if (this->value_pointer_ == NULL)
+    this->get_value_pointer(this->is_lvalue_);
+  if (!this->value_pointer_->is_variable())
+    {
+      Temporary_statement* temp =
+          Statement::make_temporary(NULL, this->value_pointer_,
+                                    this->location());
+      inserter->insert(temp);
+      this->value_pointer_ =
+          Expression::make_temporary_reference(temp, this->location());
+    }
+
+  return this;
+}
+
 // Return the type of a map index.
 
 Type*
@@ -11065,130 +11107,84 @@ Map_index_expression::do_get_tree(Translate_context* context)
 {
   Map_type* type = this->get_map_type();
   if (type == NULL)
-    return error_mark_node;
+    {
+      go_assert(saw_errors());
+      return error_mark_node;
+    }
 
-  tree valptr = this->get_value_pointer(context, this->is_lvalue_);
-  if (valptr == error_mark_node)
-    return error_mark_node;
-  valptr = save_expr(valptr);
+  go_assert(this->value_pointer_ != NULL
+            && this->value_pointer_->is_variable());
 
-  tree val_type_tree = TREE_TYPE(TREE_TYPE(valptr));
-
+  Bexpression* ret;
   if (this->is_lvalue_)
-    return build_fold_indirect_ref(valptr);
+    {
+      Expression* val =
+          Expression::make_unary(OPERATOR_MULT, this->value_pointer_,
+                                 this->location());
+      ret = tree_to_expr(val->get_tree(context));
+    }
   else if (this->is_in_tuple_assignment_)
     {
       // Tuple_map_assignment_statement is responsible for using this
       // appropriately.
-      return valptr;
+      ret = tree_to_expr(this->value_pointer_->get_tree(context));
     }
   else
     {
+      Location loc = this->location();
+
+      Expression* nil_check =
+          Expression::make_binary(OPERATOR_EQEQ, this->value_pointer_,
+                                  Expression::make_nil(loc), loc);
+      Bexpression* bnil_check = tree_to_expr(nil_check->get_tree(context));
+      Expression* val =
+          Expression::make_unary(OPERATOR_MULT, this->value_pointer_, loc);
+      Bexpression* bval = tree_to_expr(val->get_tree(context));
+
       Gogo* gogo = context->gogo();
       Btype* val_btype = type->val_type()->get_backend(gogo);
       Bexpression* val_zero = gogo->backend()->zero_expression(val_btype);
-      return fold_build3(COND_EXPR, val_type_tree,
-			 fold_build2(EQ_EXPR, boolean_type_node, valptr,
-				     fold_convert(TREE_TYPE(valptr),
-						  null_pointer_node)),
-			 expr_to_tree(val_zero),
-			 build_fold_indirect_ref(valptr));
+      ret = gogo->backend()->conditional_expression(val_btype, bnil_check,
+                                                    val_zero, bval, loc);
     }
+
+  return expr_to_tree(ret);
 }
 
-// Get a tree for the map index.  This returns a tree which evaluates
-// to a pointer to a value.  The pointer will be NULL if the key is
+// Get an expression for the map index.  This returns an expression which
+// evaluates to a pointer to a value.  The pointer will be NULL if the key is
 // not in the map.
 
-tree
-Map_index_expression::get_value_pointer(Translate_context* context,
-					bool insert)
+Expression*
+Map_index_expression::get_value_pointer(bool insert)
 {
-  Map_type* type = this->get_map_type();
-  if (type == NULL)
-    return error_mark_node;
-
-  tree map_tree = this->map_->get_tree(context);
-  tree index_tree = Expression::convert_for_assignment(context,
-                                                       type->key_type(),
-                                                       this->index_,
-                                                       this->location());
-  if (map_tree == error_mark_node || index_tree == error_mark_node)
-    return error_mark_node;
-
-  if (this->map_->type()->points_to() != NULL)
-    map_tree = build_fold_indirect_ref(map_tree);
-
-  // We need to pass in a pointer to the key, so stuff it into a
-  // variable.
-  tree tmp;
-  tree make_tmp;
-  if (current_function_decl != NULL)
+  if (this->value_pointer_ == NULL)
     {
-      tmp = create_tmp_var(TREE_TYPE(index_tree), get_name(index_tree));
-      DECL_IGNORED_P(tmp) = 0;
-      DECL_INITIAL(tmp) = index_tree;
-      make_tmp = build1(DECL_EXPR, void_type_node, tmp);
-      TREE_ADDRESSABLE(tmp) = 1;
-    }
-  else
-    {
-      tmp = build_decl(this->location().gcc_location(), VAR_DECL,
-                       create_tmp_var_name("M"),
-		       TREE_TYPE(index_tree));
-      DECL_EXTERNAL(tmp) = 0;
-      TREE_PUBLIC(tmp) = 0;
-      TREE_STATIC(tmp) = 1;
-      DECL_ARTIFICIAL(tmp) = 1;
-      if (!TREE_CONSTANT(index_tree))
-	make_tmp = fold_build2_loc(this->location().gcc_location(),
-                                   INIT_EXPR, void_type_node,
-				   tmp, index_tree);
-      else
+      Map_type* type = this->get_map_type();
+      if (type == NULL)
 	{
-	  TREE_READONLY(tmp) = 1;
-	  TREE_CONSTANT(tmp) = 1;
-	  DECL_INITIAL(tmp) = index_tree;
-	  make_tmp = NULL_TREE;
+	  go_assert(saw_errors());
+	  return Expression::make_error(this->location());
 	}
-      rest_of_decl_compilation(tmp, 1, 0);
+
+      Location loc = this->location();
+      Expression* map_ref = this->map_;
+      if (this->map_->type()->points_to() != NULL)
+        map_ref = Expression::make_unary(OPERATOR_MULT, map_ref, loc);
+
+      Expression* index_ptr = Expression::make_unary(OPERATOR_AND, this->index_,
+                                                     loc);
+      Expression* map_index =
+          Runtime::make_call(Runtime::MAP_INDEX, loc, 3,
+                             map_ref, index_ptr,
+                             Expression::make_boolean(insert, loc));
+
+      Type* val_type = type->val_type();
+      this->value_pointer_ =
+          Expression::make_unsafe_cast(Type::make_pointer_type(val_type),
+                                       map_index, this->location());
     }
-  tree tmpref =
-    fold_convert_loc(this->location().gcc_location(), const_ptr_type_node,
-                     build_fold_addr_expr_loc(this->location().gcc_location(),
-                                              tmp));
-
-  static tree map_index_fndecl;
-  tree call = Gogo::call_builtin(&map_index_fndecl,
-				 this->location(),
-				 "__go_map_index",
-				 3,
-				 const_ptr_type_node,
-				 TREE_TYPE(map_tree),
-				 map_tree,
-				 const_ptr_type_node,
-				 tmpref,
-				 boolean_type_node,
-				 (insert
-				  ? boolean_true_node
-				  : boolean_false_node));
-  if (call == error_mark_node)
-    return error_mark_node;
-  // This can panic on a map of interface type if the interface holds
-  // an uncomparable or unhashable type.
-  TREE_NOTHROW(map_index_fndecl) = 0;
-
-  Type* val_type = type->val_type();
-  tree val_type_tree = type_to_tree(val_type->get_backend(context->gogo()));
-  if (val_type_tree == error_mark_node)
-    return error_mark_node;
-  tree ptr_val_type_tree = build_pointer_type(val_type_tree);
-
-  tree ret = fold_convert_loc(this->location().gcc_location(),
-                              ptr_val_type_tree, call);
-  if (make_tmp != NULL_TREE)
-    ret = build2(COMPOUND_EXPR, ptr_val_type_tree, make_tmp, ret);
-  return ret;
+  return this->value_pointer_;
 }
 
 // Dump ast representation for a map index expression
@@ -12294,8 +12290,10 @@ Struct_construction_expression::do_get_tree(Translate_context* context)
 	}
       else
 	{
-	  val = Expression::convert_for_assignment(context, pf->type(),
-						   *pv, this->location());
+          Expression* val_expr =
+              Expression::convert_for_assignment(context, pf->type(),
+                                                 *pv, this->location());
+          val = val_expr->get_tree(context);
 	  ++pv;
 	}
 
@@ -12566,9 +12564,11 @@ Array_construction_expression::get_constructor_tree(Translate_context* context,
 	    }
 	  else
 	    {
-	      elt->value = Expression::convert_for_assignment(context,
-							      element_type, *pv,
-                                                              this->location());
+              Expression* val_expr =
+                  Expression::convert_for_assignment(context,
+                                                     element_type, *pv,
+                                                     this->location());
+	      elt->value = val_expr->get_tree(context);
 	    }
 	  if (elt->value == error_mark_node)
 	    return error_mark_node;
@@ -13074,8 +13074,10 @@ Map_construction_expression::do_get_tree(Translate_context* context)
 	  constructor_elt empty = {NULL, NULL};
 	  constructor_elt* elt = one->quick_push(empty);
 	  elt->index = key_field;
-	  elt->value = Expression::convert_for_assignment(context, key_type,
-							  *pv, loc);
+
+          Expression* key_expr =
+              Expression::convert_for_assignment(context, key_type, *pv, loc);
+          elt->value = key_expr->get_tree(context);
 	  if (elt->value == error_mark_node)
 	    return error_mark_node;
 	  if (!TREE_CONSTANT(elt->value))
@@ -13085,8 +13087,10 @@ Map_construction_expression::do_get_tree(Translate_context* context)
 
 	  elt = one->quick_push(empty);
 	  elt->index = val_field;
-	  elt->value = Expression::convert_for_assignment(context, val_type,
-							  *pv, loc);
+
+          Expression* val_expr =
+              Expression::convert_for_assignment(context, val_type, *pv, loc);
+          elt->value = val_expr->get_tree(context);
 	  if (elt->value == error_mark_node)
 	    return error_mark_node;
 	  if (!TREE_CONSTANT(elt->value))
@@ -14034,16 +14038,17 @@ Type_guard_expression::do_check_types(Gogo*)
 tree
 Type_guard_expression::do_get_tree(Translate_context* context)
 {
+  Expression* conversion;
   if (this->type_->interface_type() != NULL)
-    {
-      Expression* i2i =
-          Expression::convert_interface_to_interface(this->type_, this->expr_,
-                                                     true, this->location());
-      return i2i->get_tree(context);
-    }
+    conversion =
+        Expression::convert_interface_to_interface(this->type_, this->expr_,
+                                                   true, this->location());
   else
-    return Expression::convert_for_assignment(context, this->type_,
-					      this->expr_, this->location());
+    conversion =
+        Expression::convert_for_assignment(context, this->type_,
+                                           this->expr_, this->location());
+
+  return conversion->get_tree(context);
 }
 
 // Dump ast representation for a type guard expression.
@@ -14898,6 +14903,10 @@ class Interface_mtable_expression : public Expression
     return new Interface_mtable_expression(this->itype_, this->type_,
                                            this->is_pointer_, this->location());
   }
+
+  bool
+  do_is_addressable() const
+  { return true; }
 
   tree
   do_get_tree(Translate_context* context);
