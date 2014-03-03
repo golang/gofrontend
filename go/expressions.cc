@@ -1620,6 +1620,116 @@ Expression::make_string(const std::string& val, Location location)
   return new String_expression(val, location);
 }
 
+// An expression that evaluates to some characteristic of a string.
+// This is used when indexing, bound-checking, or nil checking a string.
+
+class String_info_expression : public Expression
+{
+ public:
+  String_info_expression(Expression* string, String_info string_info,
+                        Location location)
+    : Expression(EXPRESSION_STRING_INFO, location),
+      string_(string), string_info_(string_info)
+  { }
+
+ protected:
+  Type*
+  do_type();
+
+  void
+  do_determine_type(const Type_context*)
+  { go_unreachable(); }
+
+  Expression*
+  do_copy()
+  {
+    return new String_info_expression(this->string_->copy(), this->string_info_,
+				      this->location());
+  }
+
+  tree
+  do_get_tree(Translate_context* context);
+
+  void
+  do_dump_expression(Ast_dump_context*) const;
+
+  void
+  do_issue_nil_check()
+  { this->string_->issue_nil_check(); }
+
+ private:
+  // The string for which we are getting information.
+  Expression* string_;
+  // What information we want.
+  String_info string_info_;
+};
+
+// Return the type of the string info.
+
+Type*
+String_info_expression::do_type()
+{
+  switch (this->string_info_)
+    {
+    case STRING_INFO_DATA:
+      {
+	Type* byte_type = Type::lookup_integer_type("uint8");
+	return Type::make_pointer_type(byte_type);
+      }
+    case STRING_INFO_LENGTH:
+        return Type::lookup_integer_type("int");
+    default:
+      go_unreachable();
+    }
+}
+
+// Return string information in GENERIC.
+
+tree
+String_info_expression::do_get_tree(Translate_context* context)
+{
+  Gogo* gogo = context->gogo();
+
+  Bexpression* bstring = tree_to_expr(this->string_->get_tree(context));
+  Bexpression* ret;
+  switch (this->string_info_)
+    {
+    case STRING_INFO_DATA:
+    case STRING_INFO_LENGTH:
+      ret = gogo->backend()->struct_field_expression(bstring, this->string_info_,
+                                                     this->location());
+      break;
+    default:
+      go_unreachable();
+    }
+  return expr_to_tree(ret);
+}
+
+// Dump ast representation for a type info expression.
+
+void
+String_info_expression::do_dump_expression(
+    Ast_dump_context* ast_dump_context) const
+{
+  ast_dump_context->ostream() << "stringinfo(";
+  this->string_->dump_expression(ast_dump_context);
+  ast_dump_context->ostream() << ",";
+  ast_dump_context->ostream() << 
+      (this->string_info_ == STRING_INFO_DATA ? "data" 
+    : this->string_info_ == STRING_INFO_LENGTH ? "length"
+    : "unknown");
+  ast_dump_context->ostream() << ")";
+}
+
+// Make a string info expression.
+
+Expression*
+Expression::make_string_info(Expression* string, String_info string_info,
+                            Location location)
+{
+  return new String_info_expression(string, string_info, location);
+}
+
 // Make an integer expression.
 
 class Integer_expression : public Expression
@@ -8291,7 +8401,12 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 	if (this->code_ == BUILTIN_LEN)
 	  {
 	    if (arg_type->is_string_type())
-	      val_tree = String_type::length_tree(gogo, arg_tree);
+	      {
+		Expression* len =
+		  Expression::make_string_info(arg, STRING_INFO_LENGTH,
+					       location);
+		val_tree = len->get_tree(context);
+	      }
 	    else if (arg_type->array_type() != NULL)
 	      {
 		if (this->seen_)
@@ -8663,9 +8778,12 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 	  }
 	else
 	  {
-	    arg2_tree = save_expr(arg2_tree);
-	    arg2_val = String_type::bytes_tree(gogo, arg2_tree);
-	    arg2_len = String_type::length_tree(gogo, arg2_tree);
+	    Expression* arg2_bytes =
+	      Expression::make_string_info(arg2, STRING_INFO_DATA, location);
+	    Expression* arg2_len_expr =
+	      Expression::make_string_info(arg2, STRING_INFO_LENGTH, location);
+	    arg2_val = arg2_bytes->get_tree(context);
+	    arg2_len = arg2_len_expr->get_tree(context);
 	  }
 	if (arg2_val == error_mark_node || arg2_len == error_mark_node)
 	  return error_mark_node;
@@ -8740,9 +8858,12 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 	    && element_type->integer_type() != NULL
 	    && element_type->integer_type()->is_byte())
 	  {
-	    arg2_tree = save_expr(arg2_tree);
-	    arg2_val = String_type::bytes_tree(gogo, arg2_tree);
-	    arg2_len = String_type::length_tree(gogo, arg2_tree);
+	    Expression* arg2_bytes =
+	      Expression::make_string_info(arg2, STRING_INFO_DATA, location);
+	    Expression* arg2_len_expr =
+	      Expression::make_string_info(arg2, STRING_INFO_LENGTH, location);
+	    arg2_val = arg2_bytes->get_tree(context);
+	    arg2_len = arg2_len_expr->get_tree(context);
 	    element_size = size_int(1);
 	  }
 	else
@@ -10871,7 +10992,9 @@ String_index_expression::do_get_tree(Translate_context* context)
     string_tree = save_expr(string_tree);
   tree string_type = TREE_TYPE(string_tree);
 
-  tree length_tree = String_type::length_tree(context->gogo(), string_tree);
+  Expression* length =
+    Expression::make_string_info(this->string_, STRING_INFO_LENGTH, loc);
+  tree length_tree = length->get_tree(context);
   length_tree = save_expr(length_tree);
 
   Type* int_type = Type::lookup_integer_type("int");
@@ -10905,7 +11028,9 @@ String_index_expression::do_get_tree(Translate_context* context)
 						  boolean_type_node,
 						  start_tree, length_tree));
 
-      tree bytes_tree = String_type::bytes_tree(context->gogo(), string_tree);
+      Expression* bytes =
+	Expression::make_string_info(this->string_, STRING_INFO_DATA, loc);
+      tree bytes_tree = bytes->get_tree(context);
       tree ptr = fold_build2_loc(loc.gcc_location(), POINTER_PLUS_EXPR,
                                  TREE_TYPE(bytes_tree),
 				 bytes_tree,
@@ -11016,8 +11141,8 @@ Map_index_expression::do_traverse(Traverse* traverse)
 // recomputation.
 
 Expression*
-Map_index_expression::do_flatten(Gogo* gogo, Named_object*,
-                                 Statement_inserter* inserter)
+Map_index_expression::do_flatten(Gogo*, Named_object*,
+				 Statement_inserter* inserter)
 {
   Map_type* mt = this->get_map_type();
   if (this->index_->type() != mt->key_type())

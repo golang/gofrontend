@@ -1688,14 +1688,6 @@ class String_type : public Type
     : Type(TYPE_STRING)
   { }
 
-  // Return a tree for the length of STRING.
-  static tree
-  length_tree(Gogo*, tree string);
-
-  // Return a tree which points to the bytes of STRING.
-  static tree
-  bytes_tree(Gogo*, tree string);
-
  protected:
   bool
   do_has_pointer() const

@@ -74,6 +74,7 @@ class Expression
     EXPRESSION_UNKNOWN_REFERENCE,
     EXPRESSION_BOOLEAN,
     EXPRESSION_STRING,
+    EXPRESSION_STRING_INFO,
     EXPRESSION_INTEGER,
     EXPRESSION_FLOAT,
     EXPRESSION_COMPLEX,
@@ -191,6 +192,20 @@ class Expression
   // Make a constant string expression.
   static Expression*
   make_string(const std::string&, Location);
+
+  // Make an expression that evaluates to some characteristic of an string.
+  // For simplicity, the enum values must match the field indexes in the
+  // underlying struct.
+  enum String_info
+    {
+      // The underlying data in the string.
+      STRING_INFO_DATA,
+      // The length of the string.
+      STRING_INFO_LENGTH
+    };
+
+  static Expression*
+  make_string_info(Expression* string, String_info, Location);
 
   // Make a character constant expression.  TYPE should be NULL for an
   // abstract type.
