@@ -208,7 +208,7 @@ DEF_GO_RUNTIME(RUNTIME_ERROR, "__go_runtime_error", P1(INT32), R0())
 
 
 // Close.
-DEF_GO_RUNTIME(CLOSE, "__go_close", P1(CHAN), R0())
+DEF_GO_RUNTIME(CLOSE, "__go_builtin_close", P1(CHAN), R0())
 
 
 // Copy.

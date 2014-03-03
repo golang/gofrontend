@@ -269,6 +269,18 @@ class Backend
   virtual Bexpression*
   complex_constant_expression(Btype* btype, mpfr_t real, mpfr_t imag) = 0;
 
+  // Return an expression for the real part of BCOMPLEX.
+  virtual Bexpression*
+  real_part_expression(Bexpression* bcomplex, Location) = 0;
+
+  // Return an expression for the imaginary part of BCOMPLEX.
+  virtual Bexpression*
+  imag_part_expression(Bexpression* bcomplex, Location) = 0;
+
+  // Return an expression for the complex number (BREAL, BIMAG).
+  virtual Bexpression*
+  complex_expression(Bexpression* breal, Bexpression* bimag, Location) = 0;
+
   // Return an expression that converts EXPR to TYPE.
   virtual Bexpression*
   convert_expression(Btype* type, Bexpression* expr, Location) = 0;

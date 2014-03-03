@@ -3512,7 +3512,11 @@ Unsafe_type_conversion_expression::do_get_tree(Translate_context* context)
   else if (t->channel_type() != NULL)
     go_assert(et->channel_type() != NULL);
   else if (t->points_to() != NULL)
-    go_assert(et->points_to() != NULL || et->is_nil_type());
+    go_assert(et->points_to() != NULL
+              || et->channel_type() != NULL
+              || et->map_type() != NULL
+              || et->function_type() != NULL
+              || et->is_nil_type());
   else if (et->is_unsafe_pointer_type())
     go_assert(t->points_to() != NULL);
   else if (t->interface_type() != NULL && !t->interface_type()->is_empty())
@@ -8368,7 +8372,7 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
       {
 	const Expression_list* args = this->args();
 	go_assert(args != NULL && args->size() == 1);
-	Expression* arg = *args->begin();
+	Expression* arg = args->front();
 	Type* arg_type = arg->type();
 
 	if (this->seen_)
@@ -8377,36 +8381,22 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 	    return error_mark_node;
 	  }
 	this->seen_ = true;
-
-	tree arg_tree = arg->get_tree(context);
-
 	this->seen_ = false;
-
-	if (arg_tree == error_mark_node)
-	  return error_mark_node;
-
 	if (arg_type->points_to() != NULL)
 	  {
 	    arg_type = arg_type->points_to();
 	    go_assert(arg_type->array_type() != NULL
 		       && !arg_type->is_slice_type());
-	    go_assert(POINTER_TYPE_P(TREE_TYPE(arg_tree)));
-	    arg_tree = build_fold_indirect_ref(arg_tree);
+            arg = Expression::make_unary(OPERATOR_MULT, arg, location);
 	  }
 
 	Type* int_type = Type::lookup_integer_type("int");
-	tree int_type_tree = type_to_tree(int_type->get_backend(gogo));
-
-	tree val_tree;
+        Expression* val;
 	if (this->code_ == BUILTIN_LEN)
 	  {
 	    if (arg_type->is_string_type())
-	      {
-		Expression* len =
-		  Expression::make_string_info(arg, STRING_INFO_LENGTH,
-					       location);
-		val_tree = len->get_tree(context);
-	      }
+	      val = Expression::make_string_info(arg, STRING_INFO_LENGTH,
+						 location);
 	    else if (arg_type->array_type() != NULL)
 	      {
 		if (this->seen_)
@@ -8415,34 +8405,13 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 		    return error_mark_node;
 		  }
 		this->seen_ = true;
-		Expression* len = arg_type->array_type()->get_length(gogo, arg);
-		val_tree = len->get_tree(context);
+	        val = arg_type->array_type()->get_length(gogo, arg);
 		this->seen_ = false;
 	      }
 	    else if (arg_type->map_type() != NULL)
-	      {
-		tree arg_type_tree = type_to_tree(arg_type->get_backend(gogo));
-		static tree map_len_fndecl;
-		val_tree = Gogo::call_builtin(&map_len_fndecl,
-					      location,
-					      "__go_map_len",
-					      1,
-					      int_type_tree,
-					      arg_type_tree,
-					      arg_tree);
-	      }
+              val = Runtime::make_call(Runtime::MAP_LEN, location, 1, arg);
 	    else if (arg_type->channel_type() != NULL)
-	      {
-		tree arg_type_tree = type_to_tree(arg_type->get_backend(gogo));
-		static tree chan_len_fndecl;
-		val_tree = Gogo::call_builtin(&chan_len_fndecl,
-					      location,
-					      "__go_chan_len",
-					      1,
-					      int_type_tree,
-					      arg_type_tree,
-					      arg_tree);
-	      }
+              val = Runtime::make_call(Runtime::CHAN_LEN, location, 1, arg);
 	    else
 	      go_unreachable();
 	  }
@@ -8456,36 +8425,24 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 		    return error_mark_node;
 		  }
 		this->seen_ = true;
-		Expression* cap =
-		    arg_type->array_type()->get_capacity(gogo, arg);
-		val_tree = cap->get_tree(context);
+                val = arg_type->array_type()->get_capacity(gogo, arg);
 		this->seen_ = false;
 	      }
 	    else if (arg_type->channel_type() != NULL)
-	      {
-		tree arg_type_tree = type_to_tree(arg_type->get_backend(gogo));
-		static tree chan_cap_fndecl;
-		val_tree = Gogo::call_builtin(&chan_cap_fndecl,
-					      location,
-					      "__go_chan_cap",
-					      1,
-					      int_type_tree,
-					      arg_type_tree,
-					      arg_tree);
-	      }
+              val = Runtime::make_call(Runtime::CHAN_CAP, location, 1, arg);
 	    else
 	      go_unreachable();
 	  }
 
-	return fold_convert_loc(location.gcc_location(), int_type_tree,
-				val_tree);
+	return Expression::make_cast(int_type, val,
+				     location)->get_tree(context);
       }
 
     case BUILTIN_PRINT:
     case BUILTIN_PRINTLN:
       {
 	const bool is_ln = this->code_ == BUILTIN_PRINTLN;
-	tree stmt_list = NULL_TREE;
+        Expression* print_stmts = NULL;
 
 	const Expression_list* call_args = this->args();
 	if (call_args != NULL)
@@ -8496,139 +8453,91 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 	      {
 		if (is_ln && p != call_args->begin())
 		  {
-		    static tree print_space_fndecl;
-		    tree call = Gogo::call_builtin(&print_space_fndecl,
-						   location,
-						   "__go_print_space",
-						   0,
-						   void_type_node);
-		    if (call == error_mark_node)
-		      return error_mark_node;
-		    append_to_statement_list(call, &stmt_list);
+                    Expression* print_space =
+                        Runtime::make_call(Runtime::PRINT_SPACE,
+                                           this->location(), 0);
+
+                    print_stmts =
+                        Expression::make_compound(print_stmts, print_space,
+                                                  location);
 		  }
 
-		Type* type = (*p)->type();
-
-		tree arg = (*p)->get_tree(context);
-		if (arg == error_mark_node)
-		  return error_mark_node;
-
-		tree* pfndecl;
-		const char* fnname;
+                Expression* arg = *p;
+		Type* type = arg->type();
+                Runtime::Function code;
 		if (type->is_string_type())
-		  {
-		    static tree print_string_fndecl;
-		    pfndecl = &print_string_fndecl;
-		    fnname = "__go_print_string";
-		  }
+                  code = Runtime::PRINT_STRING;
 		else if (type->integer_type() != NULL
 			 && type->integer_type()->is_unsigned())
 		  {
-		    static tree print_uint64_fndecl;
-		    pfndecl = &print_uint64_fndecl;
-		    fnname = "__go_print_uint64";
 		    Type* itype = Type::lookup_integer_type("uint64");
-		    Btype* bitype = itype->get_backend(gogo);
-		    arg = fold_convert_loc(location.gcc_location(),
-                                           type_to_tree(bitype), arg);
+		    arg = Expression::make_cast(itype, arg, location);
+                    code = Runtime::PRINT_UINT64;
 		  }
 		else if (type->integer_type() != NULL)
 		  {
-		    static tree print_int64_fndecl;
-		    pfndecl = &print_int64_fndecl;
-		    fnname = "__go_print_int64";
 		    Type* itype = Type::lookup_integer_type("int64");
-		    Btype* bitype = itype->get_backend(gogo);
-		    arg = fold_convert_loc(location.gcc_location(),
-                                           type_to_tree(bitype), arg);
+		    arg = Expression::make_cast(itype, arg, location);
+                    code = Runtime::PRINT_INT64;
 		  }
 		else if (type->float_type() != NULL)
 		  {
-		    static tree print_double_fndecl;
-		    pfndecl = &print_double_fndecl;
-		    fnname = "__go_print_double";
-		    arg = fold_convert_loc(location.gcc_location(),
-                                           double_type_node, arg);
+                    Type* dtype = Type::lookup_float_type("float64");
+                    arg = Expression::make_cast(dtype, arg, location);
+                    code = Runtime::PRINT_DOUBLE;
 		  }
 		else if (type->complex_type() != NULL)
 		  {
-		    static tree print_complex_fndecl;
-		    pfndecl = &print_complex_fndecl;
-		    fnname = "__go_print_complex";
-		    arg = fold_convert_loc(location.gcc_location(),
-                                           complex_double_type_node, arg);
+                    Type* ctype = Type::lookup_complex_type("complex128");
+                    arg = Expression::make_cast(ctype, arg, location);
+                    code = Runtime::PRINT_COMPLEX;
 		  }
 		else if (type->is_boolean_type())
-		  {
-		    static tree print_bool_fndecl;
-		    pfndecl = &print_bool_fndecl;
-		    fnname = "__go_print_bool";
-		  }
+                  code = Runtime::PRINT_BOOL;
 		else if (type->points_to() != NULL
 			 || type->channel_type() != NULL
 			 || type->map_type() != NULL
 			 || type->function_type() != NULL)
 		  {
-		    static tree print_pointer_fndecl;
-		    pfndecl = &print_pointer_fndecl;
-		    fnname = "__go_print_pointer";
-		    arg = fold_convert_loc(location.gcc_location(),
-                                           ptr_type_node, arg);
+                    arg = Expression::make_cast(type, arg, location);
+                    code = Runtime::PRINT_POINTER;
 		  }
 		else if (type->interface_type() != NULL)
 		  {
 		    if (type->interface_type()->is_empty())
-		      {
-			static tree print_empty_interface_fndecl;
-			pfndecl = &print_empty_interface_fndecl;
-			fnname = "__go_print_empty_interface";
-		      }
+                      code = Runtime::PRINT_EMPTY_INTERFACE;
 		    else
-		      {
-			static tree print_interface_fndecl;
-			pfndecl = &print_interface_fndecl;
-			fnname = "__go_print_interface";
-		      }
+                      code = Runtime::PRINT_INTERFACE;
 		  }
 		else if (type->is_slice_type())
-		  {
-		    static tree print_slice_fndecl;
-		    pfndecl = &print_slice_fndecl;
-		    fnname = "__go_print_slice";
-		  }
+                  code = Runtime::PRINT_SLICE;
 		else
 		  {
 		    go_assert(saw_errors());
 		    return error_mark_node;
 		  }
 
-		tree call = Gogo::call_builtin(pfndecl,
-					       location,
-					       fnname,
-					       1,
-					       void_type_node,
-					       TREE_TYPE(arg),
-					       arg);
-		if (call == error_mark_node)
-		  return error_mark_node;
-		append_to_statement_list(call, &stmt_list);
+                Expression* call = Runtime::make_call(code, location, 1, arg);
+                if (print_stmts == NULL)
+                  print_stmts = call;
+                else
+                  print_stmts = Expression::make_compound(print_stmts, call,
+                                                          location);
 	      }
 	  }
 
 	if (is_ln)
 	  {
-	    static tree print_nl_fndecl;
-	    tree call = Gogo::call_builtin(&print_nl_fndecl,
-					   location,
-					   "__go_print_nl",
-					   0,
-					   void_type_node);
-	    if (call == error_mark_node)
-	      return error_mark_node;
-	    append_to_statement_list(call, &stmt_list);
+            Expression* print_nl =
+                Runtime::make_call(Runtime::PRINT_NL, location, 0);
+            if (print_stmts == NULL)
+              print_stmts = print_nl;
+            else
+              print_stmts = Expression::make_compound(print_stmts, print_nl,
+                                                      location);
 	  }
 
-	return stmt_list;
+        return print_stmts->get_tree(context);
       }
 
     case BUILTIN_PANIC:
@@ -8639,25 +8548,10 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 	Type *empty =
 	  Type::make_empty_interface_type(Linemap::predeclared_location());
         arg = Expression::convert_for_assignment(context, empty, arg, location);
-        tree arg_tree = arg->get_tree(context);
-	if (arg_tree == error_mark_node)
-	  return error_mark_node;
 
-	static tree panic_fndecl;
-	tree call = Gogo::call_builtin(&panic_fndecl,
-				       location,
-				       "__go_panic",
-				       1,
-				       void_type_node,
-				       TREE_TYPE(arg_tree),
-				       arg_tree);
-	if (call == error_mark_node)
-	  return error_mark_node;
-	// This function will throw an exception.
-	TREE_NOTHROW(panic_fndecl) = 0;
-	// This function will not return.
-	TREE_THIS_VOLATILE(panic_fndecl) = 1;
-	return call;
+        Expression* panic =
+            Runtime::make_call(Runtime::PANIC, location, 1, arg);
+        return panic->get_tree(context);
       }
 
     case BUILTIN_RECOVER:
@@ -8667,44 +8561,22 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 	const Expression_list* args = this->args();
 	go_assert(args != NULL && args->size() == 1);
 	Expression* arg = args->front();
-	tree arg_tree = arg->get_tree(context);
-	if (arg_tree == error_mark_node)
-	  return error_mark_node;
-
 	Type *empty =
 	  Type::make_empty_interface_type(Linemap::predeclared_location());
-	tree empty_tree = type_to_tree(empty->get_backend(context->gogo()));
 
 	Expression* nil = Expression::make_nil(location);
 	nil = Expression::convert_for_assignment(context, empty, nil, location);
-        tree empty_nil_tree = nil->get_tree(context);
 
 	// We need to handle a deferred call to recover specially,
 	// because it changes whether it can recover a panic or not.
 	// See test7 in test/recover1.go.
-	tree call;
-	if (this->is_deferred())
-	  {
-	    static tree deferred_recover_fndecl;
-	    call = Gogo::call_builtin(&deferred_recover_fndecl,
-				      location,
-				      "__go_deferred_recover",
-				      0,
-				      empty_tree);
-	  }
-	else
-	  {
-	    static tree recover_fndecl;
-	    call = Gogo::call_builtin(&recover_fndecl,
-				      location,
-				      "__go_recover",
-				      0,
-				      empty_tree);
-	  }
-	if (call == error_mark_node)
-	  return error_mark_node;
-	return fold_build3_loc(location.gcc_location(), COND_EXPR, empty_tree,
-                               arg_tree, call, empty_nil_tree);
+        Expression* recover = Runtime::make_call((this->is_deferred()
+                                                  ? Runtime::DEFERRED_RECOVER
+                                                  : Runtime::RECOVER),
+                                                 location, 0);
+        Expression* cond =
+            Expression::make_conditional(arg, recover, nil, location);
+        return cond->get_tree(context);
       }
 
     case BUILTIN_CLOSE:
@@ -8712,17 +8584,9 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 	const Expression_list* args = this->args();
 	go_assert(args != NULL && args->size() == 1);
 	Expression* arg = args->front();
-	tree arg_tree = arg->get_tree(context);
-	if (arg_tree == error_mark_node)
-	  return error_mark_node;
-	static tree close_fndecl;
-	return Gogo::call_builtin(&close_fndecl,
-				  location,
-				  "__go_builtin_close",
-				  1,
-				  void_type_node,
-				  TREE_TYPE(arg_tree),
-				  arg_tree);
+        Expression* close = Runtime::make_call(Runtime::CLOSE, location,
+					       1, arg);
+        return close->get_tree(context);
       }
 
     case BUILTIN_SIZEOF:
@@ -8738,8 +8602,12 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 	    return error_mark_node;
 	  }
 	Type* uintptr_type = Type::lookup_integer_type("uintptr");
-	tree type = type_to_tree(uintptr_type->get_backend(gogo));
-	return build_int_cst(type, val);
+        mpz_t ival;
+        nc.get_int(&ival);
+        Expression* int_cst =
+            Expression::make_integer(&ival, uintptr_type, location);
+        mpz_clear(ival);
+        return int_cst->get_tree(context);
       }
 
     case BUILTIN_COPY:
@@ -8749,91 +8617,51 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 	Expression* arg1 = args->front();
 	Expression* arg2 = args->back();
 
-	tree arg1_tree = arg1->get_tree(context);
-	tree arg2_tree = arg2->get_tree(context);
-	if (arg1_tree == error_mark_node || arg2_tree == error_mark_node)
-	  return error_mark_node;
-
 	Type* arg1_type = arg1->type();
 	Array_type* at = arg1_type->array_type();
 	go_assert(arg1->is_variable());
-	Expression* arg1_valptr = at->get_value_pointer(gogo, arg1);
-	Expression* arg1_len_expr = at->get_length(gogo, arg1);
-	tree arg1_val = arg1_valptr->get_tree(context);
-	tree arg1_len = arg1_len_expr->get_tree(context);
-	if (arg1_val == error_mark_node || arg1_len == error_mark_node)
-	  return error_mark_node;
+	Expression* arg1_val = at->get_value_pointer(gogo, arg1);
+	Expression* arg1_len = at->get_length(gogo, arg1);
 
 	Type* arg2_type = arg2->type();
-	tree arg2_val;
-	tree arg2_len;
+        go_assert(arg2->is_variable());
+	Expression* arg2_val;
+	Expression* arg2_len;
 	if (arg2_type->is_slice_type())
 	  {
 	    at = arg2_type->array_type();
-	    go_assert(arg2->is_variable());
-	    Expression* arg2_valptr = at->get_value_pointer(gogo, arg2);
-	    Expression* arg2_len_expr = at->get_length(gogo, arg2);
-	    arg2_val = arg2_valptr->get_tree(context);
-	    arg2_len = arg2_len_expr->get_tree(context);
+	    arg2_val = at->get_value_pointer(gogo, arg2);
+	    arg2_len = at->get_length(gogo, arg2);
 	  }
 	else
 	  {
-	    Expression* arg2_bytes =
-	      Expression::make_string_info(arg2, STRING_INFO_DATA, location);
-	    Expression* arg2_len_expr =
-	      Expression::make_string_info(arg2, STRING_INFO_LENGTH, location);
-	    arg2_val = arg2_bytes->get_tree(context);
-	    arg2_len = arg2_len_expr->get_tree(context);
+	    go_assert(arg2->is_variable());
+            arg2_val = Expression::make_string_info(arg2, STRING_INFO_DATA,
+                                                    location);
+	    arg2_len = Expression::make_string_info(arg2, STRING_INFO_LENGTH,
+                                                    location);
 	  }
-	if (arg2_val == error_mark_node || arg2_len == error_mark_node)
-	  return error_mark_node;
-
-	arg1_len = save_expr(arg1_len);
-	arg2_len = save_expr(arg2_len);
-	tree len = fold_build3_loc(location.gcc_location(), COND_EXPR,
-                                   TREE_TYPE(arg1_len),
-				   fold_build2_loc(location.gcc_location(),
-                                                   LT_EXPR, boolean_type_node,
-						   arg1_len, arg2_len),
-				   arg1_len, arg2_len);
-	len = save_expr(len);
+        Expression* cond =
+            Expression::make_binary(OPERATOR_LT, arg1_len, arg2_len, location);
+        Expression* length =
+            Expression::make_conditional(cond, arg1_len, arg2_len, location);
 
 	Type* element_type = at->element_type();
 	Btype* element_btype = element_type->get_backend(gogo);
-	tree element_type_tree = type_to_tree(element_btype);
-	if (element_type_tree == error_mark_node)
-	  return error_mark_node;
-	tree element_size = TYPE_SIZE_UNIT(element_type_tree);
-	tree bytecount = fold_convert_loc(location.gcc_location(),
-                                          TREE_TYPE(element_size), len);
-	bytecount = fold_build2_loc(location.gcc_location(), MULT_EXPR,
-				    TREE_TYPE(element_size),
-				    bytecount, element_size);
-	bytecount = fold_convert_loc(location.gcc_location(), size_type_node,
-                                     bytecount);
 
-	arg1_val = fold_convert_loc(location.gcc_location(), ptr_type_node,
-                                    arg1_val);
-	arg2_val = fold_convert_loc(location.gcc_location(), ptr_type_node,
-                                    arg2_val);
+        mpz_t size;
+        size_t element_size = gogo->backend()->type_size(element_btype);
+        mpz_init_set_ui(size, element_size);
+        Expression* size_expr = Expression::make_integer(&size, length->type(), location);
+        mpz_clear(size);
 
-	static tree copy_fndecl;
-	tree call = Gogo::call_builtin(&copy_fndecl,
-				       location,
-				       "__go_copy",
-				       3,
-				       void_type_node,
-				       ptr_type_node,
-				       arg1_val,
-				       ptr_type_node,
-				       arg2_val,
-				       size_type_node,
-				       bytecount);
-	if (call == error_mark_node)
-	  return error_mark_node;
+        Expression* bytecount =
+            Expression::make_binary(OPERATOR_MULT, size_expr, length, location);
+        Expression* copy = Runtime::make_call(Runtime::COPY, location, 3,
+                                              arg1_val, arg2_val, bytecount);
 
-	return fold_build2_loc(location.gcc_location(), COMPOUND_EXPR,
-                               TREE_TYPE(len), call, len);
+        Expression* compound = Expression::make_compound(copy, length, location);
+        return compound->get_tree(context);
       }
 
     case BUILTIN_APPEND:
@@ -8843,70 +8671,40 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 	Expression* arg1 = args->front();
 	Expression* arg2 = args->back();
 
-	tree arg1_tree = arg1->get_tree(context);
-	tree arg2_tree = arg2->get_tree(context);
-	if (arg1_tree == error_mark_node || arg2_tree == error_mark_node)
-	  return error_mark_node;
-
 	Array_type* at = arg1->type()->array_type();
 	Type* element_type = at->element_type()->forwarded();
 
-	tree arg2_val;
-	tree arg2_len;
-	tree element_size;
+        go_assert(arg2->is_variable());
+	Expression* arg2_val;
+	Expression* arg2_len;
+        mpz_t size;
 	if (arg2->type()->is_string_type()
 	    && element_type->integer_type() != NULL
 	    && element_type->integer_type()->is_byte())
 	  {
-	    Expression* arg2_bytes =
-	      Expression::make_string_info(arg2, STRING_INFO_DATA, location);
-	    Expression* arg2_len_expr =
-	      Expression::make_string_info(arg2, STRING_INFO_LENGTH, location);
-	    arg2_val = arg2_bytes->get_tree(context);
-	    arg2_len = arg2_len_expr->get_tree(context);
-	    element_size = size_int(1);
+	    arg2_val = Expression::make_string_info(arg2, STRING_INFO_DATA,
+						    location);
+	    arg2_len = Expression::make_string_info(arg2, STRING_INFO_LENGTH,
+						    location);
+            mpz_init_set_ui(size, 1UL);
 	  }
 	else
 	  {
-	    go_assert(arg2->is_variable());
-	    arg2_val =
-		at->get_value_pointer(gogo, arg2)->get_tree(context);
-	    arg2_len = at->get_length(gogo, arg2)->get_tree(context);
+	    arg2_val = at->get_value_pointer(gogo, arg2);
+	    arg2_len = at->get_length(gogo, arg2);
 	    Btype* element_btype = element_type->get_backend(gogo);
-	    tree element_type_tree = type_to_tree(element_btype);
-	    if (element_type_tree == error_mark_node)
-	      return error_mark_node;
-	    element_size = TYPE_SIZE_UNIT(element_type_tree);
+            size_t element_size = gogo->backend()->type_size(element_btype);
+            mpz_init_set_ui(size, element_size);
 	  }
+        Expression* element_size =
+            Expression::make_integer(&size, NULL, location);
+        mpz_clear(size);
 
-	arg2_val = fold_convert_loc(location.gcc_location(), ptr_type_node,
-                                    arg2_val);
-	arg2_len = fold_convert_loc(location.gcc_location(), size_type_node,
-                                    arg2_len);
-	element_size = fold_convert_loc(location.gcc_location(), size_type_node,
-					element_size);
-
-	if (arg2_val == error_mark_node
-	    || arg2_len == error_mark_node
-	    || element_size == error_mark_node)
-	  return error_mark_node;
-
-	// We rebuild the decl each time since the slice types may
-	// change.
-	tree append_fndecl = NULL_TREE;
-	return Gogo::call_builtin(&append_fndecl,
-				  location,
-				  "__go_append",
-				  4,
-				  TREE_TYPE(arg1_tree),
-				  TREE_TYPE(arg1_tree),
-				  arg1_tree,
-				  ptr_type_node,
-				  arg2_val,
-				  size_type_node,
-				  arg2_len,
-				  size_type_node,
-				  element_size);
+        Expression* append = Runtime::make_call(Runtime::APPEND, location, 4,
+                                                arg1, arg2_val, arg2_len,
+                                                element_size);
+        append = Expression::make_unsafe_cast(arg1->type(), append, location);
+        return append->get_tree(context);
       }
 
     case BUILTIN_REAL:
@@ -8915,34 +8713,25 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 	const Expression_list* args = this->args();
 	go_assert(args != NULL && args->size() == 1);
 	Expression* arg = args->front();
-	tree arg_tree = arg->get_tree(context);
-	if (arg_tree == error_mark_node)
-	  return error_mark_node;
-	go_assert(COMPLEX_FLOAT_TYPE_P(TREE_TYPE(arg_tree)));
-	if (this->code_ == BUILTIN_REAL)
-	  return fold_build1_loc(location.gcc_location(), REALPART_EXPR,
-				 TREE_TYPE(TREE_TYPE(arg_tree)),
-				 arg_tree);
-	else
-	  return fold_build1_loc(location.gcc_location(), IMAGPART_EXPR,
-				 TREE_TYPE(TREE_TYPE(arg_tree)),
-				 arg_tree);
+
+        Bexpression* ret;
+        Bexpression* bcomplex = tree_to_expr(arg->get_tree(context));
+        if (this->code_ == BUILTIN_REAL)
+          ret = gogo->backend()->real_part_expression(bcomplex, location);
+        else
+          ret = gogo->backend()->imag_part_expression(bcomplex, location);
+        return expr_to_tree(ret);
       }
 
     case BUILTIN_COMPLEX:
       {
 	const Expression_list* args = this->args();
 	go_assert(args != NULL && args->size() == 2);
-	tree r = args->front()->get_tree(context);
-	tree i = args->back()->get_tree(context);
-	if (r == error_mark_node || i == error_mark_node)
-	  return error_mark_node;
-	go_assert(TYPE_MAIN_VARIANT(TREE_TYPE(r))
-		   == TYPE_MAIN_VARIANT(TREE_TYPE(i)));
-	go_assert(SCALAR_FLOAT_TYPE_P(TREE_TYPE(r)));
-	return fold_build2_loc(location.gcc_location(), COMPLEX_EXPR,
-			       build_complex_type(TREE_TYPE(r)),
-			       r, i);
+	Bexpression* breal = tree_to_expr(args->front()->get_tree(context));
+	Bexpression* bimag = tree_to_expr(args->back()->get_tree(context));
+        Bexpression* ret =
+            gogo->backend()->complex_expression(breal, bimag, location);
+        return expr_to_tree(ret);
       }
 
     default:
@@ -15454,7 +15243,8 @@ Type*
 Conditional_expression::do_type()
 {
   Type* result_type = Type::make_void_type();
-  if (this->then_->type() == this->else_->type())
+  if (Type::are_identical(this->then_->type(), this->else_->type(), false,
+                          NULL))
     result_type = this->then_->type();
   else if (this->then_->is_nil_expression()
            || this->else_->is_nil_expression())
