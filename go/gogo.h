@@ -630,11 +630,6 @@ class Gogo
   tree
   go_string_constant_tree(const std::string&);
 
-  // Receive a value from a channel.
-  static tree
-  receive_from_channel(tree type_tree, tree type_descriptor_tree, tree channel,
-		       Location);
-
  private:
   // During parsing, we keep a stack of functions.  Each function on
   // the stack is one that we are currently parsing.  For each

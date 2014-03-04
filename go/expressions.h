@@ -2313,7 +2313,7 @@ class Receive_expression : public Expression
  public:
   Receive_expression(Expression* channel, Location location)
     : Expression(EXPRESSION_RECEIVE, location),
-      channel_(channel)
+      channel_(channel), temp_receiver_(NULL)
   { }
 
   // Return the channel.
@@ -2332,6 +2332,9 @@ class Receive_expression : public Expression
 
   Type*
   do_type();
+
+  Expression*
+  do_flatten(Gogo*, Named_object*, Statement_inserter*);
 
   void
   do_determine_type(const Type_context*)
@@ -2359,6 +2362,8 @@ class Receive_expression : public Expression
  private:
   // The channel from which we are receiving.
   Expression* channel_;
+  // A temporary reference to the variable storing the received data.
+  Temporary_statement* temp_receiver_;
 };
 
 // A numeric constant.  This is used both for untyped constants and

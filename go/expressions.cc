@@ -14114,6 +14114,32 @@ Receive_expression::do_check_types(Gogo*)
     }
 }
 
+// Flattening for receive expressions creates a temporary variable to store
+// received data in for receives.
+
+Expression*
+Receive_expression::do_flatten(Gogo*, Named_object*,
+                               Statement_inserter* inserter)
+{
+  Channel_type* channel_type = this->channel_->type()->channel_type();
+  if (channel_type == NULL)
+    {
+      go_assert(saw_errors());
+      return this;
+    }
+
+  Type* element_type = channel_type->element_type();
+  if (this->temp_receiver_ == NULL)
+    {
+      this->temp_receiver_ = Statement::make_temporary(element_type, NULL,
+						       this->location());
+      this->temp_receiver_->set_is_address_taken();
+      inserter->insert(this->temp_receiver_);
+    }
+
+  return this;
+}
+
 // Get a tree for a receive expression.
 
 tree
@@ -14127,19 +14153,18 @@ Receive_expression::do_get_tree(Translate_context* context)
       go_assert(this->channel_->type()->is_error());
       return error_mark_node;
     }
-
   Expression* td = Expression::make_type_descriptor(channel_type, loc);
-  tree td_tree = td->get_tree(context);
 
-  Type* element_type = channel_type->element_type();
-  Btype* element_type_btype = element_type->get_backend(context->gogo());
-  tree element_type_tree = type_to_tree(element_type_btype);
-
-  tree channel = this->channel_->get_tree(context);
-  if (element_type_tree == error_mark_node || channel == error_mark_node)
-    return error_mark_node;
-
-  return Gogo::receive_from_channel(element_type_tree, td_tree, channel, loc);
+  Expression* recv_ref =
+    Expression::make_temporary_reference(this->temp_receiver_, loc);
+  Expression* recv_addr =
+    Expression::make_temporary_reference(this->temp_receiver_, loc);
+  recv_addr = Expression::make_unary(OPERATOR_AND, recv_addr, loc);
+  Expression* recv =
+    Runtime::make_call(Runtime::RECEIVE, loc, 3,
+		       td, this->channel_, recv_addr);
+  recv = Expression::make_compound(recv, recv_ref, loc);
+  return recv->get_tree(context);
 }
 
 // Dump ast representation for a receive expression.

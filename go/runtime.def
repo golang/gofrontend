@@ -142,11 +142,8 @@ DEF_GO_RUNTIME(SEND_SMALL, "__go_send_small", P3(TYPE, CHAN, UINT64), R0())
 // Send a big value on a channel.
 DEF_GO_RUNTIME(SEND_BIG, "__go_send_big", P3(TYPE, CHAN, POINTER), R0())
 
-// Receive a small value from a channel.
-DEF_GO_RUNTIME(RECEIVE_SMALL, "__go_receive_small", P2(TYPE, CHAN), R1(UINT64))
-
-// Receive a big value from a channel.
-DEF_GO_RUNTIME(RECEIVE_BIG, "__go_receive_big", P3(TYPE, CHAN, POINTER), R0())
+// Receive a value from a channel.
+DEF_GO_RUNTIME(RECEIVE, "__go_receive", P3(TYPE, CHAN, POINTER), R0())
 
 // Receive a value from a channel returning whether it is closed.
 DEF_GO_RUNTIME(CHANRECV2, "runtime.chanrecv2", P3(TYPE, CHAN, POINTER),
