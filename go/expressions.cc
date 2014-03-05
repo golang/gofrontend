@@ -3231,77 +3231,50 @@ Type_conversion_expression::do_check_types(Gogo*)
 tree
 Type_conversion_expression::do_get_tree(Translate_context* context)
 {
-  Gogo* gogo = context->gogo();
-  tree type_tree = type_to_tree(this->type_->get_backend(gogo));
-  tree expr_tree = this->expr_->get_tree(context);
-
-  if (type_tree == error_mark_node
-      || expr_tree == error_mark_node
-      || TREE_TYPE(expr_tree) == error_mark_node)
-    return error_mark_node;
-
-  if (TYPE_MAIN_VARIANT(type_tree) == TYPE_MAIN_VARIANT(TREE_TYPE(expr_tree)))
-    return fold_convert(type_tree, expr_tree);
-
   Type* type = this->type_;
   Type* expr_type = this->expr_->type();
-  tree ret;
-  if (type->interface_type() != NULL || expr_type->interface_type() != NULL)
+
+  Gogo* gogo = context->gogo();
+  Btype* btype = type->get_backend(gogo);
+  Bexpression* bexpr = tree_to_expr(this->expr_->get_tree(context));
+  Location loc = this->location();
+
+  if (Type::are_identical(type, expr_type, false, NULL))
+    {
+      Bexpression* bconvert =
+        gogo->backend()->convert_expression(btype, bexpr, loc);
+      return expr_to_tree(bconvert);
+    }
+  else if (type->interface_type() != NULL
+	   || expr_type->interface_type() != NULL)
     {
       Expression* conversion =
           Expression::convert_for_assignment(context, type, this->expr_,
                                              this->location());
-      ret = conversion->get_tree(context);
-    }
-  else if (type->integer_type() != NULL)
-    {
-      if (expr_type->integer_type() != NULL
-	  || expr_type->float_type() != NULL
-	  || expr_type->is_unsafe_pointer_type())
-	ret = fold(convert_to_integer(type_tree, expr_tree));
-      else
-	go_unreachable();
-    }
-  else if (type->float_type() != NULL)
-    {
-      if (expr_type->integer_type() != NULL
-	  || expr_type->float_type() != NULL)
-	ret = fold(convert_to_real(type_tree, expr_tree));
-      else
-	go_unreachable();
-    }
-  else if (type->complex_type() != NULL)
-    {
-      if (expr_type->complex_type() != NULL)
-	ret = fold(convert_to_complex(type_tree, expr_tree));
-      else
-	go_unreachable();
+      return conversion->get_tree(context);
     }
   else if (type->is_string_type()
 	   && expr_type->integer_type() != NULL)
     {
-      Type* int_type = Type::lookup_integer_type("int");
-      tree int_type_tree = type_to_tree(int_type->get_backend(gogo));
-
-      expr_tree = fold_convert(int_type_tree, expr_tree);
-      if (tree_fits_shwi_p (expr_tree))
+      mpz_t intval;
+      Numeric_constant nc;
+      if (this->expr_->numeric_constant_value(&nc)
+	  && nc.to_int(&intval)
+	  && mpz_fits_ushort_p(intval))
 	{
-	  HOST_WIDE_INT intval = tree_to_shwi (expr_tree);
 	  std::string s;
-	  Lex::append_char(intval, true, &s, this->location());
-	  Expression* se = Expression::make_string(s, this->location());
+	  Lex::append_char(mpz_get_ui(intval), true, &s, loc);
+	  mpz_clear(intval);
+	  Expression* se = Expression::make_string(s, loc);
 	  return se->get_tree(context);
 	}
 
       Expression* i2s_expr =
-          Runtime::make_call(Runtime::INT_TO_STRING, this->location(), 1,
-                             this->expr_);
-      i2s_expr = Expression::make_cast(type, i2s_expr, this->location());
-      ret = i2s_expr->get_tree(context);
+          Runtime::make_call(Runtime::INT_TO_STRING, loc, 1, this->expr_);
+      return Expression::make_cast(type, i2s_expr, loc)->get_tree(context);
     }
   else if (type->is_string_type() && expr_type->is_slice_type())
     {
-      Location location = this->location();
       Array_type* a = expr_type->array_type();
       Type* e = a->element_type()->forwarded();
       go_assert(e->integer_type() != NULL);
@@ -3317,50 +3290,50 @@ Type_conversion_expression::do_get_tree(Translate_context* context)
         }
       Expression* valptr = a->get_value_pointer(gogo, this->expr_);
       Expression* len = a->get_length(gogo, this->expr_);
-      Expression* a2s_expr = Runtime::make_call(code, location, 2, valptr, len);
-      ret = a2s_expr->get_tree(context);
+      return Runtime::make_call(code, loc, 2, valptr, len)->get_tree(context);
     }
   else if (type->is_slice_type() && expr_type->is_string_type())
     {
       Type* e = type->array_type()->element_type()->forwarded();
       go_assert(e->integer_type() != NULL);
 
-      Expression* s2a_expr;
+      Runtime::Function code;
       if (e->integer_type()->is_byte())
-        s2a_expr = Runtime::make_call(Runtime::STRING_TO_BYTE_ARRAY,
-                                      this->location(), 1, this->expr_);
+	code = Runtime::STRING_TO_BYTE_ARRAY;
       else
 	{
 	  go_assert(e->integer_type()->is_rune());
-          s2a_expr = Runtime::make_call(Runtime::STRING_TO_INT_ARRAY,
-                                        this->location(), 1, this->expr_);
+	  code = Runtime::STRING_TO_INT_ARRAY;
 	}
-      s2a_expr = Expression::make_unsafe_cast(type, s2a_expr,
-					      this->location());
-      ret = s2a_expr->get_tree(context);
+      Expression* s2a = Runtime::make_call(code, loc, 1, this->expr_);
+      return Expression::make_unsafe_cast(type, s2a, loc)->get_tree(context);
+    }
+  else if (type->is_numeric_type())
+    {
+      go_assert(Type::are_convertible(type, expr_type, NULL));
+      Bexpression* bconvert =
+	gogo->backend()->convert_expression(btype, bexpr, loc);
+      return expr_to_tree(bconvert);
     }
   else if ((type->is_unsafe_pointer_type()
-	    && expr_type->points_to() != NULL)
-	   || (expr_type->is_unsafe_pointer_type()
-	       && type->points_to() != NULL))
-    ret = fold_convert(type_tree, expr_tree);
-  else if (type->is_unsafe_pointer_type()
-	   && expr_type->integer_type() != NULL)
-    ret = convert_to_pointer(type_tree, expr_tree);
-  else if (this->may_convert_function_types_
-	   && type->function_type() != NULL
-	   && expr_type->function_type() != NULL)
-    ret = fold_convert_loc(this->location().gcc_location(), type_tree,
-                           expr_tree);
+	    && (expr_type->points_to() != NULL
+                || expr_type->integer_type()))
+           || (expr_type->is_unsafe_pointer_type()
+	       && type->points_to() != NULL)
+           || (this->may_convert_function_types_
+               && type->function_type() != NULL
+               && expr_type->function_type() != NULL))
+    {
+      Bexpression* bconvert =
+	gogo->backend()->convert_expression(btype, bexpr, loc);
+      return expr_to_tree(bconvert);
+    }
   else
     {
       Expression* conversion =
-          Expression::convert_for_assignment(context, type, this->expr_,
-                                             this->location());
-      ret = conversion->get_tree(context);
+          Expression::convert_for_assignment(context, type, this->expr_, loc);
+      return conversion->get_tree(context);
     }
-
-  return ret;
 }
 
 // Output a type conversion in a constant expression.
@@ -3474,25 +3447,9 @@ Unsafe_type_conversion_expression::do_get_tree(Translate_context* context)
 
   Type* t = this->type_;
   Type* et = this->expr_->type();
-
-  tree type_tree = type_to_tree(this->type_->get_backend(context->gogo()));
-  tree expr_tree = this->expr_->get_tree(context);
-  if (type_tree == error_mark_node || expr_tree == error_mark_node)
-    return error_mark_node;
-
-  Location loc = this->location();
-
-  bool use_view_convert = false;
-  if (t->is_slice_type())
-    {
-      go_assert(et->is_slice_type());
-      use_view_convert = true;
-    }
-  else if (t->array_type() != NULL && !t->is_slice_type())
-    {
-      go_assert(et->array_type() != NULL && !et->is_slice_type());
-      use_view_convert = true;
-    }
+  if (t->array_type() != NULL)
+    go_assert(et->array_type() != NULL
+              && t->is_slice_type() == et->is_slice_type());
   else if (t->struct_type() != NULL)
     {
       if (t->named_type() != NULL
@@ -3505,7 +3462,6 @@ Unsafe_type_conversion_expression::do_get_tree(Translate_context* context)
 
       go_assert(et->struct_type() != NULL
                 && Type::are_convertible(t, et, NULL));
-      use_view_convert = true;
     }
   else if (t->map_type() != NULL)
     go_assert(et->map_type() != NULL);
@@ -3519,36 +3475,29 @@ Unsafe_type_conversion_expression::do_get_tree(Translate_context* context)
               || et->is_nil_type());
   else if (et->is_unsafe_pointer_type())
     go_assert(t->points_to() != NULL);
-  else if (t->interface_type() != NULL && !t->interface_type()->is_empty())
+  else if (t->interface_type() != NULL)
     {
+      bool empty_iface = t->interface_type()->is_empty();
       go_assert(et->interface_type() != NULL
-		 && !et->interface_type()->is_empty());
-      use_view_convert = true;
-    }
-  else if (t->interface_type() != NULL && t->interface_type()->is_empty())
-    {
-      go_assert(et->interface_type() != NULL
-		 && et->interface_type()->is_empty());
-      use_view_convert = true;
+                && et->interface_type()->is_empty() == empty_iface);
     }
   else if (t->integer_type() != NULL)
-    {
-      go_assert(et->is_boolean_type()
-		 || et->integer_type() != NULL
-		 || et->function_type() != NULL
-		 || et->points_to() != NULL
-		 || et->map_type() != NULL
-		 || et->channel_type() != NULL);
-      return convert_to_integer(type_tree, expr_tree);
-    }
+    go_assert(et->is_boolean_type()
+              || et->integer_type() != NULL
+              || et->function_type() != NULL
+              || et->points_to() != NULL
+              || et->map_type() != NULL
+              || et->channel_type() != NULL);
   else
     go_unreachable();
 
-  if (use_view_convert)
-    return fold_build1_loc(loc.gcc_location(), VIEW_CONVERT_EXPR, type_tree,
-                           expr_tree);
-  else
-    return fold_convert_loc(loc.gcc_location(), type_tree, expr_tree);
+  Gogo* gogo = context->gogo();
+  Btype* btype = t->get_backend(gogo);
+  Bexpression* bexpr = tree_to_expr(this->expr_->get_tree(context));
+  Location loc = this->location();
+  Bexpression* ret =
+    gogo->backend()->convert_expression(btype, bexpr, loc);
+  return expr_to_tree(ret);
 }
 
 // Dump ast representation for an unsafe type conversion expression.
