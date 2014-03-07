@@ -12118,64 +12118,38 @@ Struct_construction_expression::do_get_tree(Translate_context* context)
 {
   Gogo* gogo = context->gogo();
 
+  Btype* btype = this->type_->get_backend(gogo);
   if (this->vals_ == NULL)
-    {
-      Btype* btype = this->type_->get_backend(gogo);
-      return expr_to_tree(gogo->backend()->zero_expression(btype));
-    }
+    return expr_to_tree(gogo->backend()->zero_expression(btype));
 
-  tree type_tree = type_to_tree(this->type_->get_backend(gogo));
-  if (type_tree == error_mark_node)
-    return error_mark_node;
-  go_assert(TREE_CODE(type_tree) == RECORD_TYPE);
-
-  bool is_constant = true;
   const Struct_field_list* fields = this->type_->struct_type()->fields();
-  vec<constructor_elt, va_gc> *elts;
-  vec_alloc (elts, fields->size());
-  Struct_field_list::const_iterator pf = fields->begin();
   Expression_list::const_iterator pv = this->vals_->begin();
-  for (tree field = TYPE_FIELDS(type_tree);
-       field != NULL_TREE;
-       field = DECL_CHAIN(field), ++pf)
+  std::vector<Bexpression*> init;
+  for (Struct_field_list::const_iterator pf = fields->begin();
+       pf != fields->end();
+       ++pf)
     {
-      go_assert(pf != fields->end());
-
       Btype* fbtype = pf->type()->get_backend(gogo);
-
-      tree val;
       if (pv == this->vals_->end())
-	val = expr_to_tree(gogo->backend()->zero_expression(fbtype));
+        init.push_back(gogo->backend()->zero_expression(fbtype));
       else if (*pv == NULL)
 	{
-	  val = expr_to_tree(gogo->backend()->zero_expression(fbtype));
+          init.push_back(gogo->backend()->zero_expression(fbtype));
 	  ++pv;
 	}
       else
 	{
-          Expression* val_expr =
+          Expression* val =
               Expression::convert_for_assignment(context, pf->type(),
                                                  *pv, this->location());
-          val = val_expr->get_tree(context);
+          init.push_back(tree_to_expr(val->get_tree(context)));
 	  ++pv;
 	}
-
-      if (val == error_mark_node || TREE_TYPE(val) == error_mark_node)
-	return error_mark_node;
-
-      constructor_elt empty = {NULL, NULL};
-      constructor_elt* elt = elts->quick_push(empty);
-      elt->index = field;
-      elt->value = val;
-      if (!TREE_CONSTANT(val))
-	is_constant = false;
     }
-  go_assert(pf == fields->end());
 
-  tree ret = build_constructor(type_tree, elts);
-  if (is_constant)
-    TREE_CONSTANT(ret) = 1;
-  return ret;
+  Bexpression* ret =
+      gogo->backend()->constructor_expression(btype, init, this->location());
+  return expr_to_tree(ret);
 }
 
 // Export a struct construction.
