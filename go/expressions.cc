@@ -468,54 +468,71 @@ Expression::backend_numeric_constant_expression(Translate_context* context,
   return ret;
 }
 
-// Return a tree which evaluates to true if VAL, of arbitrary integer
-// type, is negative or is more than the maximum value of BOUND_TYPE.
-// If SOFAR is not NULL, it is or'red into the result.  The return
-// value may be NULL if SOFAR is NULL.
+// Return an expression which evaluates to true if VAL, of arbitrary integer
+// type, is negative or is more than the maximum value of the Go type "int".
 
-tree
-Expression::check_bounds(tree val, tree bound_type, tree sofar,
-			 Location loc)
+Expression*
+Expression::check_bounds(Expression* val, Location loc)
 {
-  tree val_type = TREE_TYPE(val);
-  tree ret = NULL_TREE;
+  Type* val_type = val->type();
+  Type* bound_type = Type::lookup_integer_type("int");
 
-  if (!TYPE_UNSIGNED(val_type))
+  int val_type_size;
+  bool val_is_unsigned = false;
+  if (val_type->integer_type() != NULL)
     {
-      ret = fold_build2_loc(loc.gcc_location(), LT_EXPR, boolean_type_node, val,
-			    build_int_cst(val_type, 0));
-      if (ret == boolean_false_node)
-	ret = NULL_TREE;
+      val_type_size = val_type->integer_type()->bits();
+      val_is_unsigned = val_type->integer_type()->is_unsigned();
+    }
+  else
+    {
+      if (!val_type->is_numeric_type()
+          || !Type::are_convertible(bound_type, val_type, NULL))
+        {
+          go_assert(saw_errors());
+          return Expression::make_boolean(true, loc);
+        }
+
+      if (val_type->complex_type() != NULL)
+        val_type_size = val_type->complex_type()->bits();
+      else
+        val_type_size = val_type->float_type()->bits();
     }
 
-  HOST_WIDE_INT val_type_size = int_size_in_bytes(val_type);
-  HOST_WIDE_INT bound_type_size = int_size_in_bytes(bound_type);
-  go_assert(val_type_size != -1 && bound_type_size != -1);
+  Expression* negative_index = Expression::make_boolean(false, loc);
+  Expression* index_overflows = Expression::make_boolean(false, loc);
+  if (!val_is_unsigned)
+    {
+      mpz_t zval;
+      mpz_init_set_ui(zval, 0UL);
+      Expression* zero = Expression::make_integer(&zval, val_type, loc);
+      mpz_clear(zval);
+
+      negative_index = Expression::make_binary(OPERATOR_LT, val, zero, loc);
+    }
+
+  int bound_type_size = bound_type->integer_type()->bits();
   if (val_type_size > bound_type_size
       || (val_type_size == bound_type_size
-	  && TYPE_UNSIGNED(val_type)
-	  && !TYPE_UNSIGNED(bound_type)))
+	  && val_is_unsigned))
     {
-      tree max = TYPE_MAX_VALUE(bound_type);
-      tree big = fold_build2_loc(loc.gcc_location(), GT_EXPR, boolean_type_node,
-                                 val, fold_convert_loc(loc.gcc_location(),
-                                                       val_type, max));
-      if (big == boolean_false_node)
-	;
-      else if (ret == NULL_TREE)
-	ret = big;
-      else
-	ret = fold_build2_loc(loc.gcc_location(), TRUTH_OR_EXPR,
-                              boolean_type_node, ret, big);
+      mpz_t one;
+      mpz_init_set_ui(one, 1UL);
+
+      // maxval = 2^(bound_type_size - 1) - 1
+      mpz_t maxval;
+      mpz_init(maxval);
+      mpz_mul_2exp(maxval, one, bound_type_size - 1);
+      mpz_sub_ui(maxval, maxval, 1);
+      Expression* max = Expression::make_integer(&maxval, val_type, loc);
+      mpz_clear(one);
+      mpz_clear(maxval);
+
+      index_overflows = Expression::make_binary(OPERATOR_GT, val, max, loc);
     }
 
-  if (ret == NULL_TREE)
-    return sofar;
-  else if (sofar == NULL_TREE)
-    return ret;
-  else
-    return fold_build2_loc(loc.gcc_location(), TRUTH_OR_EXPR, boolean_type_node,
-			   sofar, ret);
+  return Expression::make_binary(OPERATOR_OROR, negative_index, index_overflows,
+                                 loc);
 }
 
 void
@@ -9986,6 +10003,9 @@ class Array_index_expression : public Expression
   int
   do_traverse(Traverse*);
 
+  Expression*
+  do_flatten(Gogo*, Named_object*, Statement_inserter*);
+
   Type*
   do_type();
 
@@ -9994,9 +10014,6 @@ class Array_index_expression : public Expression
 
   void
   do_check_types(Gogo*);
-
-  Expression*
-  do_flatten(Gogo*, Named_object*, Statement_inserter*);
 
   Expression*
   do_copy()
@@ -10239,19 +10256,41 @@ Array_index_expression::do_check_types(Gogo*)
     }
 }
 
-// Flatten array indexing by using a temporary variable for slices.
+// Flatten array indexing by using temporary variables for slices and indexes.
 
 Expression*
 Array_index_expression::do_flatten(Gogo*, Named_object*,
                                    Statement_inserter* inserter)
 {
   Location loc = this->location();
+  Temporary_statement* temp;
   if (this->array_->type()->is_slice_type() && !this->array_->is_variable())
     {
-      Temporary_statement* temp = Statement::make_temporary(NULL, this->array_, loc);
+      temp = Statement::make_temporary(NULL, this->array_, loc);
       inserter->insert(temp);
       this->array_ = Expression::make_temporary_reference(temp, loc);
     }
+  if (!this->start_->is_variable())
+    {
+      temp = Statement::make_temporary(NULL, this->start_, loc);
+      inserter->insert(temp);
+      this->start_ = Expression::make_temporary_reference(temp, loc);
+    }
+  if (this->end_ != NULL
+      && !this->end_->is_nil_expression()
+      && !this->end_->is_variable())
+    {
+      temp = Statement::make_temporary(NULL, this->end_, loc);
+      inserter->insert(temp);
+      this->end_ = Expression::make_temporary_reference(temp, loc);
+    }
+  if (this->cap_ != NULL && !this->cap_->is_variable())
+    {
+      temp = Statement::make_temporary(NULL, this->cap_, loc);
+      inserter->insert(temp);
+      this->cap_ = Expression::make_temporary_reference(temp, loc);
+    }
+
   return this;
 }
 
@@ -10278,9 +10317,6 @@ Array_index_expression::do_is_addressable() const
 tree
 Array_index_expression::do_get_tree(Translate_context* context)
 {
-  Gogo* gogo = context->gogo();
-  Location loc = this->location();
-
   Array_type* array_type = this->array_->type()->array_type();
   if (array_type == NULL)
     {
@@ -10289,66 +10325,40 @@ Array_index_expression::do_get_tree(Translate_context* context)
     }
   go_assert(!array_type->is_slice_type() || this->array_->is_variable());
 
-  tree type_tree = type_to_tree(array_type->get_backend(gogo));
-  if (type_tree == error_mark_node)
-    return error_mark_node;
+  Location loc = this->location();
+  Gogo* gogo = context->gogo();
 
-  tree length_tree = NULL_TREE;
+  Btype* int_btype = Type::lookup_integer_type("int")->get_backend(gogo);
+
+  // We need to convert the length and capacity to the Go "int" type here
+  // because the length of a fixed-length array could be of type "uintptr"
+  // and gimple disallows binary operations between "uintptr" and other
+  // integer types. FIXME.
+  Bexpression* length = NULL;
   if (this->end_ == NULL || this->end_->is_nil_expression())
     {
       Expression* len = array_type->get_length(gogo, this->array_);
-      length_tree = len->get_tree(context);
-      if (length_tree == error_mark_node)
-	return error_mark_node;
-      length_tree = save_expr(length_tree);
+      length = tree_to_expr(len->get_tree(context));
+      length = gogo->backend()->convert_expression(int_btype, length, loc);
     }
 
-  tree capacity_tree = NULL_TREE;
+  Bexpression* capacity = NULL;
   if (this->end_ != NULL)
     {
       Expression* cap = array_type->get_capacity(gogo, this->array_);
-      capacity_tree = cap->get_tree(context);
-      if (capacity_tree == error_mark_node)
-	return error_mark_node;
-      capacity_tree = save_expr(capacity_tree);
+      capacity = tree_to_expr(cap->get_tree(context));
+      capacity = gogo->backend()->convert_expression(int_btype, capacity, loc);
     }
 
-  tree cap_arg = capacity_tree;
+  Bexpression* cap_arg = capacity;
   if (this->cap_ != NULL)
     {
-      cap_arg = this->cap_->get_tree(context);
-      if (cap_arg == error_mark_node)
-        return error_mark_node;
+      cap_arg = tree_to_expr(this->cap_->get_tree(context));
+      cap_arg = gogo->backend()->convert_expression(int_btype, cap_arg, loc);
     }
 
-  tree length_type = (length_tree != NULL_TREE
-		      ? TREE_TYPE(length_tree)
-		      : TREE_TYPE(cap_arg));
-
-  tree bad_index = boolean_false_node;
-
-  tree start_tree = this->start_->get_tree(context);
-  if (start_tree == error_mark_node)
-    return error_mark_node;
-  if (!DECL_P(start_tree))
-    start_tree = save_expr(start_tree);
-  if (!INTEGRAL_TYPE_P(TREE_TYPE(start_tree)))
-    start_tree = convert_to_integer(length_type, start_tree);
-
-  bad_index = Expression::check_bounds(start_tree, length_type, bad_index,
-				       loc);
-
-  start_tree = fold_convert_loc(loc.gcc_location(), length_type, start_tree);
-  bad_index = fold_build2_loc(loc.gcc_location(), TRUTH_OR_EXPR,
-                              boolean_type_node, bad_index,
-			      fold_build2_loc(loc.gcc_location(),
-					      (this->end_ == NULL
-					       ? GE_EXPR
-					       : GT_EXPR),
-					      boolean_type_node, start_tree,
-					      (this->end_ == NULL
-					       ? length_tree
-					       : capacity_tree)));
+  if (length == NULL)
+    length = cap_arg;
 
   int code = (array_type->length() != NULL
 	      ? (this->end_ == NULL
@@ -10357,168 +10367,124 @@ Array_index_expression::do_get_tree(Translate_context* context)
 	      : (this->end_ == NULL
 		 ? RUNTIME_ERROR_SLICE_INDEX_OUT_OF_BOUNDS
 		 : RUNTIME_ERROR_SLICE_SLICE_OUT_OF_BOUNDS));
-  tree crash = gogo->runtime_error(code, loc)->get_tree(context);
+  Bexpression* crash =
+      tree_to_expr(gogo->runtime_error(code, loc)->get_tree(context));
+
+  Expression* bounds_check = Expression::check_bounds(this->start_, loc);
+  Bexpression* bad_index = tree_to_expr(bounds_check->get_tree(context));
+
+  Bexpression* start = tree_to_expr(this->start_->get_tree(context));
+  start = gogo->backend()->convert_expression(int_btype, start, loc);
+  Bexpression* start_too_large =
+    gogo->backend()->binary_expression((this->end_ == NULL
+					? OPERATOR_GE
+					: OPERATOR_GT),
+                                       start,
+				       (this->end_ == NULL
+					? length
+					: capacity),
+                                       loc);
+  bad_index = gogo->backend()->binary_expression(OPERATOR_OROR, start_too_large,
+						 bad_index, loc);
 
   if (this->end_ == NULL)
     {
       // Simple array indexing.  This has to return an l-value, so
-      // wrap the index check into START_TREE.
-      start_tree = build2(COMPOUND_EXPR, TREE_TYPE(start_tree),
-			  build3(COND_EXPR, void_type_node,
-				 bad_index, crash, NULL_TREE),
-			  start_tree);
-      start_tree = fold_convert_loc(loc.gcc_location(), sizetype, start_tree);
+      // wrap the index check into START.
+      start =
+	gogo->backend()->conditional_expression(int_btype, bad_index,
+						crash, start, loc);
 
+      Bexpression* ret;
       if (array_type->length() != NULL)
 	{
-	  // Fixed array.
-	  tree array_tree = this->array_->get_tree(context);
-	  if (array_tree == error_mark_node)
-	    return error_mark_node;
-	  return build4(ARRAY_REF, TREE_TYPE(type_tree), array_tree,
-			start_tree, NULL_TREE, NULL_TREE);
+	  Bexpression* array = tree_to_expr(this->array_->get_tree(context));
+	  ret = gogo->backend()->array_index_expression(array, start, loc);
 	}
       else
 	{
-	  // Open array.
-          Expression* valptr =
+	  // Slice.
+	  Expression* valptr =
               array_type->get_value_pointer(gogo, this->array_);
-	  tree values = valptr->get_tree(context);
-	  Type* element_type = array_type->element_type();
-	  Btype* belement_type = element_type->get_backend(gogo);
-	  tree element_type_tree = type_to_tree(belement_type);
-	  if (element_type_tree == error_mark_node)
-	    return error_mark_node;
-	  tree element_size = TYPE_SIZE_UNIT(element_type_tree);
-	  tree offset = fold_build2_loc(loc.gcc_location(), MULT_EXPR, sizetype,
-					start_tree, element_size);
-	  tree ptr = fold_build2_loc(loc.gcc_location(), POINTER_PLUS_EXPR,
-				     TREE_TYPE(values), values, offset);
-	  return build_fold_indirect_ref(ptr);
+	  Bexpression* ptr = tree_to_expr(valptr->get_tree(context));
+          ptr = gogo->backend()->pointer_offset_expression(ptr, start, loc);
+	  ret = gogo->backend()->indirect_expression(ptr, true, loc);
 	}
+      return expr_to_tree(ret);
     }
 
   // Array slice.
 
   if (this->cap_ != NULL)
     {
-      if (!DECL_P(cap_arg))
-        cap_arg = save_expr(cap_arg);
-      if (!INTEGRAL_TYPE_P(TREE_TYPE(cap_arg)))
-        cap_arg = convert_to_integer(length_type, cap_arg);
+      bounds_check = Expression::check_bounds(this->cap_, loc);
+      Bexpression* bounds_bcheck =
+	tree_to_expr(bounds_check->get_tree(context));
+      bad_index =
+	gogo->backend()->binary_expression(OPERATOR_OROR, bounds_bcheck,
+					   bad_index, loc);
+      cap_arg = gogo->backend()->convert_expression(int_btype, cap_arg, loc);
 
-      bad_index = Expression::check_bounds(cap_arg, length_type, bad_index,
-                                           loc);
-      cap_arg = fold_convert_loc(loc.gcc_location(), length_type, cap_arg);
-
-      tree bad_cap = fold_build2_loc(loc.gcc_location(), TRUTH_OR_EXPR,
-                                     boolean_type_node,
-                                     fold_build2_loc(loc.gcc_location(),
-                                                     LT_EXPR, boolean_type_node,
-                                                     cap_arg, start_tree),
-                                     fold_build2_loc(loc.gcc_location(),
-                                                     GT_EXPR, boolean_type_node,
-                                                     cap_arg, capacity_tree));
-      bad_index = fold_build2_loc(loc.gcc_location(), TRUTH_OR_EXPR,
-                                  boolean_type_node, bad_index, bad_cap);
+      Bexpression* cap_too_small =
+	gogo->backend()->binary_expression(OPERATOR_LT, cap_arg, start, loc);
+      Bexpression* cap_too_large =
+	gogo->backend()->binary_expression(OPERATOR_GT, cap_arg, capacity, loc);
+      Bexpression* bad_cap =
+	gogo->backend()->binary_expression(OPERATOR_OROR, cap_too_small,
+					   cap_too_large, loc);
+      bad_index = gogo->backend()->binary_expression(OPERATOR_OROR, bad_cap,
+						     bad_index, loc);
     }
 
-  tree end_tree;
+  Bexpression* end;
   if (this->end_->is_nil_expression())
-    end_tree = length_tree;
+    end = length;
   else
     {
-      end_tree = this->end_->get_tree(context);
-      if (end_tree == error_mark_node)
-	return error_mark_node;
-      if (!DECL_P(end_tree))
-	end_tree = save_expr(end_tree);
-      if (!INTEGRAL_TYPE_P(TREE_TYPE(end_tree)))
-	end_tree = convert_to_integer(length_type, end_tree);
+      bounds_check = Expression::check_bounds(this->end_, loc);
+      Bexpression* bounds_bcheck =
+	tree_to_expr(bounds_check->get_tree(context));
 
-      bad_index = Expression::check_bounds(end_tree, length_type, bad_index,
-					   loc);
+      bad_index =
+	gogo->backend()->binary_expression(OPERATOR_OROR, bounds_bcheck,
+					   bad_index, loc);
 
-      end_tree = fold_convert_loc(loc.gcc_location(), length_type, end_tree);
-
-      tree bad_end = fold_build2_loc(loc.gcc_location(), TRUTH_OR_EXPR,
-                                     boolean_type_node,
-				     fold_build2_loc(loc.gcc_location(),
-                                                     LT_EXPR, boolean_type_node,
-						     end_tree, start_tree),
-				     fold_build2_loc(loc.gcc_location(),
-                                                     GT_EXPR, boolean_type_node,
-						     end_tree, cap_arg));
-      bad_index = fold_build2_loc(loc.gcc_location(), TRUTH_OR_EXPR,
-                                  boolean_type_node, bad_index, bad_end);
+      end = tree_to_expr(this->end_->get_tree(context));
+      end = gogo->backend()->convert_expression(int_btype, end, loc);
+      Bexpression* end_too_small =
+	gogo->backend()->binary_expression(OPERATOR_LT, end, start, loc);
+      Bexpression* end_too_large =
+	gogo->backend()->binary_expression(OPERATOR_GT, end, cap_arg, loc);
+      Bexpression* bad_end =
+	gogo->backend()->binary_expression(OPERATOR_OROR, end_too_small,
+					   end_too_large, loc);
+      bad_index = gogo->backend()->binary_expression(OPERATOR_OROR, bad_end,
+						     bad_index, loc);
     }
 
-
-  Type* element_type = array_type->element_type();
-  tree element_type_tree = type_to_tree(element_type->get_backend(gogo));
-  if (element_type_tree == error_mark_node)
-    return error_mark_node;
-  tree element_size = TYPE_SIZE_UNIT(element_type_tree);
-
-  tree offset = fold_build2_loc(loc.gcc_location(), MULT_EXPR, sizetype,
-				fold_convert_loc(loc.gcc_location(), sizetype,
-                                                 start_tree),
-				element_size);
-
   Expression* valptr = array_type->get_value_pointer(gogo, this->array_);
-  tree value_pointer = valptr->get_tree(context);
-  if (value_pointer == error_mark_node)
-    return error_mark_node;
+  Bexpression* val = tree_to_expr(valptr->get_tree(context));
+  val = gogo->backend()->pointer_offset_expression(val, start, loc);
 
-  value_pointer = fold_build2_loc(loc.gcc_location(), POINTER_PLUS_EXPR,
-				  TREE_TYPE(value_pointer),
-				  value_pointer, offset);
+  Bexpression* result_length =
+    gogo->backend()->binary_expression(OPERATOR_MINUS, end, start, loc);
 
-  tree result_length_tree = fold_build2_loc(loc.gcc_location(), MINUS_EXPR,
-                                            length_type, end_tree, start_tree);
+  Bexpression* result_capacity =
+    gogo->backend()->binary_expression(OPERATOR_MINUS, cap_arg, start, loc);
 
-  tree result_capacity_tree = fold_build2_loc(loc.gcc_location(), MINUS_EXPR,
-                                              length_type, cap_arg, start_tree);
+  Btype* struct_btype = this->type()->get_backend(gogo);
+  std::vector<Bexpression*> init;
+  init.push_back(val);
+  init.push_back(result_length);
+  init.push_back(result_capacity);
 
-  tree struct_tree = type_to_tree(this->type()->get_backend(gogo));
-  go_assert(TREE_CODE(struct_tree) == RECORD_TYPE);
+  Bexpression* ctor =
+    gogo->backend()->constructor_expression(struct_btype, init, loc);
+  Bexpression* ret =
+    gogo->backend()->conditional_expression(struct_btype, bad_index,
+					    crash, ctor, loc);
 
-  vec<constructor_elt, va_gc> *init;
-  vec_alloc (init, 3);
-
-  constructor_elt empty = {NULL, NULL};
-  constructor_elt* elt = init->quick_push(empty);
-  tree field = TYPE_FIELDS(struct_tree);
-  go_assert(strcmp(IDENTIFIER_POINTER(DECL_NAME(field)), "__values") == 0);
-  elt->index = field;
-  elt->value = value_pointer;
-
-  elt = init->quick_push(empty);
-  field = DECL_CHAIN(field);
-  go_assert(strcmp(IDENTIFIER_POINTER(DECL_NAME(field)), "__count") == 0);
-  elt->index = field;
-  elt->value = fold_convert_loc(loc.gcc_location(), TREE_TYPE(field),
-                                result_length_tree);
-
-  elt = init->quick_push(empty);
-  field = DECL_CHAIN(field);
-  go_assert(strcmp(IDENTIFIER_POINTER(DECL_NAME(field)), "__capacity") == 0);
-  elt->index = field;
-  elt->value = fold_convert_loc(loc.gcc_location(), TREE_TYPE(field),
-                                result_capacity_tree);
-
-  tree constructor = build_constructor(struct_tree, init);
-
-  if (TREE_CONSTANT(value_pointer)
-      && TREE_CONSTANT(result_length_tree)
-      && TREE_CONSTANT(result_capacity_tree))
-    TREE_CONSTANT(constructor) = 1;
-
-  return fold_build2_loc(loc.gcc_location(), COMPOUND_EXPR,
-                         TREE_TYPE(constructor),
-			 build3(COND_EXPR, void_type_node,
-				bad_index, crash, NULL_TREE),
-			 constructor);
+  return expr_to_tree(ret);
 }
 
 // Dump ast representation for an array index expression.
@@ -10555,6 +10521,9 @@ class String_index_expression : public Expression
  protected:
   int
   do_traverse(Traverse*);
+
+  Expression*
+  do_flatten(Gogo*, Named_object*, Statement_inserter*);
 
   Type*
   do_type();
@@ -10614,6 +10583,36 @@ String_index_expression::do_traverse(Traverse* traverse)
 	return TRAVERSE_EXIT;
     }
   return TRAVERSE_CONTINUE;
+}
+
+Expression*
+String_index_expression::do_flatten(Gogo*, Named_object*,
+                                    Statement_inserter* inserter)
+{
+  Temporary_statement* temp;
+  Location loc = this->location();
+  if (!this->string_->is_variable())
+    {
+      temp = Statement::make_temporary(NULL, this->string_, loc);
+      inserter->insert(temp);
+      this->string_ = Expression::make_temporary_reference(temp, loc);
+    }
+  if (!this->start_->is_variable())
+    {
+      temp = Statement::make_temporary(NULL, this->start_, loc);
+      inserter->insert(temp);
+      this->start_ = Expression::make_temporary_reference(temp, loc);
+    }
+  if (this->end_ != NULL
+      && !this->end_->is_nil_expression()
+      && !this->end_->is_variable())
+    {
+      temp = Statement::make_temporary(NULL, this->end_, loc);
+      inserter->insert(temp);
+      this->end_ = Expression::make_temporary_reference(temp, loc);
+    }
+
+  return this;
 }
 
 // Return the type of a string index.
@@ -10702,116 +10701,87 @@ tree
 String_index_expression::do_get_tree(Translate_context* context)
 {
   Location loc = this->location();
-
-  tree string_tree = this->string_->get_tree(context);
-  if (string_tree == error_mark_node)
-    return error_mark_node;
-
+  Expression* string_arg = this->string_;
   if (this->string_->type()->points_to() != NULL)
-    string_tree = build_fold_indirect_ref(string_tree);
-  if (!DECL_P(string_tree))
-    string_tree = save_expr(string_tree);
-  tree string_type = TREE_TYPE(string_tree);
+    string_arg = Expression::make_unary(OPERATOR_MULT, this->string_, loc);
 
-  Expression* length =
-    Expression::make_string_info(this->string_, STRING_INFO_LENGTH, loc);
-  tree length_tree = length->get_tree(context);
-  length_tree = save_expr(length_tree);
-
-  Type* int_type = Type::lookup_integer_type("int");
-  tree length_type = type_to_tree(int_type->get_backend(context->gogo()));
-
-  tree bad_index = boolean_false_node;
-
-  tree start_tree = this->start_->get_tree(context);
-  if (start_tree == error_mark_node)
-    return error_mark_node;
-  if (!DECL_P(start_tree))
-    start_tree = save_expr(start_tree);
-  if (!INTEGRAL_TYPE_P(TREE_TYPE(start_tree)))
-    start_tree = convert_to_integer(length_type, start_tree);
-
-  bad_index = Expression::check_bounds(start_tree, length_type, bad_index,
-				       loc);
-
-  start_tree = fold_convert_loc(loc.gcc_location(), length_type, start_tree);
+  Expression* bad_index = Expression::check_bounds(this->start_, loc);
 
   int code = (this->end_ == NULL
 	      ? RUNTIME_ERROR_STRING_INDEX_OUT_OF_BOUNDS
 	      : RUNTIME_ERROR_STRING_SLICE_OUT_OF_BOUNDS);
-  tree crash = context->gogo()->runtime_error(code, loc)->get_tree(context);
+
+  Gogo* gogo = context->gogo();
+  Bexpression* crash =
+      tree_to_expr(gogo->runtime_error(code, loc)->get_tree(context));
+
+  Type* int_type = Type::lookup_integer_type("int");
+
+  // It is possible that an error occurred earlier because the start index
+  // cannot be represented as an integer type.  In this case, we shouldn't
+  // try casting the starting index into an integer since
+  // Type_conversion_expression will fail to get the backend representation.
+  // FIXME.
+  if (this->start_->type()->integer_type() == NULL
+      && !Type::are_convertible(int_type, this->start_->type(), NULL))
+    {
+      go_assert(saw_errors());
+      return error_mark_node;
+    }
+
+  Expression* start = Expression::make_cast(int_type, this->start_, loc);
 
   if (this->end_ == NULL)
     {
-      bad_index = fold_build2_loc(loc.gcc_location(), TRUTH_OR_EXPR,
-                                  boolean_type_node, bad_index,
-				  fold_build2_loc(loc.gcc_location(), GE_EXPR,
-						  boolean_type_node,
-						  start_tree, length_tree));
+      Expression* length =
+          Expression::make_string_info(this->string_, STRING_INFO_LENGTH, loc);
 
+      Expression* start_too_large =
+          Expression::make_binary(OPERATOR_GE, start, length, loc);
+      bad_index = Expression::make_binary(OPERATOR_OROR, start_too_large,
+                                          bad_index, loc);
       Expression* bytes =
 	Expression::make_string_info(this->string_, STRING_INFO_DATA, loc);
-      tree bytes_tree = bytes->get_tree(context);
-      tree ptr = fold_build2_loc(loc.gcc_location(), POINTER_PLUS_EXPR,
-                                 TREE_TYPE(bytes_tree),
-				 bytes_tree,
-				 fold_convert_loc(loc.gcc_location(), sizetype,
-                                                  start_tree));
-      tree index = build_fold_indirect_ref_loc(loc.gcc_location(), ptr);
 
-      return build2(COMPOUND_EXPR, TREE_TYPE(index),
-		    build3(COND_EXPR, void_type_node,
-			   bad_index, crash, NULL_TREE),
-		    index);
+      Bexpression* bstart = tree_to_expr(start->get_tree(context));
+      Bexpression* ptr = tree_to_expr(bytes->get_tree(context));
+      ptr = gogo->backend()->pointer_offset_expression(ptr, bstart, loc);
+      Bexpression* index = gogo->backend()->indirect_expression(ptr, true, loc);
+
+      Btype* byte_btype = bytes->type()->points_to()->get_backend(gogo);
+      Bexpression* index_error = tree_to_expr(bad_index->get_tree(context));
+      Bexpression* ret =
+          gogo->backend()->conditional_expression(byte_btype, index_error,
+                                                  crash, index, loc);
+      return expr_to_tree(ret);
+    }
+
+  Expression* end = NULL;
+  if (this->end_->is_nil_expression())
+    {
+      mpz_t neg_one;
+      mpz_init_set_si(neg_one, -1);
+      end = Expression::make_integer(&neg_one, int_type, loc);
+      mpz_clear(neg_one);
     }
   else
     {
-      tree end_tree;
-      if (this->end_->is_nil_expression())
-	end_tree = build_int_cst(length_type, -1);
-      else
-	{
-	  end_tree = this->end_->get_tree(context);
-	  if (end_tree == error_mark_node)
-	    return error_mark_node;
-	  if (!DECL_P(end_tree))
-	    end_tree = save_expr(end_tree);
-	  if (!INTEGRAL_TYPE_P(TREE_TYPE(end_tree)))
-	    end_tree = convert_to_integer(length_type, end_tree);
-
-	  bad_index = Expression::check_bounds(end_tree, length_type,
-					       bad_index, loc);
-
-	  end_tree = fold_convert_loc(loc.gcc_location(), length_type,
-                                      end_tree);
-	}
-
-      static tree strslice_fndecl;
-      tree ret = Gogo::call_builtin(&strslice_fndecl,
-				    loc,
-				    "__go_string_slice",
-				    3,
-				    string_type,
-				    string_type,
-				    string_tree,
-				    length_type,
-				    start_tree,
-				    length_type,
-				    end_tree);
-      if (ret == error_mark_node)
-	return error_mark_node;
-      // This will panic if the bounds are out of range for the
-      // string.
-      TREE_NOTHROW(strslice_fndecl) = 0;
-
-      if (bad_index == boolean_false_node)
-	return ret;
-      else
-	return build2(COMPOUND_EXPR, TREE_TYPE(ret),
-		      build3(COND_EXPR, void_type_node,
-			     bad_index, crash, NULL_TREE),
-		      ret);
+      Expression* bounds_check = Expression::check_bounds(this->end_, loc);
+      bad_index =
+          Expression::make_binary(OPERATOR_OROR, bounds_check, bad_index, loc);
+      end = Expression::make_cast(int_type, this->end_, loc);
     }
+
+  Expression* strslice = Runtime::make_call(Runtime::STRING_SLICE, loc, 3,
+                                            string_arg, start, end);
+  Bexpression* bstrslice = tree_to_expr(strslice->get_tree(context));
+
+  Btype* str_btype = strslice->type()->get_backend(gogo);
+  Bexpression* index_error = tree_to_expr(bad_index->get_tree(context));
+  Bexpression* ret =
+      gogo->backend()->conditional_expression(str_btype, index_error,
+                                              crash, bstrslice, loc);
+  return expr_to_tree(ret);
 }
 
 // Dump ast representation for a string index expression.

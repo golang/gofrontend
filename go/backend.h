@@ -331,6 +331,17 @@ class Backend
   constructor_expression(Btype* btype, const std::vector<Bexpression*>& vals,
                          Location) = 0;
 
+  // Return an expression for the address of BASE[INDEX].
+  // BASE has a pointer type.  This is used for slice indexing.
+  virtual Bexpression*
+  pointer_offset_expression(Bexpression* base, Bexpression* index,
+                            Location) = 0;
+
+  // Return an expression for ARRAY[INDEX] as an l-value.  ARRAY is a valid
+  // fixed-length array, not a slice.
+  virtual Bexpression*
+  array_index_expression(Bexpression* array, Bexpression* index, Location) = 0;
+
   // Statements.
 
   // Create an error statement.  This is used for cases which should
