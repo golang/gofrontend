@@ -2730,16 +2730,8 @@ Const_expression::do_check_types(Gogo*)
 tree
 Const_expression::do_get_tree(Translate_context* context)
 {
-  Gogo* gogo = context->gogo();
-  tree type_tree;
-  if (this->type_ == NULL)
-    type_tree = NULL_TREE;
-  else
-    {
-      type_tree = type_to_tree(this->type_->get_backend(gogo));
-      if (type_tree == error_mark_node)
-	return error_mark_node;
-    }
+  if (this->type_ != NULL && this->type_->is_error())
+    return error_mark_node;
 
   // If the type has been set for this expression, but the underlying
   // object is an abstract int or float, we try to get the abstract
@@ -2759,24 +2751,15 @@ Const_expression::do_get_tree(Translate_context* context)
 	}
     }
 
-  tree const_tree = this->constant_->get_tree(gogo, context->function());
-  if (this->type_ == NULL
-      || const_tree == error_mark_node
-      || TREE_TYPE(const_tree) == error_mark_node)
-    return const_tree;
-
-  tree ret;
-  if (TYPE_MAIN_VARIANT(type_tree) == TYPE_MAIN_VARIANT(TREE_TYPE(const_tree)))
-    ret = fold_convert(type_tree, const_tree);
-  else if (TREE_CODE(type_tree) == INTEGER_TYPE)
-    ret = fold(convert_to_integer(type_tree, const_tree));
-  else if (TREE_CODE(type_tree) == REAL_TYPE)
-    ret = fold(convert_to_real(type_tree, const_tree));
-  else if (TREE_CODE(type_tree) == COMPLEX_TYPE)
-    ret = fold(convert_to_complex(type_tree, const_tree));
-  else
-    go_unreachable();
-  return ret;
+  Gogo* gogo = context->gogo();
+  Bexpression* ret =
+      tree_to_expr(this->constant_->get_tree(gogo, context->function()));
+  if (this->type_ != NULL)
+    {
+      Btype* btype = this->type_->get_backend(gogo);
+      ret = gogo->backend()->convert_expression(btype, ret, this->location());
+    }
+  return expr_to_tree(ret);
 }
 
 // Dump ast representation for constant expression.
