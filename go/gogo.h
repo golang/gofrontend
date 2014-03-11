@@ -617,19 +617,6 @@ class Gogo
   tree
   allocate_memory(Type *type, tree size, Location);
 
-  // Return a type to use for pointer to const char.
-  static tree
-  const_char_pointer_type_tree();
-
-  // Build a string constant with the right type.
-  static tree
-  string_constant_tree(const std::string&);
-
-  // Build a Go string constant.  This returns a pointer to the
-  // constant.
-  tree
-  go_string_constant_tree(const std::string&);
-
  private:
   // During parsing, we keep a stack of functions.  Each function on
   // the stack is one that we are currently parsing.  For each
@@ -675,11 +662,6 @@ class Gogo
   // Register variables with the garbage collector.
   void
   register_gc_vars(const std::vector<Named_object*>&, tree*);
-
-  // Build a pointer to a Go string constant.  This returns a pointer
-  // to the pointer.
-  tree
-  ptr_go_string_constant_tree(const std::string&);
 
   // Type used to map import names to packages.
   typedef std::map<std::string, Package*> Imports;

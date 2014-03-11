@@ -1530,7 +1530,23 @@ String_expression::do_determine_type(const Type_context* context)
 tree
 String_expression::do_get_tree(Translate_context* context)
 {
-  return context->gogo()->go_string_constant_tree(this->val_);
+  Gogo* gogo = context->gogo();
+  Btype* btype = Type::make_string_type()->get_backend(gogo);
+
+  Location loc = this->location();
+  std::vector<Bexpression*> init(2);
+  Bexpression* str_cst =
+      gogo->backend()->string_constant_expression(this->val_);
+  init[0] = gogo->backend()->address_expression(str_cst, loc);
+
+  Btype* int_btype = Type::lookup_integer_type("int")->get_backend(gogo);
+  mpz_t lenval;
+  mpz_init_set_ui(lenval, this->val_.length());
+  init[1] = gogo->backend()->integer_constant_expression(int_btype, lenval);
+  mpz_clear(lenval);
+
+  Bexpression* ret = gogo->backend()->constructor_expression(btype, init, loc);
+  return expr_to_tree(ret);
 }
 
  // Write string literal to string dump.

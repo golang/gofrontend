@@ -269,6 +269,10 @@ class Backend
   virtual Bexpression*
   complex_constant_expression(Btype* btype, mpfr_t real, mpfr_t imag) = 0;
 
+  // Return an expression for the string value VAL.
+  virtual Bexpression*
+  string_constant_expression(const std::string& val) = 0;
+
   // Return an expression for the real part of BCOMPLEX.
   virtual Bexpression*
   real_part_expression(Bexpression* bcomplex, Location) = 0;
