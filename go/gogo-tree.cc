@@ -1201,7 +1201,7 @@ Variable::get_init_block(Gogo* gogo, Named_object* function, tree var_decl)
       else
 	{
           Expression* val_expr =
-              Expression::convert_for_assignment(&context, this->type(),
+              Expression::convert_for_assignment(gogo, this->type(),
                                                  this->init_, this->location());
           tree val = val_expr->get_tree(&context);
 	  if (val == error_mark_node)

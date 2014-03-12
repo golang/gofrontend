@@ -144,7 +144,7 @@ Expression::determine_type_no_context()
 // assignment.
 
 Expression*
-Expression::convert_for_assignment(Translate_context* context, Type* lhs_type,
+Expression::convert_for_assignment(Gogo* gogo, Type* lhs_type,
 				   Expression* rhs, Location location)
 {
   Type* rhs_type = rhs->type();
@@ -195,7 +195,6 @@ Expression::convert_for_assignment(Translate_context* context, Type* lhs_type,
       // represented as non-zero-sized.
       // TODO(cmang): This check is for a GCC-specific issue, and should be
       // removed from the frontend.  FIXME.
-      Gogo* gogo = context->gogo();
       size_t lhs_size = gogo->backend()->type_size(lhs_type->get_backend(gogo));
       size_t rhs_size = gogo->backend()->type_size(rhs_type->get_backend(gogo));
       if (rhs_size == 0 || lhs_size == 0)
@@ -3265,7 +3264,7 @@ Type_conversion_expression::do_get_tree(Translate_context* context)
 	   || expr_type->interface_type() != NULL)
     {
       Expression* conversion =
-          Expression::convert_for_assignment(context, type, this->expr_,
+          Expression::convert_for_assignment(gogo, type, this->expr_,
                                              this->location());
       return conversion->get_tree(context);
     }
@@ -3347,7 +3346,7 @@ Type_conversion_expression::do_get_tree(Translate_context* context)
   else
     {
       Expression* conversion =
-          Expression::convert_for_assignment(context, type, this->expr_, loc);
+          Expression::convert_for_assignment(gogo, type, this->expr_, loc);
       return conversion->get_tree(context);
     }
 }
@@ -8512,7 +8511,7 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 	Expression* arg = args->front();
 	Type *empty =
 	  Type::make_empty_interface_type(Linemap::predeclared_location());
-        arg = Expression::convert_for_assignment(context, empty, arg, location);
+        arg = Expression::convert_for_assignment(gogo, empty, arg, location);
 
         Expression* panic =
             Runtime::make_call(Runtime::PANIC, location, 1, arg);
@@ -8530,7 +8529,7 @@ Builtin_call_expression::do_get_tree(Translate_context* context)
 	  Type::make_empty_interface_type(Linemap::predeclared_location());
 
 	Expression* nil = Expression::make_nil(location);
-	nil = Expression::convert_for_assignment(context, empty, nil, location);
+	nil = Expression::convert_for_assignment(gogo, empty, nil, location);
 
 	// We need to handle a deferred call to recover specially,
 	// because it changes whether it can recover a panic or not.
@@ -9458,7 +9457,7 @@ Call_expression::do_get_tree(Translate_context* context)
 	{
 	  go_assert(pp != params->end());
           Expression* arg =
-              Expression::convert_for_assignment(context, pp->type(), *pe,
+              Expression::convert_for_assignment(gogo, pp->type(), *pe,
                                                  location);
           args[i] = arg->get_tree(context);
 	  if (args[i] == error_mark_node)
@@ -12109,7 +12108,7 @@ Struct_construction_expression::do_get_tree(Translate_context* context)
       else
 	{
           Expression* val =
-              Expression::convert_for_assignment(context, pf->type(),
+              Expression::convert_for_assignment(gogo, pf->type(),
                                                  *pv, this->location());
           init.push_back(tree_to_expr(val->get_tree(context)));
 	  ++pv;
@@ -12361,9 +12360,9 @@ Array_construction_expression::get_constructor_tree(Translate_context* context,
 	  else
 	    elt->index = size_int(*pi);
 
+          Gogo* gogo = context->gogo();
 	  if (*pv == NULL)
 	    {
-	      Gogo* gogo = context->gogo();
 	      Btype* ebtype = element_type->get_backend(gogo);
 	      Bexpression *zv = gogo->backend()->zero_expression(ebtype);
 	      elt->value = expr_to_tree(zv);
@@ -12371,8 +12370,7 @@ Array_construction_expression::get_constructor_tree(Translate_context* context,
 	  else
 	    {
               Expression* val_expr =
-                  Expression::convert_for_assignment(context,
-                                                     element_type, *pv,
+                  Expression::convert_for_assignment(gogo, element_type, *pv,
                                                      this->location());
 	      elt->value = val_expr->get_tree(context);
 	    }
@@ -12709,12 +12707,15 @@ class Map_construction_expression : public Expression
   Map_construction_expression(Type* type, Expression_list* vals,
 			      Location location)
     : Expression(EXPRESSION_MAP_CONSTRUCTION, location),
-      type_(type), vals_(vals)
+      type_(type), vals_(vals), element_type_(NULL), constructor_temp_(NULL)
   { go_assert(vals == NULL || vals->size() % 2 == 0); }
 
  protected:
   int
   do_traverse(Traverse* traverse);
+
+  Expression*
+  do_flatten(Gogo*, Named_object*, Statement_inserter*);
 
   Type*
   do_type()
@@ -12747,6 +12748,10 @@ class Map_construction_expression : public Expression
   Type* type_;
   // The list of values.
   Expression_list* vals_;
+  // The type of the key-value pair struct for each map element.
+  Struct_type* element_type_;
+  // A temporary reference to the variable storing the constructor initializer.
+  Temporary_statement* constructor_temp_;
 };
 
 // Traversal.
@@ -12760,6 +12765,69 @@ Map_construction_expression::do_traverse(Traverse* traverse)
   if (Type::traverse(this->type_, traverse) == TRAVERSE_EXIT)
     return TRAVERSE_EXIT;
   return TRAVERSE_CONTINUE;
+}
+
+// Flatten constructor initializer into a temporary variable since
+// we need to take its address for __go_construct_map.
+
+Expression*
+Map_construction_expression::do_flatten(Gogo* gogo, Named_object*,
+                                        Statement_inserter* inserter)
+{
+  if (!this->is_error_expression()
+      && this->vals_ != NULL
+      && !this->vals_->empty()
+      && this->constructor_temp_ == NULL)
+    {
+      Map_type* mt = this->type_->map_type();
+      Type* key_type = mt->key_type();
+      Type* val_type = mt->val_type();
+      this->element_type_ = Type::make_builtin_struct_type(2,
+                                                           "__key", key_type,
+                                                           "__val", val_type);
+
+      Expression_list* value_pairs = new Expression_list();
+      Location loc = this->location();
+
+      size_t i = 0;
+      for (Expression_list::const_iterator pv = this->vals_->begin();
+           pv != this->vals_->end();
+           ++pv, ++i)
+        {
+          Expression_list* key_value_pair = new Expression_list();
+          Expression* key =
+              Expression::convert_for_assignment(gogo, key_type, *pv, loc);
+
+          ++pv;
+          Expression* val =
+              Expression::convert_for_assignment(gogo, val_type, *pv, loc);
+
+          key_value_pair->push_back(key);
+          key_value_pair->push_back(val);
+          value_pairs->push_back(
+              Expression::make_struct_composite_literal(this->element_type_,
+                                                        key_value_pair, loc));
+        }
+
+      mpz_t lenval;
+      mpz_init_set_ui(lenval, i);
+      Expression* element_count = Expression::make_integer(&lenval, NULL, loc);
+      mpz_clear(lenval);
+
+      Type* ctor_type =
+          Type::make_array_type(this->element_type_, element_count);
+      Expression* constructor =
+          new Fixed_array_construction_expression(ctor_type, NULL,
+                                                  value_pairs, loc);
+
+      this->constructor_temp_ =
+          Statement::make_temporary(NULL, constructor, loc);
+      constructor->issue_nil_check();
+      this->constructor_temp_->set_is_address_taken();
+      inserter->insert(this->constructor_temp_);
+    }
+
+  return this;
 }
 
 // Final type determination.
@@ -12823,167 +12891,53 @@ Map_construction_expression::do_check_types(Gogo*)
 tree
 Map_construction_expression::do_get_tree(Translate_context* context)
 {
-  Gogo* gogo = context->gogo();
+  if (this->is_error_expression())
+    return error_mark_node;
   Location loc = this->location();
 
-  Map_type* mt = this->type_->map_type();
-
-  // Build a struct to hold the key and value.
-  tree struct_type = make_node(RECORD_TYPE);
-
-  Type* key_type = mt->key_type();
-  tree id = get_identifier("__key");
-  tree key_type_tree = type_to_tree(key_type->get_backend(gogo));
-  if (key_type_tree == error_mark_node)
-    return error_mark_node;
-  tree key_field = build_decl(loc.gcc_location(), FIELD_DECL, id,
-                              key_type_tree);
-  DECL_CONTEXT(key_field) = struct_type;
-  TYPE_FIELDS(struct_type) = key_field;
-
-  Type* val_type = mt->val_type();
-  id = get_identifier("__val");
-  tree val_type_tree = type_to_tree(val_type->get_backend(gogo));
-  if (val_type_tree == error_mark_node)
-    return error_mark_node;
-  tree val_field = build_decl(loc.gcc_location(), FIELD_DECL, id,
-                              val_type_tree);
-  DECL_CONTEXT(val_field) = struct_type;
-  DECL_CHAIN(key_field) = val_field;
-
-  layout_type(struct_type);
-
-  bool is_constant = true;
   size_t i = 0;
-  tree valaddr;
-  tree make_tmp;
-
+  Expression* ventries;
   if (this->vals_ == NULL || this->vals_->empty())
-    {
-      valaddr = null_pointer_node;
-      make_tmp = NULL_TREE;
-    }
+    ventries = Expression::make_nil(loc);
   else
     {
-      vec<constructor_elt, va_gc> *values;
-      vec_alloc(values, this->vals_->size() / 2);
+      go_assert(this->constructor_temp_ != NULL);
+      i = this->vals_->size() / 2;
 
-      for (Expression_list::const_iterator pv = this->vals_->begin();
-	   pv != this->vals_->end();
-	   ++pv, ++i)
-	{
-	  bool one_is_constant = true;
-
-	  vec<constructor_elt, va_gc> *one;
-	  vec_alloc(one, 2);
-
-	  constructor_elt empty = {NULL, NULL};
-	  constructor_elt* elt = one->quick_push(empty);
-	  elt->index = key_field;
-
-          Expression* key_expr =
-              Expression::convert_for_assignment(context, key_type, *pv, loc);
-          elt->value = key_expr->get_tree(context);
-	  if (elt->value == error_mark_node)
-	    return error_mark_node;
-	  if (!TREE_CONSTANT(elt->value))
-	    one_is_constant = false;
-
-	  ++pv;
-
-	  elt = one->quick_push(empty);
-	  elt->index = val_field;
-
-          Expression* val_expr =
-              Expression::convert_for_assignment(context, val_type, *pv, loc);
-          elt->value = val_expr->get_tree(context);
-	  if (elt->value == error_mark_node)
-	    return error_mark_node;
-	  if (!TREE_CONSTANT(elt->value))
-	    one_is_constant = false;
-
-	  elt = values->quick_push(empty);
-	  elt->index = size_int(i);
-	  elt->value = build_constructor(struct_type, one);
-	  if (one_is_constant)
-	    TREE_CONSTANT(elt->value) = 1;
-	  else
-	    is_constant = false;
-	}
-
-      tree index_type = build_index_type(size_int(i - 1));
-      tree array_type = build_array_type(struct_type, index_type);
-      tree init = build_constructor(array_type, values);
-      if (is_constant)
-	TREE_CONSTANT(init) = 1;
-      tree tmp;
-      if (current_function_decl != NULL)
-	{
-	  tmp = create_tmp_var(array_type, get_name(array_type));
-	  DECL_INITIAL(tmp) = init;
-	  make_tmp = fold_build1_loc(loc.gcc_location(), DECL_EXPR,
-                                     void_type_node, tmp);
-	  TREE_ADDRESSABLE(tmp) = 1;
-	}
-      else
-	{
-	  tmp = build_decl(loc.gcc_location(), VAR_DECL,
-                           create_tmp_var_name("M"), array_type);
-	  DECL_EXTERNAL(tmp) = 0;
-	  TREE_PUBLIC(tmp) = 0;
-	  TREE_STATIC(tmp) = 1;
-	  DECL_ARTIFICIAL(tmp) = 1;
-	  if (!TREE_CONSTANT(init))
-	    make_tmp = fold_build2_loc(loc.gcc_location(), INIT_EXPR,
-                                       void_type_node, tmp, init);
-	  else
-	    {
-	      TREE_READONLY(tmp) = 1;
-	      TREE_CONSTANT(tmp) = 1;
-	      DECL_INITIAL(tmp) = init;
-	      make_tmp = NULL_TREE;
-	    }
-	  rest_of_decl_compilation(tmp, 1, 0);
-	}
-
-      valaddr = build_fold_addr_expr(tmp);
+      Expression* ctor_ref =
+          Expression::make_temporary_reference(this->constructor_temp_, loc);
+      ventries = Expression::make_unary(OPERATOR_AND, ctor_ref, loc);
     }
 
-  Bexpression* bdescriptor = mt->map_descriptor_pointer(gogo, loc);
-  tree descriptor = expr_to_tree(bdescriptor);
+  Map_type* mt = this->type_->map_type();
+  if (this->element_type_ == NULL)
+      this->element_type_ =
+          Type::make_builtin_struct_type(2,
+                                         "__key", mt->key_type(),
+                                         "__val", mt->val_type());
+  Expression* descriptor = Expression::make_map_descriptor(mt, loc);
 
-  tree type_tree = type_to_tree(this->type_->get_backend(gogo));
-  if (type_tree == error_mark_node)
-    return error_mark_node;
+  Type* uintptr_t = Type::lookup_integer_type("uintptr");
+  mpz_t countval;
+  mpz_init_set_ui(countval, i);
+  Expression* count = Expression::make_integer(&countval, uintptr_t, loc);
+  mpz_clear(countval);
 
-  static tree construct_map_fndecl;
-  tree call = Gogo::call_builtin(&construct_map_fndecl,
-				 loc,
-				 "__go_construct_map",
-				 6,
-				 type_tree,
-				 TREE_TYPE(descriptor),
-				 descriptor,
-				 sizetype,
-				 size_int(i),
-				 sizetype,
-				 TYPE_SIZE_UNIT(struct_type),
-				 sizetype,
-				 byte_position(val_field),
-				 sizetype,
-				 TYPE_SIZE_UNIT(TREE_TYPE(val_field)),
-				 const_ptr_type_node,
-				 fold_convert(const_ptr_type_node, valaddr));
-  if (call == error_mark_node)
-    return error_mark_node;
+  Expression* entry_size =
+      Expression::make_type_info(this->element_type_, TYPE_INFO_SIZE);
 
-  tree ret;
-  if (make_tmp == NULL)
-    ret = call;
-  else
-    ret = fold_build2_loc(loc.gcc_location(), COMPOUND_EXPR, type_tree,
-                          make_tmp, call);
-  return ret;
+  unsigned int field_index;
+  const Struct_field* valfield =
+      this->element_type_->find_local_field("__val", &field_index);
+  Expression* val_offset =
+      Expression::make_struct_field_offset(this->element_type_, valfield);
+  Expression* val_size =
+      Expression::make_type_info(mt->val_type(), TYPE_INFO_SIZE);
+
+  Expression* map_ctor =
+      Runtime::make_call(Runtime::CONSTRUCT_MAP, loc, 6, descriptor, count,
+                         entry_size, val_offset, val_size, ventries);
+  return map_ctor->get_tree(context);
 }
 
 // Export an array construction.
@@ -13851,7 +13805,7 @@ Type_guard_expression::do_get_tree(Translate_context* context)
                                                    true, this->location());
   else
     conversion =
-        Expression::convert_for_assignment(context, this->type_,
+        Expression::convert_for_assignment(context->gogo(), this->type_,
                                            this->expr_, this->location());
 
   return conversion->get_tree(context);

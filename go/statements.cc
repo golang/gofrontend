@@ -646,7 +646,7 @@ Assignment_statement::do_get_backend(Translate_context* context)
 
   tree lhs_tree = this->lhs_->get_tree(context);
   Expression* rhs =
-      Expression::convert_for_assignment(context, this->lhs_->type(),
+      Expression::convert_for_assignment(context->gogo(), this->lhs_->type(),
                                          this->rhs_, this->location());
   tree rhs_tree = rhs->get_tree(context);
   return context->backend()->assignment_statement(tree_to_expr(lhs_tree),

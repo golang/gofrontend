@@ -743,7 +743,7 @@ class Expression
   // Return an expression handling any conversions which must be done during
   // assignment.
   static Expression*
-  convert_for_assignment(Translate_context*, Type* lhs_type, Expression* rhs,
+  convert_for_assignment(Gogo*, Type* lhs_type, Expression* rhs,
                          Location location);
 
   // Return an expression converting a value of one interface type to another
