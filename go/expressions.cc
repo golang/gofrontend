@@ -9069,6 +9069,37 @@ Call_expression::lower_varargs(Gogo* gogo, Named_object* function,
   this->varargs_are_lowered_ = true;
 }
 
+// Flatten a call with multiple results into a temporary.
+
+Expression*
+Call_expression::do_flatten(Gogo*, Named_object*, Statement_inserter* inserter)
+{
+  size_t rc = this->result_count();
+  if (rc > 1 && this->call_temp_ == NULL)
+    {
+      Struct_field_list* sfl = new Struct_field_list();
+      Function_type* fntype = this->get_function_type();
+      const Typed_identifier_list* results = fntype->results();
+      Location loc = this->location();
+
+      int i = 0;
+      char buf[10];
+      for (Typed_identifier_list::const_iterator p = results->begin();
+           p != results->end();
+           ++p, ++i)
+        {
+          snprintf(buf, sizeof buf, "res%d", i);
+          sfl->push_back(Struct_field(Typed_identifier(buf, p->type(), loc)));
+        }
+
+      Struct_type* st = Type::make_struct_type(sfl, loc);
+      this->call_temp_ = Statement::make_temporary(st, NULL, loc);
+      inserter->insert(this->call_temp_);
+    }
+
+  return this;
+}
+
 // Get the function type.  This can return NULL in error cases.
 
 Function_type*
@@ -9390,8 +9421,8 @@ Call_expression::interface_method_function(
 tree
 Call_expression::do_get_tree(Translate_context* context)
 {
-  if (this->tree_ != NULL_TREE)
-    return this->tree_;
+  if (this->call_ != NULL)
+    return expr_to_tree(this->call_);
 
   Function_type* fntype = this->get_function_type();
   if (fntype == NULL)
@@ -9420,11 +9451,12 @@ Call_expression::do_get_tree(Translate_context* context)
     has_closure_arg = true;
 
   int nargs;
-  tree* args;
+  std::vector<Bexpression*> fn_args;
   if (this->args_ == NULL || this->args_->empty())
     {
       nargs = is_interface_method ? 1 : 0;
-      args = nargs == 0 ? NULL : new tree[nargs];
+      if (nargs > 0)
+        fn_args.resize(1);
     }
   else if (fntype->parameters() == NULL || fntype->parameters()->empty())
     {
@@ -9433,8 +9465,8 @@ Call_expression::do_get_tree(Translate_context* context)
 		&& fntype->is_method()
 		&& this->args_->size() == 1);
       nargs = 1;
-      args = new tree[nargs];
-      args[0] = this->args_->front()->get_tree(context);
+      fn_args.resize(1);
+      fn_args[0] = tree_to_expr(this->args_->front()->get_tree(context));
     }
   else
     {
@@ -9443,13 +9475,13 @@ Call_expression::do_get_tree(Translate_context* context)
       nargs = this->args_->size();
       int i = is_interface_method ? 1 : 0;
       nargs += i;
-      args = new tree[nargs];
+      fn_args.resize(nargs);
 
       Typed_identifier_list::const_iterator pp = params->begin();
       Expression_list::const_iterator pe = this->args_->begin();
       if (!is_interface_method && fntype->is_method())
 	{
-	  args[i] = (*pe)->get_tree(context);
+          fn_args[i] = tree_to_expr((*pe)->get_tree(context));
 	  ++pe;
 	  ++i;
 	}
@@ -9459,221 +9491,122 @@ Call_expression::do_get_tree(Translate_context* context)
           Expression* arg =
               Expression::convert_for_assignment(gogo, pp->type(), *pe,
                                                  location);
-          args[i] = arg->get_tree(context);
-	  if (args[i] == error_mark_node)
-	    return error_mark_node;
+          fn_args[i] = tree_to_expr(arg->get_tree(context));
 	}
       go_assert(pp == params->end());
       go_assert(i == nargs);
     }
 
-  tree fntype_tree = type_to_tree(fntype->get_backend(gogo));
-  tree fnfield_type = type_to_tree(fntype->get_backend_fntype(gogo));
-  if (fntype_tree == error_mark_node || fnfield_type == error_mark_node)
-    return error_mark_node;
-  go_assert(FUNCTION_POINTER_TYPE_P(fnfield_type));
-  tree rettype = TREE_TYPE(TREE_TYPE(fnfield_type));
-  if (rettype == error_mark_node)
-    return error_mark_node;
-
-  tree fn;
-  tree closure_tree;
+  Expression* fn;
+  Expression* closure = NULL;
   if (func != NULL)
     {
       Named_object* no = func->named_object();
-      fn = expr_to_tree(Func_expression::get_code_pointer(gogo, no, location));
-      if (!has_closure)
-	closure_tree = NULL_TREE;
-      else
-	{
-	  closure_tree = func->closure()->get_tree(context);
-	  if (closure_tree == error_mark_node)
-	    return error_mark_node;
-	}
+      fn = Expression::make_func_code_reference(no, location);
+      if (has_closure)
+        closure = func->closure();
     }
   else if (!is_interface_method)
     {
-      closure_tree = this->fn_->get_tree(context);
-      if (closure_tree == error_mark_node)
-	return error_mark_node;
-      tree fnc = fold_convert_loc(location.gcc_location(), fntype_tree,
-				  closure_tree);
-      go_assert(POINTER_TYPE_P(TREE_TYPE(fnc))
-		&& (TREE_CODE(TREE_TYPE(TREE_TYPE(fnc)))
-		    == RECORD_TYPE));
-      tree field = TYPE_FIELDS(TREE_TYPE(TREE_TYPE(fnc)));
-      fn = fold_build3_loc(location.gcc_location(), COMPONENT_REF,
-			   TREE_TYPE(field),
-			   build_fold_indirect_ref_loc(location.gcc_location(),
-						       fnc),
-			   field, NULL_TREE);
-    }      
+      closure = this->fn_;
+
+      // The backend representation of this function type is a pointer
+      // to a struct whose first field is the actual function to call.
+      Type* pfntype =
+          Type::make_pointer_type(
+              Type::make_pointer_type(Type::make_void_type()));
+      fn = Expression::make_unsafe_cast(pfntype, this->fn_, location);
+      fn = Expression::make_unary(OPERATOR_MULT, fn, location);
+    }
   else
     {
       Expression* first_arg;
-      Expression* fn_expr =
-          this->interface_method_function(interface_method, &first_arg);
-      args[0] = first_arg->get_tree(context);
-      fn = fn_expr->get_tree(context);
-
-      if (fn == error_mark_node)
-	return error_mark_node;
-      closure_tree = NULL_TREE;
+      fn = this->interface_method_function(interface_method, &first_arg);
+      fn_args[0] = tree_to_expr(first_arg->get_tree(context));
     }
-
-  if (fn == error_mark_node || TREE_TYPE(fn) == error_mark_node)
-    return error_mark_node;
-
-  tree fndecl = fn;
-  if (TREE_CODE(fndecl) == ADDR_EXPR)
-    fndecl = TREE_OPERAND(fndecl, 0);
-
-  // Add a type cast in case the type of the function is a recursive
-  // type which refers to itself.  We don't do this for an interface
-  // method because 1) an interface method never refers to itself, so
-  // we always have a function type here; 2) we pass an extra first
-  // argument to an interface method, so fnfield_type is not correct.
-  if ((!DECL_P(fndecl) || !DECL_IS_BUILTIN(fndecl)) && !is_interface_method)
-    fn = fold_convert_loc(location.gcc_location(), fnfield_type, fn);
-
-  // This is to support builtin math functions when using 80387 math.
-  tree excess_type = NULL_TREE;
-  if (optimize
-      && TREE_CODE(fndecl) == FUNCTION_DECL
-      && DECL_IS_BUILTIN(fndecl)
-      && DECL_BUILT_IN_CLASS(fndecl) == BUILT_IN_NORMAL
-      && nargs > 0
-      && ((SCALAR_FLOAT_TYPE_P(rettype)
-	   && SCALAR_FLOAT_TYPE_P(TREE_TYPE(args[0])))
-	  || (COMPLEX_FLOAT_TYPE_P(rettype)
-	      && COMPLEX_FLOAT_TYPE_P(TREE_TYPE(args[0])))))
-    {
-      excess_type = excess_precision_type(TREE_TYPE(args[0]));
-      if (excess_type != NULL_TREE)
-	{
-	  tree excess_fndecl = mathfn_built_in(excess_type,
-					       DECL_FUNCTION_CODE(fndecl));
-	  if (excess_fndecl == NULL_TREE)
-	    excess_type = NULL_TREE;
-	  else
-	    {
-	      fn = build_fold_addr_expr_loc(location.gcc_location(),
-                                            excess_fndecl);
-	      for (int i = 0; i < nargs; ++i)
-		{
-		  if (SCALAR_FLOAT_TYPE_P(TREE_TYPE(args[i]))
-		      || COMPLEX_FLOAT_TYPE_P(TREE_TYPE(args[i])))
-		    args[i] = ::convert(excess_type, args[i]);
-		}
-	    }
-	}
-    }
-
-  if (func == NULL)
-    fn = save_expr(fn);
 
   if (!has_closure_arg)
-    go_assert(closure_tree == NULL_TREE);
+    go_assert(closure == NULL);
   else
     {
       // Pass the closure argument by calling the function function
       // __go_set_closure.  In the order_evaluations pass we have
       // ensured that if any parameters contain call expressions, they
       // will have been moved out to temporary variables.
-
-      go_assert(closure_tree != NULL_TREE);
-      closure_tree = fold_convert_loc(location.gcc_location(), ptr_type_node,
-				      closure_tree);
-      static tree set_closure_fndecl;
-      tree set_closure = Gogo::call_builtin(&set_closure_fndecl,
-					    location,
-					    "__go_set_closure",
-					    1,
-					    void_type_node,
-					    ptr_type_node,
-					    closure_tree);
-      if (set_closure == error_mark_node)
-	return error_mark_node;
-      fn = build2_loc(location.gcc_location(), COMPOUND_EXPR,
-		      TREE_TYPE(fn), set_closure, fn);
+      go_assert(closure != NULL);
+      Expression* set_closure =
+          Runtime::make_call(Runtime::SET_CLOSURE, location, 1, closure);
+      fn = Expression::make_compound(set_closure, fn, location);
     }
 
-  tree ret = build_call_array(excess_type != NULL_TREE ? excess_type : rettype,
-			      fn, nargs, args);
-  delete[] args;
-
-  SET_EXPR_LOCATION(ret, location.gcc_location());
-
-  // If this is a recursive function type which returns itself, as in
-  //   type F func() F
-  // we have used ptr_type_node for the return type.  Add a cast here
-  // to the correct type.
-  if (TREE_TYPE(ret) == ptr_type_node)
-    {
-      tree t = type_to_tree(this->type()->base()->get_backend(gogo));
-      ret = fold_convert_loc(location.gcc_location(), t, ret);
-    }
-
-  if (excess_type != NULL_TREE)
-    {
-      // Calling convert here can undo our excess precision change.
-      // That may or may not be a bug in convert_to_real.
-      ret = build1(NOP_EXPR, rettype, ret);
-    }
+  Btype* bft = fntype->get_backend_fntype(gogo);
+  Bexpression* bfn = tree_to_expr(fn->get_tree(context));
+  bfn = gogo->backend()->convert_expression(bft, bfn, location);
+  Bexpression* call = gogo->backend()->call_expression(bfn, fn_args, location);
 
   if (this->results_ != NULL)
-    ret = this->set_results(context, ret);
+    {
+      go_assert(this->call_temp_ != NULL);
+      Expression* call_ref =
+          Expression::make_temporary_reference(this->call_temp_, location);
+      Bexpression* bcall_ref = tree_to_expr(call_ref->get_tree(context));
+      Bstatement* assn_stmt =
+          gogo->backend()->assignment_statement(bcall_ref, call, location);
 
-  this->tree_ = ret;
+      this->call_ = this->set_results(context, bcall_ref);
 
-  return ret;
+      Bexpression* set_and_call =
+          gogo->backend()->compound_expression(assn_stmt, this->call_,
+                                               location);
+      return expr_to_tree(set_and_call);
+    }
+
+  this->call_ = call;
+  return expr_to_tree(this->call_);
 }
 
 // Set the result variables if this call returns multiple results.
 
-tree
-Call_expression::set_results(Translate_context* context, tree call_tree)
+Bexpression*
+Call_expression::set_results(Translate_context* context, Bexpression* call)
 {
-  tree stmt_list = NULL_TREE;
+  Gogo* gogo = context->gogo();
 
-  call_tree = save_expr(call_tree);
-
-  if (TREE_CODE(TREE_TYPE(call_tree)) != RECORD_TYPE)
-    {
-      go_assert(saw_errors());
-      return call_tree;
-    }
-
+  Bexpression* results = NULL;
   Location loc = this->location();
-  tree field = TYPE_FIELDS(TREE_TYPE(call_tree));
-  size_t rc = this->result_count();
-  for (size_t i = 0; i < rc; ++i, field = DECL_CHAIN(field))
-    {
-      go_assert(field != NULL_TREE);
 
+  size_t rc = this->result_count();
+  for (size_t i = 0; i < rc; ++i)
+    {
       Temporary_statement* temp = this->result(i);
       if (temp == NULL)
 	{
 	  go_assert(saw_errors());
-	  return error_mark_node;
+	  return gogo->backend()->error_expression();
 	}
       Temporary_reference_expression* ref =
 	Expression::make_temporary_reference(temp, loc);
       ref->set_is_lvalue();
-      tree temp_tree = ref->get_tree(context);
-      if (temp_tree == error_mark_node)
-	return error_mark_node;
 
-      tree val_tree = build3_loc(loc.gcc_location(), COMPONENT_REF,
-                                 TREE_TYPE(field), call_tree, field, NULL_TREE);
-      tree set_tree = build2_loc(loc.gcc_location(), MODIFY_EXPR,
-                                 void_type_node, temp_tree, val_tree);
+      Bexpression* result_ref = tree_to_expr(ref->get_tree(context));
+      Bexpression* call_result =
+          gogo->backend()->struct_field_expression(call, i, loc);
+      Bstatement* assn_stmt =
+           gogo->backend()->assignment_statement(result_ref, call_result, loc);
 
-      append_to_statement_list(set_tree, &stmt_list);
+      Bexpression* result =
+          gogo->backend()->compound_expression(assn_stmt, call_result, loc);
+
+      if (results == NULL)
+        results = result;
+      else
+        {
+          Bstatement* expr_stmt = gogo->backend()->expression_statement(result);
+          results =
+              gogo->backend()->compound_expression(expr_stmt, results, loc);
+        }
     }
-  go_assert(field == NULL_TREE);
-
-  return save_expr(stmt_list);
+  return results;
 }
 
 // Dump ast representation for a call expressin.

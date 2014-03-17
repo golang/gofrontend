@@ -1443,8 +1443,8 @@ class Call_expression : public Expression
   Call_expression(Expression* fn, Expression_list* args, bool is_varargs,
 		  Location location)
     : Expression(EXPRESSION_CALL, location),
-      fn_(fn), args_(args), type_(NULL), results_(NULL), tree_(NULL),
-      is_varargs_(is_varargs), are_hidden_fields_ok_(false),
+      fn_(fn), args_(args), type_(NULL), results_(NULL), call_(NULL),
+      call_temp_(NULL), is_varargs_(is_varargs), are_hidden_fields_ok_(false),
       varargs_are_lowered_(false), types_are_determined_(false),
       is_deferred_(false), issued_error_(false)
   { }
@@ -1524,6 +1524,9 @@ class Call_expression : public Expression
   virtual Expression*
   do_lower(Gogo*, Named_object*, Statement_inserter*, int);
 
+  virtual Expression*
+  do_flatten(Gogo*, Named_object*, Statement_inserter*);
+
   bool
   do_discarding_value()
   { return true; }
@@ -1585,8 +1588,8 @@ class Call_expression : public Expression
   interface_method_function(Interface_field_reference_expression*,
 			    Expression**);
 
-  tree
-  set_results(Translate_context*, tree);
+  Bexpression*
+  set_results(Translate_context*, Bexpression*);
 
   // The function to call.
   Expression* fn_;
@@ -1598,8 +1601,10 @@ class Call_expression : public Expression
   // The list of temporaries which will hold the results if the
   // function returns a tuple.
   std::vector<Temporary_statement*>* results_;
-  // The tree for the call, used for a call which returns a tuple.
-  tree tree_;
+  // The backend expression for the call, used for a call which returns a tuple.
+  Bexpression* call_;
+  // A temporary variable to store this call if the function returns a tuple.
+  Temporary_statement* call_temp_;
   // True if the last argument is a varargs argument (f(a...)).
   bool is_varargs_;
   // True if this statement may pass hidden fields in the arguments.

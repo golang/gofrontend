@@ -346,6 +346,11 @@ class Backend
   virtual Bexpression*
   array_index_expression(Bexpression* array, Bexpression* index, Location) = 0;
 
+  // Create an expression for a call to FN with ARGS.
+  virtual Bexpression*
+  call_expression(Bexpression* fn, const std::vector<Bexpression*>& args,
+                  Location) = 0;
+
   // Statements.
 
   // Create an error statement.  This is used for cases which should
