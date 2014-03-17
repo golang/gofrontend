@@ -3765,7 +3765,8 @@ Parse::labeled_stmt(const std::string& label_name, Location location)
     {
       // Mark the label as used to avoid a useless error about an
       // unused label.
-      label->set_is_used();
+      if (label != NULL)
+        label->set_is_used();
 
       error_at(location, "missing statement after label");
       this->unget_token(Token::make_operator_token(OPERATOR_SEMICOLON,

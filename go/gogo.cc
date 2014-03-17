@@ -1005,6 +1005,10 @@ Label*
 Gogo::add_label_definition(const std::string& label_name,
 			   Location location)
 {
+  // A label with a blank identifier is never declared or defined.
+  if (label_name == "_")
+    return NULL;
+
   go_assert(!this->functions_.empty());
   Function* func = this->functions_.back().function->func_value();
   Label* label = func->add_label_definition(this, label_name, location);
