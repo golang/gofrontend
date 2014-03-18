@@ -7673,27 +7673,33 @@ Builtin_call_expression::do_numeric_constant_value(Numeric_constant* nc) const
 	return false;
       if (arg_type->is_abstract())
 	return false;
+      if (this->seen_)
+        return false;
 
       unsigned int ret;
       if (this->code_ == BUILTIN_SIZEOF)
 	{
-	  if (!arg_type->backend_type_size(this->gogo_, &ret))
+          this->seen_ = true;
+	  bool ok = arg_type->backend_type_size(this->gogo_, &ret);
+          this->seen_ = false;
+	  if (!ok)
 	    return false;
 	}
       else if (this->code_ == BUILTIN_ALIGNOF)
 	{
+	  bool ok;
+          this->seen_ = true;
 	  if (arg->field_reference_expression() == NULL)
-	    {
-	      if (!arg_type->backend_type_align(this->gogo_, &ret))
-		return false;
-	    }
+	    ok = arg_type->backend_type_align(this->gogo_, &ret);
 	  else
 	    {
 	      // Calling unsafe.Alignof(s.f) returns the alignment of
 	      // the type of f when it is used as a field in a struct.
-	      if (!arg_type->backend_type_field_align(this->gogo_, &ret))
-		return false;
+	      ok = arg_type->backend_type_field_align(this->gogo_, &ret);
 	    }
+          this->seen_ = false;
+	  if (!ok)
+	    return false;
 	}
       else
 	go_unreachable();
@@ -7710,6 +7716,9 @@ Builtin_call_expression::do_numeric_constant_value(Numeric_constant* nc) const
       Field_reference_expression* farg = arg->field_reference_expression();
       if (farg == NULL)
 	return false;
+      if (this->seen_)
+        return false;
+
       unsigned int total_offset = 0;
       while (true)
         {
@@ -7720,10 +7729,13 @@ Builtin_call_expression::do_numeric_constant_value(Numeric_constant* nc) const
           if (st->named_type() != NULL)
             st->named_type()->convert(this->gogo_);
           unsigned int offset;
-          if (!st->struct_type()->backend_field_offset(this->gogo_,
-						       farg->field_index(),
-						       &offset))
-            return false;
+          this->seen_ = true;
+          bool ok = st->struct_type()->backend_field_offset(this->gogo_,
+							    farg->field_index(),
+							    &offset);
+          this->seen_ = false;
+	  if (!ok)
+	    return false;
           total_offset += offset;
           if (farg->implicit() && struct_expr->field_reference_expression() != NULL)
             {
