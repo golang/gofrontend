@@ -335,6 +335,15 @@ class Backend
   constructor_expression(Btype* btype, const std::vector<Bexpression*>& vals,
                          Location) = 0;
 
+  // Return an expression that constructs an array of BTYPE with INDEXES and
+  // VALS.  INDEXES and VALS must have the same amount of elements. Each index
+  // in INDEXES must be in the same order as the corresponding value in VALS.
+  virtual Bexpression*
+  array_constructor_expression(Btype* btype,
+                               const std::vector<unsigned long>& indexes,
+                               const std::vector<Bexpression*>& vals,
+                               Location) = 0;
+
   // Return an expression for the address of BASE[INDEX].
   // BASE has a pointer type.  This is used for slice indexing.
   virtual Bexpression*

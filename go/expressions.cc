@@ -12107,7 +12107,7 @@ Expression::make_struct_composite_literal(Type* type, Expression_list* vals,
 
 // Construct an array.  This class is not used directly; instead we
 // use the child classes, Fixed_array_construction_expression and
-// Open_array_construction_expression.
+// Slice_construction_expression.
 
 class Array_construction_expression : public Expression
 {
@@ -12160,9 +12160,9 @@ protected:
   vals()
   { return this->vals_; }
 
-  // Get a constructor tree for the array values.
-  tree
-  get_constructor_tree(Translate_context* context, tree type_tree);
+  // Get the backend constructor for the array values.
+  Bexpression*
+  get_constructor(Translate_context* context, Btype* btype);
 
   void
   do_dump_expression(Ast_dump_context*) const;
@@ -12275,16 +12275,17 @@ Array_construction_expression::do_check_types(Gogo*)
     }
 }
 
-// Get a constructor tree for the array values.
+// Get a constructor expression for the array values.
 
-tree
-Array_construction_expression::get_constructor_tree(Translate_context* context,
-						    tree type_tree)
+Bexpression*
+Array_construction_expression::get_constructor(Translate_context* context,
+                                               Btype* array_btype)
 {
-  vec<constructor_elt, va_gc> *values;
-  vec_alloc (values, (this->vals_ == NULL ? 0 : this->vals_->size()));
   Type* element_type = this->type_->array_type()->element_type();
-  bool is_constant = true;
+
+  std::vector<unsigned long> indexes;
+  std::vector<Bexpression*> vals;
+  Gogo* gogo = context->gogo();
   if (this->vals_ != NULL)
     {
       size_t i = 0;
@@ -12297,43 +12298,32 @@ Array_construction_expression::get_constructor_tree(Translate_context* context,
 	{
 	  if (this->indexes_ != NULL)
 	    go_assert(pi != this->indexes_->end());
-	  constructor_elt empty = {NULL, NULL};
-	  constructor_elt* elt = values->quick_push(empty);
 
 	  if (this->indexes_ == NULL)
-	    elt->index = size_int(i);
+	    indexes.push_back(i);
 	  else
-	    elt->index = size_int(*pi);
-
-          Gogo* gogo = context->gogo();
+	    indexes.push_back(*pi);
 	  if (*pv == NULL)
 	    {
 	      Btype* ebtype = element_type->get_backend(gogo);
 	      Bexpression *zv = gogo->backend()->zero_expression(ebtype);
-	      elt->value = expr_to_tree(zv);
+	      vals.push_back(zv);
 	    }
 	  else
 	    {
               Expression* val_expr =
                   Expression::convert_for_assignment(gogo, element_type, *pv,
                                                      this->location());
-	      elt->value = val_expr->get_tree(context);
+	      vals.push_back(tree_to_expr(val_expr->get_tree(context)));
 	    }
-	  if (elt->value == error_mark_node)
-	    return error_mark_node;
-	  if (!TREE_CONSTANT(elt->value))
-	    is_constant = false;
 	  if (this->indexes_ != NULL)
 	    ++pi;
 	}
       if (this->indexes_ != NULL)
 	go_assert(pi == this->indexes_->end());
     }
-
-  tree ret = build_constructor(type_tree, values);
-  if (is_constant)
-    TREE_CONSTANT(ret) = 1;
-  return ret;
+  return gogo->backend()->array_constructor_expression(array_btype, indexes,
+                                                       vals, this->location());
 }
 
 // Export an array construction.
@@ -12444,43 +12434,42 @@ Fixed_array_construction_expression::do_get_tree(Translate_context* context)
 {
   Type* type = this->type();
   Btype* btype = type->get_backend(context->gogo());
-  return this->get_constructor_tree(context, type_to_tree(btype));
+  return expr_to_tree(this->get_constructor(context, btype));
 }
 
-// Construct an open array.
+// Construct a slice.
 
-class Open_array_construction_expression : public Array_construction_expression
+class Slice_construction_expression : public Array_construction_expression
 {
  public:
-  Open_array_construction_expression(Type* type,
-				     const std::vector<unsigned long>* indexes,
-				     Expression_list* vals, Location location)
-    : Array_construction_expression(EXPRESSION_OPEN_ARRAY_CONSTRUCTION,
+  Slice_construction_expression(Type* type,
+				const std::vector<unsigned long>* indexes,
+				Expression_list* vals, Location location)
+    : Array_construction_expression(EXPRESSION_SLICE_CONSTRUCTION,
 				    type, indexes, vals, location)
   { go_assert(type->is_slice_type()); }
 
  protected:
-  // Note that taking the address of an open array literal is invalid.
+  // Note that taking the address of a slice literal is invalid.
 
   Expression*
   do_copy()
   {
-    return new Open_array_construction_expression(this->type(),
-						  this->indexes(),
-						  (this->vals() == NULL
-						   ? NULL
-						   : this->vals()->copy()),
-						  this->location());
+    return new Slice_construction_expression(this->type(), this->indexes(),
+					     (this->vals() == NULL
+					      ? NULL
+					      : this->vals()->copy()),
+					     this->location());
   }
 
   tree
   do_get_tree(Translate_context*);
 };
 
-// Return a tree for constructing an open array.
+// Return a tree for constructing a slice.
 
 tree
-Open_array_construction_expression::do_get_tree(Translate_context* context)
+Slice_construction_expression::do_get_tree(Translate_context* context)
 {
   Array_type* array_type = this->type()->array_type();
   if (array_type == NULL)
@@ -12491,32 +12480,27 @@ Open_array_construction_expression::do_get_tree(Translate_context* context)
 
   Type* element_type = array_type->element_type();
   Btype* belement_type = element_type->get_backend(context->gogo());
-  tree element_type_tree = type_to_tree(belement_type);
-  if (element_type_tree == error_mark_node)
-    return error_mark_node;
 
   tree values;
   tree length_tree;
+
+  Gogo* gogo = context->gogo();
+  Btype* int_btype = Type::lookup_integer_type("int")->get_backend(gogo);
+  Bexpression* blength;
   if (this->vals() == NULL || this->vals()->empty())
     {
       // We need to create a unique value.
-      tree max = size_int(0);
-      tree constructor_type = build_array_type(element_type_tree,
-					       build_index_type(max));
-      if (constructor_type == error_mark_node)
-	return error_mark_node;
-      vec<constructor_elt, va_gc> *vec;
-      vec_alloc(vec, 1);
-      constructor_elt empty = {NULL, NULL};
-      constructor_elt* elt = vec->quick_push(empty);
-      elt->index = size_int(0);
-      Gogo* gogo = context->gogo();
-      Btype* btype = element_type->get_backend(gogo);
-      elt->value = expr_to_tree(gogo->backend()->zero_expression(btype));
-      values = build_constructor(constructor_type, vec);
-      if (TREE_CONSTANT(elt->value))
-	TREE_CONSTANT(values) = 1;
-      length_tree = size_int(0);
+      Bexpression* zero = gogo->backend()->zero_expression(int_btype);
+      blength = zero;
+      length_tree =  expr_to_tree(zero);
+
+      Btype* array_btype = gogo->backend()->array_type(belement_type, blength);
+      std::vector<unsigned long> index(1, 0);
+      std::vector<Bexpression*> val(1, zero);
+      Bexpression* ctor =
+	gogo->backend()->array_constructor_expression(array_btype, index, val,
+						      this->location());
+      values = expr_to_tree(ctor);
     }
   else
     {
@@ -12525,13 +12509,18 @@ Open_array_construction_expression::do_get_tree(Translate_context* context)
 	max_index = this->vals()->size() - 1;
       else
 	max_index = this->indexes()->back();
-      tree max_tree = size_int(max_index);
-      tree constructor_type = build_array_type(element_type_tree,
-					       build_index_type(max_tree));
-      if (constructor_type == error_mark_node)
-	return error_mark_node;
-      values = this->get_constructor_tree(context, constructor_type);
+
       length_tree = size_int(max_index + 1);
+
+      mpz_t maxval;
+      mpz_init_set_ui(maxval, max_index + 1);
+
+      Bexpression* blength =
+	gogo->backend()->integer_constant_expression(int_btype, maxval);
+      mpz_clear(maxval);
+
+      Btype* array_btype = gogo->backend()->array_type(belement_type, blength);
+      values = expr_to_tree(this->get_constructor(context, array_btype));
     }
 
   if (values == error_mark_node)
@@ -12592,7 +12581,7 @@ Open_array_construction_expression::do_get_tree(Translate_context* context)
       set = build2(MODIFY_EXPR, void_type_node, ref, values);
     }
 
-  // Build a constructor for the open array.
+  // Build a constructor for the slice.
 
   tree type_tree = type_to_tree(this->type()->get_backend(context->gogo()));
   if (type_tree == error_mark_node)
@@ -12641,7 +12630,7 @@ Expression::make_slice_composite_literal(Type* type, Expression_list* vals,
 					 Location location)
 {
   go_assert(type->is_slice_type());
-  return new Open_array_construction_expression(type, NULL, vals, location);
+  return new Slice_construction_expression(type, NULL, vals, location);
 }
 
 // Construct a map.
@@ -13537,8 +13526,7 @@ Composite_literal_expression::make_array(
     return new Fixed_array_construction_expression(type, indexes, vals,
 						   location);
   else
-    return new Open_array_construction_expression(type, indexes, vals,
-						  location);
+    return new Slice_construction_expression(type, indexes, vals, location);
 }
 
 // Lower a map composite literal.
@@ -13618,7 +13606,7 @@ Expression::is_composite_literal() const
     case EXPRESSION_COMPOSITE_LITERAL:
     case EXPRESSION_STRUCT_CONSTRUCTION:
     case EXPRESSION_FIXED_ARRAY_CONSTRUCTION:
-    case EXPRESSION_OPEN_ARRAY_CONSTRUCTION:
+    case EXPRESSION_SLICE_CONSTRUCTION:
     case EXPRESSION_MAP_CONSTRUCTION:
       return true;
     default:
@@ -13646,10 +13634,10 @@ Expression::is_nonconstant_composite_literal() const
 	  static_cast<const Fixed_array_construction_expression*>(this);
 	return !pace->is_constant_array();
       }
-    case EXPRESSION_OPEN_ARRAY_CONSTRUCTION:
+    case EXPRESSION_SLICE_CONSTRUCTION:
       {
-	const Open_array_construction_expression *pace =
-	  static_cast<const Open_array_construction_expression*>(this);
+	const Slice_construction_expression *pace =
+	  static_cast<const Slice_construction_expression*>(this);
 	return !pace->is_constant_array();
       }
     case EXPRESSION_MAP_CONSTRUCTION:
