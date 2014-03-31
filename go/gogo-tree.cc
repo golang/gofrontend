@@ -1271,95 +1271,6 @@ Function::get_decl() const
   return function_to_tree(this->fndecl_);
 }
 
-// We always pass the receiver to a method as a pointer.  If the
-// receiver is actually declared as a non-pointer type, then we copy
-// the value into a local variable, so that it has the right type.  In
-// this function we create the real PARM_DECL to use, and set
-// DEC_INITIAL of the var_decl to be the value passed in.
-
-tree
-Function::make_receiver_parm_decl(Gogo* gogo, Named_object* no, tree var_decl)
-{
-  if (var_decl == error_mark_node)
-    return error_mark_node;
-  go_assert(TREE_CODE(var_decl) == VAR_DECL);
-  tree val_type = TREE_TYPE(var_decl);
-  bool is_in_heap = no->var_value()->is_in_heap();
-  if (is_in_heap)
-    {
-      go_assert(POINTER_TYPE_P(val_type));
-      val_type = TREE_TYPE(val_type);
-    }
-
-  source_location loc = DECL_SOURCE_LOCATION(var_decl);
-  std::string name = IDENTIFIER_POINTER(DECL_NAME(var_decl));
-  name += ".pointer";
-  tree id = get_identifier_from_string(name);
-  tree parm_decl = build_decl(loc, PARM_DECL, id, build_pointer_type(val_type));
-  DECL_CONTEXT(parm_decl) = current_function_decl;
-  DECL_ARG_TYPE(parm_decl) = TREE_TYPE(parm_decl);
-
-  go_assert(DECL_INITIAL(var_decl) == NULL_TREE);
-  tree init = build_fold_indirect_ref_loc(loc, parm_decl);
-
-  if (is_in_heap)
-    {
-      tree size = TYPE_SIZE_UNIT(val_type);
-      tree space = gogo->allocate_memory(no->var_value()->type(), size,
-					 no->location());
-      space = save_expr(space);
-      space = fold_convert(build_pointer_type(val_type), space);
-      tree spaceref = build_fold_indirect_ref_loc(no->location().gcc_location(),
-                                                  space);
-      TREE_THIS_NOTRAP(spaceref) = 1;
-      tree set = fold_build2_loc(loc, MODIFY_EXPR, void_type_node,
-				 spaceref, init);
-      init = fold_build2_loc(loc, COMPOUND_EXPR, TREE_TYPE(space), set, space);
-    }
-
-  DECL_INITIAL(var_decl) = init;
-
-  return parm_decl;
-}
-
-// If we take the address of a parameter, then we need to copy it into
-// the heap.  We will access it as a local variable via an
-// indirection.
-
-tree
-Function::copy_parm_to_heap(Gogo* gogo, Named_object* no, tree var_decl)
-{
-  if (var_decl == error_mark_node)
-    return error_mark_node;
-  go_assert(TREE_CODE(var_decl) == VAR_DECL);
-  Location loc(DECL_SOURCE_LOCATION(var_decl));
-
-  std::string name = IDENTIFIER_POINTER(DECL_NAME(var_decl));
-  name += ".param";
-  tree id = get_identifier_from_string(name);
-
-  tree type = TREE_TYPE(var_decl);
-  go_assert(POINTER_TYPE_P(type));
-  type = TREE_TYPE(type);
-
-  tree parm_decl = build_decl(loc.gcc_location(), PARM_DECL, id, type);
-  DECL_CONTEXT(parm_decl) = current_function_decl;
-  DECL_ARG_TYPE(parm_decl) = type;
-
-  tree size = TYPE_SIZE_UNIT(type);
-  tree space = gogo->allocate_memory(no->var_value()->type(), size, loc);
-  space = save_expr(space);
-  space = fold_convert(TREE_TYPE(var_decl), space);
-  tree spaceref = build_fold_indirect_ref_loc(loc.gcc_location(), space);
-  TREE_THIS_NOTRAP(spaceref) = 1;
-  tree init = build2(COMPOUND_EXPR, TREE_TYPE(space),
-		     build2(MODIFY_EXPR, void_type_node, spaceref, parm_decl),
-		     space);
-  DECL_INITIAL(var_decl) = init;
-
-  return parm_decl;
-}
-
 // Get a tree for function code.
 
 void
@@ -1371,12 +1282,14 @@ Function::build_tree(Gogo* gogo, Named_object* named_function)
   tree params = NULL_TREE;
   tree* pp = &params;
 
+  Translate_context context(gogo, named_function, NULL, NULL);
   tree declare_vars = NULL_TREE;
   for (Bindings::const_definitions_iterator p =
 	 this->block_->bindings()->begin_definitions();
        p != this->block_->bindings()->end_definitions();
        ++p)
     {
+      Location loc = (*p)->location();
       if ((*p)->is_variable() && (*p)->var_value()->is_parameter())
 	{
 	  Bvariable* bvar = (*p)->get_backend_variable(gogo, named_function);
@@ -1388,29 +1301,56 @@ Function::build_tree(Gogo* gogo, Named_object* named_function)
 	  if ((*p)->var_value()->is_receiver()
 	      && (*p)->var_value()->type()->points_to() == NULL)
 	    {
-	      tree parm_decl = this->make_receiver_parm_decl(gogo, *p, *pp);
+	      std::string name = (*p)->name() + ".pointer";
+	      Type* var_type = (*p)->var_value()->type();
+	      Variable* parm_var =
+		  new Variable(Type::make_pointer_type(var_type), NULL, false,
+			       true, false, loc);
+	      Named_object* parm_no =
+                  Named_object::make_variable(name, NULL, parm_var);
+	      Expression* parm_ref =
+                  Expression::make_var_reference(parm_no, loc);
+	      parm_ref = Expression::make_unary(OPERATOR_MULT, parm_ref, loc);
+	      if ((*p)->var_value()->is_in_heap())
+		parm_ref = Expression::make_heap_expression(parm_ref, loc);
+
 	      tree var = *pp;
 	      if (var != error_mark_node)
 		{
+                  DECL_INITIAL(var) = parm_ref->get_tree(&context);
 		  go_assert(TREE_CODE(var) == VAR_DECL);
 		  DECL_CHAIN(var) = declare_vars;
 		  declare_vars = var;
 		}
-	      *pp = parm_decl;
+	      Bvariable* parm_bvar =
+		  parm_no->get_backend_variable(gogo, named_function);
+	      *pp = var_to_tree(parm_bvar);
 	    }
 	  else if ((*p)->var_value()->is_in_heap())
 	    {
 	      // If we take the address of a parameter, then we need
 	      // to copy it into the heap.
-	      tree parm_decl = this->copy_parm_to_heap(gogo, *p, *pp);
+	      std::string parm_name = (*p)->name() + ".param";
+	      Variable* parm_var = new Variable((*p)->var_value()->type(), NULL,
+						false, true, false, loc);
+	      Named_object* parm_no =
+		  Named_object::make_variable(parm_name, NULL, parm_var);
+	      Expression* var_ref =
+		  Expression::make_var_reference(parm_no, loc);
+	      var_ref = Expression::make_heap_expression(var_ref, loc);
+
 	      tree var = *pp;
 	      if (var != error_mark_node)
 		{
+                  DECL_INITIAL(var) = var_ref->get_tree(&context);
 		  go_assert(TREE_CODE(var) == VAR_DECL);
 		  DECL_CHAIN(var) = declare_vars;
 		  declare_vars = var;
 		}
-	      *pp = parm_decl;
+
+	      Bvariable* parm_bvar =
+		  parm_no->get_backend_variable(gogo, named_function);
+	      *pp = var_to_tree(parm_bvar);
 	    }
 
 	  if (*pp != error_mark_node)
@@ -1432,15 +1372,7 @@ Function::build_tree(Gogo* gogo, Named_object* named_function)
 	      init = expr_to_tree(gogo->backend()->zero_expression(btype));
 	    }
 	  else
-	    {
-	      Location loc = (*p)->location();
-	      tree type_tree = type_to_tree(type->get_backend(gogo));
-	      tree space = gogo->allocate_memory(type,
-						 TYPE_SIZE_UNIT(type_tree),
-						 loc);
-	      tree ptr_type_tree = build_pointer_type(type_tree);
-	      init = fold_convert_loc(loc.gcc_location(), ptr_type_tree, space);
-	    }
+	    init = Expression::make_allocation(type, loc)->get_tree(&context);
 
 	  if (var_decl != error_mark_node)
 	    {
@@ -1831,38 +1763,6 @@ go_type_for_mode(enum machine_mode mode, int unsignedp)
     }
   else
     return NULL_TREE;
-}
-
-// Return a tree which allocates SIZE bytes which will holds value of
-// type TYPE.
-
-tree
-Gogo::allocate_memory(Type* type, tree size, Location location)
-{
-  // If the package imports unsafe, then it may play games with
-  // pointers that look like integers.
-  if (this->imported_unsafe_ || type->has_pointer())
-    {
-      static tree new_fndecl;
-      return Gogo::call_builtin(&new_fndecl,
-				location,
-				"__go_new",
-				1,
-				ptr_type_node,
-				sizetype,
-				size);
-    }
-  else
-    {
-      static tree new_nopointers_fndecl;
-      return Gogo::call_builtin(&new_nopointers_fndecl,
-				location,
-				"__go_new_nopointers",
-				1,
-				ptr_type_node,
-				sizetype,
-				size);
-    }
 }
 
 // Build a builtin struct with a list of fields.  The name is

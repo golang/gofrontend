@@ -11775,15 +11775,13 @@ class Allocation_expression : public Expression
 tree
 Allocation_expression::do_get_tree(Translate_context* context)
 {
-  tree type_tree = type_to_tree(this->type_->get_backend(context->gogo()));
-  if (type_tree == error_mark_node)
-    return error_mark_node;
-  tree size_tree = TYPE_SIZE_UNIT(type_tree);
-  tree space = context->gogo()->allocate_memory(this->type_, size_tree,
-						this->location());
-  if (space == error_mark_node)
-    return error_mark_node;
-  return fold_convert(build_pointer_type(type_tree), space);
+  Gogo* gogo = context->gogo();
+  Location loc = this->location();
+  Expression* space = gogo->allocate_memory(this->type_, loc);
+  Bexpression* bspace = tree_to_expr(space->get_tree(context));
+  Btype* pbtype = gogo->backend()->pointer_type(this->type_->get_backend(gogo));
+  Bexpression* ret = gogo->backend()->convert_expression(pbtype, bspace, loc);
+  return expr_to_tree(ret);
 }
 
 // Dump ast representation for an allocation expression.
@@ -12450,7 +12448,8 @@ class Slice_construction_expression : public Array_construction_expression
 				const std::vector<unsigned long>* indexes,
 				Expression_list* vals, Location location)
     : Array_construction_expression(EXPRESSION_SLICE_CONSTRUCTION,
-				    type, indexes, vals, location)
+				    type, indexes, vals, location),
+      valtype_(NULL)
   { go_assert(type->is_slice_type()); }
 
  protected:
@@ -12468,6 +12467,10 @@ class Slice_construction_expression : public Array_construction_expression
 
   tree
   do_get_tree(Translate_context*);
+
+ private:
+  // The type of the values in this slice.
+  Type* valtype_;
 };
 
 // Return a tree for constructing a slice.
@@ -12483,49 +12486,43 @@ Slice_construction_expression::do_get_tree(Translate_context* context)
     }
 
   Type* element_type = array_type->element_type();
-  Btype* belement_type = element_type->get_backend(context->gogo());
+  if (this->valtype_ == NULL)
+    {
+      mpz_t lenval;
+      Expression* length;
+      if (this->vals() == NULL || this->vals()->empty())
+        mpz_init_set_ui(lenval, 0);
+      else
+        {
+          if (this->indexes() == NULL)
+            mpz_init_set_ui(lenval, this->vals()->size());
+          else
+            mpz_init_set_ui(lenval, this->indexes()->back() + 1);
+        }
+      Location loc = this->location();
+      Type* int_type = Type::lookup_integer_type("int");
+      length = Expression::make_integer(&lenval, int_type, loc);
+      mpz_clear(lenval);
+      this->valtype_ = Type::make_array_type(element_type, length);
+    }
 
   tree values;
-  tree length_tree;
-
   Gogo* gogo = context->gogo();
-  Btype* int_btype = Type::lookup_integer_type("int")->get_backend(gogo);
-  Bexpression* blength;
+  Btype* val_btype = this->valtype_->get_backend(gogo);
   if (this->vals() == NULL || this->vals()->empty())
     {
       // We need to create a unique value.
+      Btype* int_btype = Type::lookup_integer_type("int")->get_backend(gogo);
       Bexpression* zero = gogo->backend()->zero_expression(int_btype);
-      blength = zero;
-      length_tree =  expr_to_tree(zero);
-
-      Btype* array_btype = gogo->backend()->array_type(belement_type, blength);
       std::vector<unsigned long> index(1, 0);
       std::vector<Bexpression*> val(1, zero);
       Bexpression* ctor =
-	gogo->backend()->array_constructor_expression(array_btype, index, val,
+	gogo->backend()->array_constructor_expression(val_btype, index, val,
 						      this->location());
       values = expr_to_tree(ctor);
     }
   else
-    {
-      unsigned long max_index;
-      if (this->indexes() == NULL)
-	max_index = this->vals()->size() - 1;
-      else
-	max_index = this->indexes()->back();
-
-      length_tree = size_int(max_index + 1);
-
-      mpz_t maxval;
-      mpz_init_set_ui(maxval, max_index + 1);
-
-      Bexpression* blength =
-	gogo->backend()->integer_constant_expression(int_btype, maxval);
-      mpz_clear(maxval);
-
-      Btype* array_btype = gogo->backend()->array_type(belement_type, blength);
-      values = expr_to_tree(this->get_constructor(context, array_btype));
-    }
+    values = expr_to_tree(this->get_constructor(context, val_btype));
 
   if (values == error_mark_node)
     return error_mark_node;
@@ -12573,10 +12570,9 @@ Slice_construction_expression::do_get_tree(Translate_context* context)
     }
   else
     {
-      tree memsize = TYPE_SIZE_UNIT(TREE_TYPE(values));
-      space = context->gogo()->allocate_memory(element_type, memsize,
-					       this->location());
-      space = save_expr(space);
+      Expression* alloc =
+          context->gogo()->allocate_memory(this->valtype_, this->location());
+      space = save_expr(alloc->get_tree(context));
 
       tree s = fold_convert(build_pointer_type(TREE_TYPE(values)), space);
       tree ref = build_fold_indirect_ref_loc(this->location().gcc_location(),
@@ -12602,6 +12598,7 @@ Slice_construction_expression::do_get_tree(Translate_context* context)
   elt->index = field;
   elt->value = fold_convert(TREE_TYPE(field), space);
 
+  tree length_tree = this->valtype_->array_type()->length()->get_tree(context);
   elt = init->quick_push(empty);
   field = DECL_CHAIN(field);
   go_assert(strcmp(IDENTIFIER_POINTER(DECL_NAME(field)), "__count") == 0);
@@ -13840,16 +13837,23 @@ Heap_expression::do_get_tree(Translate_context* context)
   tree expr_tree = this->expr_->get_tree(context);
   if (expr_tree == error_mark_node || TREE_TYPE(expr_tree) == error_mark_node)
     return error_mark_node;
-  tree expr_size = TYPE_SIZE_UNIT(TREE_TYPE(expr_tree));
-  go_assert(TREE_CODE(expr_size) == INTEGER_CST);
-  tree space = context->gogo()->allocate_memory(this->expr_->type(),
-						expr_size, this->location());
-  space = fold_convert(build_pointer_type(TREE_TYPE(expr_tree)), space);
+
+  Expression* alloc =
+      Expression::make_allocation(this->expr_->type(), this->location());
+
+  Gogo* gogo = context->gogo();
+  Btype* btype = this->expr_->type()->get_backend(gogo);
+  size_t expr_size = gogo->backend()->type_size(btype);
+  tree space = alloc->get_tree(context);
+  if (expr_size == 0)
+    return space;
+
   space = save_expr(space);
   tree ref = build_fold_indirect_ref_loc(this->location().gcc_location(),
                                          space);
   TREE_THIS_NOTRAP(ref) = 1;
-  tree ret = build2(COMPOUND_EXPR, TREE_TYPE(space),
+  tree ret = build2(COMPOUND_EXPR,
+                    type_to_tree(this->type()->get_backend(gogo)),
 		    build2(MODIFY_EXPR, void_type_node, ref, expr_tree),
 		    space);
   SET_EXPR_LOCATION(ret, this->location().gcc_location());

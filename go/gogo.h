@@ -612,10 +612,9 @@ class Gogo
   void
   build_interface_method_tables();
 
-  // Return a tree which allocate SIZE bytes to hold values of type
-  // TYPE.
-  tree
-  allocate_memory(Type *type, tree size, Location);
+  // Return an expression which allocates memory to hold values of type TYPE.
+  Expression*
+  allocate_memory(Type *type, Location);
 
  private:
   // During parsing, we keep a stack of functions.  Each function on
@@ -1121,12 +1120,6 @@ class Function
  private:
   // Type for mapping from label names to Label objects.
   typedef Unordered_map(std::string, Label*) Labels;
-
-  tree
-  make_receiver_parm_decl(Gogo*, Named_object*, tree);
-
-  tree
-  copy_parm_to_heap(Gogo*, Named_object*, tree);
 
   void
   build_defer_wrapper(Gogo*, Named_object*, tree*, tree*);

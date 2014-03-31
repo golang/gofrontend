@@ -3366,6 +3366,28 @@ Build_method_tables::type(Type* type)
   return TRAVERSE_CONTINUE;
 }
 
+// Return an expression which allocates memory to hold values of type TYPE.
+
+Expression*
+Gogo::allocate_memory(Type* type, Location location)
+{
+  Btype* btype = type->get_backend(this);
+  size_t size = this->backend()->type_size(btype);
+  mpz_t size_val;
+  mpz_init_set_ui(size_val, size);
+  Type* uintptr = Type::lookup_integer_type("uintptr");
+  Expression* size_expr =
+    Expression::make_integer(&size_val, uintptr, location);
+
+  // If the package imports unsafe, then it may play games with
+  // pointers that look like integers.
+  bool use_new_pointers = this->imported_unsafe_ || type->has_pointer();
+  return Runtime::make_call((use_new_pointers
+			     ? Runtime::NEW
+			     : Runtime::NEW_NOPOINTERS),
+                            location, 1, size_expr);
+}
+
 // Traversal class used to check for return statements.
 
 class Check_return_statements_traverse : public Traverse
