@@ -1093,10 +1093,9 @@ class Function
   void
   build_tree(Gogo*, Named_object*);
 
-  // Get the value to return when not explicitly specified.  May also
-  // add statements to execute first to STMT_LIST.
-  tree
-  return_value(Gogo*, Named_object*, Location, tree* stmt_list) const;
+  // Get the statement that assigns values to this function's result struct.
+  Bstatement*
+  return_value(Gogo*, Named_object*, Location) const;
 
   // Get a tree for the variable holding the defer stack.
   Expression*
@@ -1122,7 +1121,7 @@ class Function
   typedef Unordered_map(std::string, Label*) Labels;
 
   void
-  build_defer_wrapper(Gogo*, Named_object*, tree*, tree*);
+  build_defer_wrapper(Gogo*, Named_object*, Bstatement**, Bstatement**);
 
   typedef std::vector<std::pair<Named_object*,
 				Location> > Closure_fields;

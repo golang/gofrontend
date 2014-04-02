@@ -4138,6 +4138,103 @@ Function::get_or_make_decl(Gogo* gogo, Named_object* no)
   return this->fndecl_;
 }
 
+// Build the wrappers around function code needed if the function has
+// any defer statements.  This sets *EXCEPT to an exception handler
+// and *FINI to a finally handler.
+
+void
+Function::build_defer_wrapper(Gogo* gogo, Named_object* named_function,
+			      Bstatement** except, Bstatement** fini)
+{
+  Location end_loc = this->block_->end_location();
+
+  // Add an exception handler.  This is used if a panic occurs.  Its
+  // purpose is to stop the stack unwinding if a deferred function
+  // calls recover.  There are more details in
+  // libgo/runtime/go-unwind.c.
+
+  std::vector<Bstatement*> stmts;
+  Expression* call = Runtime::make_call(Runtime::CHECK_DEFER, end_loc, 1,
+					this->defer_stack(end_loc));
+  Translate_context context(gogo, named_function, NULL, NULL);
+  Bexpression* defer = tree_to_expr(call->get_tree(&context));
+  stmts.push_back(gogo->backend()->expression_statement(defer));
+
+  Bstatement* ret_bstmt = this->return_value(gogo, named_function, end_loc);
+  if (ret_bstmt != NULL)
+    stmts.push_back(ret_bstmt);
+
+  go_assert(*except == NULL);
+  *except = gogo->backend()->statement_list(stmts);
+
+  call = Runtime::make_call(Runtime::CHECK_DEFER, end_loc, 1,
+                            this->defer_stack(end_loc));
+  defer = tree_to_expr(call->get_tree(&context));
+
+  call = Runtime::make_call(Runtime::UNDEFER, end_loc, 1,
+        		    this->defer_stack(end_loc));
+  Bexpression* undefer = tree_to_expr(call->get_tree(&context));
+  Bstatement* function_defer =
+      gogo->backend()->function_defer_statement(this->fndecl_, undefer, defer,
+                                                end_loc);
+  stmts = std::vector<Bstatement*>(1, function_defer);
+  if (this->type_->results() != NULL
+      && !this->type_->results()->empty()
+      && !this->type_->results()->front().name().empty())
+    {
+      // If the result variables are named, and we are returning from
+      // this function rather than panicing through it, we need to
+      // return them again, because they might have been changed by a
+      // defer function.  The runtime routines set the defer_stack
+      // variable to true if we are returning from this function.
+
+      ret_bstmt = this->return_value(gogo, named_function, end_loc);
+      Bexpression* nil =
+          tree_to_expr(Expression::make_nil(end_loc)->get_tree(&context));
+      Bexpression* ret =
+          gogo->backend()->compound_expression(ret_bstmt, nil, end_loc);
+      Expression* ref =
+	Expression::make_temporary_reference(this->defer_stack_, end_loc);
+      Bexpression* bref = tree_to_expr(ref->get_tree(&context));
+      ret = gogo->backend()->conditional_expression(NULL, bref, ret, NULL,
+                                                    end_loc);
+      stmts.push_back(gogo->backend()->expression_statement(ret));
+    }
+
+  go_assert(*fini == NULL);
+  *fini = gogo->backend()->statement_list(stmts);
+}
+
+// Return the statement that assigns values to this function's result struct.
+
+Bstatement*
+Function::return_value(Gogo* gogo, Named_object* named_function,
+		       Location location) const
+{
+  const Typed_identifier_list* results = this->type_->results();
+  if (results == NULL || results->empty())
+    return NULL;
+
+  go_assert(this->results_ != NULL);
+  if (this->results_->size() != results->size())
+    {
+      go_assert(saw_errors());
+      return gogo->backend()->error_statement();
+    }
+
+  std::vector<Bexpression*> vals(results->size());
+  for (size_t i = 0; i < vals.size(); ++i)
+    {
+      Named_object* no = (*this->results_)[i];
+      Bvariable* bvar = no->get_backend_variable(gogo, named_function);
+      Bexpression* val = gogo->backend()->var_expression(bvar, location);
+      if (no->result_var_value()->is_in_heap())
+        val = gogo->backend()->indirect_expression(val, true, location);
+      vals[i] = val;
+    }
+  return gogo->backend()->return_statement(this->fndecl_, vals, location);
+}
+
 // Class Block.
 
 Block::Block(Block* enclosing, Location location)

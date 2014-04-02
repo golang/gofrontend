@@ -1452,8 +1452,8 @@ Function::build_tree(Gogo* gogo, Named_object* named_function)
       tree code = block_to_tree(bblock);
 
       tree init = NULL_TREE;
-      tree except = NULL_TREE;
-      tree fini = NULL_TREE;
+      Bstatement* except = NULL;
+      Bstatement* fini = NULL;
 
       // Initialize variables if necessary.
       for (tree v = declare_vars; v != NULL_TREE; v = DECL_CHAIN(v))
@@ -1479,11 +1479,13 @@ Function::build_tree(Gogo* gogo, Named_object* named_function)
 	{
 	  if (init != NULL_TREE)
 	    code = build2(COMPOUND_EXPR, void_type_node, init, code);
-	  if (except != NULL_TREE)
+	  if (except != NULL)
 	    code = build2(TRY_CATCH_EXPR, void_type_node, code,
-			  build2(CATCH_EXPR, void_type_node, NULL, except));
-	  if (fini != NULL_TREE)
-	    code = build2(TRY_FINALLY_EXPR, void_type_node, code, fini);
+			  build2(CATCH_EXPR, void_type_node, NULL,
+                                 stat_to_tree(except)));
+	  if (fini != NULL)
+	    code = build2(TRY_FINALLY_EXPR, void_type_node, code,
+                          stat_to_tree(fini));
 	}
 
       // Stick the code into the block we built for the receiver, if
@@ -1502,167 +1504,6 @@ Function::build_tree(Gogo* gogo, Named_object* named_function)
     {
       Translate_context context(gogo, NULL, NULL, NULL);
       this->descriptor_->get_tree(&context);
-    }
-}
-
-// Build the wrappers around function code needed if the function has
-// any defer statements.  This sets *EXCEPT to an exception handler
-// and *FINI to a finally handler.
-
-void
-Function::build_defer_wrapper(Gogo* gogo, Named_object* named_function,
-			      tree *except, tree *fini)
-{
-  Location end_loc = this->block_->end_location();
-
-  // Add an exception handler.  This is used if a panic occurs.  Its
-  // purpose is to stop the stack unwinding if a deferred function
-  // calls recover.  There are more details in
-  // libgo/runtime/go-unwind.c.
-
-  tree stmt_list = NULL_TREE;
-
-  Expression* call = Runtime::make_call(Runtime::CHECK_DEFER, end_loc, 1,
-					this->defer_stack(end_loc));
-  Translate_context context(gogo, named_function, NULL, NULL);
-  tree call_tree = call->get_tree(&context);
-  if (call_tree != error_mark_node)
-    append_to_statement_list(call_tree, &stmt_list);
-
-  tree retval = this->return_value(gogo, named_function, end_loc, &stmt_list);
-  tree set;
-  if (retval == NULL_TREE)
-    set = NULL_TREE;
-  else
-    set = fold_build2_loc(end_loc.gcc_location(), MODIFY_EXPR, void_type_node,
-			  DECL_RESULT(this->get_decl()), retval);
-  tree ret_stmt = fold_build1_loc(end_loc.gcc_location(), RETURN_EXPR,
-                                  void_type_node, set);
-  append_to_statement_list(ret_stmt, &stmt_list);
-
-  go_assert(*except == NULL_TREE);
-  *except = stmt_list;
-
-  // Add some finally code to run the defer functions.  This is used
-  // both in the normal case, when no panic occurs, and also if a
-  // panic occurs to run any further defer functions.  Of course, it
-  // is possible for a defer function to call panic which should be
-  // caught by another defer function.  To handle that we use a loop.
-  //  finish:
-  //   try { __go_undefer(); } catch { __go_check_defer(); goto finish; }
-  //   if (return values are named) return named_vals;
-
-  stmt_list = NULL;
-
-  tree label = create_artificial_label(end_loc.gcc_location());
-  tree define_label = fold_build1_loc(end_loc.gcc_location(), LABEL_EXPR,
-                                      void_type_node, label);
-  append_to_statement_list(define_label, &stmt_list);
-
-  call = Runtime::make_call(Runtime::UNDEFER, end_loc, 1,
-			    this->defer_stack(end_loc));
-  tree undefer = call->get_tree(&context);
-
-  call = Runtime::make_call(Runtime::CHECK_DEFER, end_loc, 1,
-			    this->defer_stack(end_loc));
-  tree defer = call->get_tree(&context);
-
-  if (undefer == error_mark_node || defer == error_mark_node)
-    return;
-
-  tree jump = fold_build1_loc(end_loc.gcc_location(), GOTO_EXPR, void_type_node,
-                              label);
-  tree catch_body = build2(COMPOUND_EXPR, void_type_node, defer, jump);
-  catch_body = build2(CATCH_EXPR, void_type_node, NULL, catch_body);
-  tree try_catch = build2(TRY_CATCH_EXPR, void_type_node, undefer, catch_body);
-
-  append_to_statement_list(try_catch, &stmt_list);
-
-  if (this->type_->results() != NULL
-      && !this->type_->results()->empty()
-      && !this->type_->results()->front().name().empty())
-    {
-      // If the result variables are named, and we are returning from
-      // this function rather than panicing through it, we need to
-      // return them again, because they might have been changed by a
-      // defer function.  The runtime routines set the defer_stack
-      // variable to true if we are returning from this function.
-      retval = this->return_value(gogo, named_function, end_loc,
-				  &stmt_list);
-      set = fold_build2_loc(end_loc.gcc_location(), MODIFY_EXPR, void_type_node,
-			    DECL_RESULT(this->get_decl()), retval);
-      ret_stmt = fold_build1_loc(end_loc.gcc_location(), RETURN_EXPR,
-                                 void_type_node, set);
-
-      Expression* ref =
-	Expression::make_temporary_reference(this->defer_stack_, end_loc);
-      tree tref = ref->get_tree(&context);
-      tree s = build3_loc(end_loc.gcc_location(), COND_EXPR, void_type_node,
-                          tref, ret_stmt, NULL_TREE);
-
-      append_to_statement_list(s, &stmt_list);
-
-    }
-  
-  go_assert(*fini == NULL_TREE);
-  *fini = stmt_list;
-}
-
-// Return the value to assign to DECL_RESULT(this->get_decl()).  This may
-// also add statements to STMT_LIST, which need to be executed before
-// the assignment.  This is used for a return statement with no
-// explicit values.
-
-tree
-Function::return_value(Gogo* gogo, Named_object* named_function,
-		       Location location, tree* stmt_list) const
-{
-  const Typed_identifier_list* results = this->type_->results();
-  if (results == NULL || results->empty())
-    return NULL_TREE;
-
-  go_assert(this->results_ != NULL);
-  if (this->results_->size() != results->size())
-    {
-      go_assert(saw_errors());
-      return error_mark_node;
-    }
-
-  tree retval;
-  if (results->size() == 1)
-    {
-      Bvariable* bvar =
-	this->results_->front()->get_backend_variable(gogo,
-						      named_function);
-      tree ret = var_to_tree(bvar);
-      if (this->results_->front()->result_var_value()->is_in_heap())
-	ret = build_fold_indirect_ref_loc(location.gcc_location(), ret);
-      return ret;
-    }
-  else
-    {
-      tree rettype = TREE_TYPE(DECL_RESULT(this->get_decl()));
-      retval = create_tmp_var(rettype, "RESULT");
-      tree field = TYPE_FIELDS(rettype);
-      int index = 0;
-      for (Typed_identifier_list::const_iterator pr = results->begin();
-	   pr != results->end();
-	   ++pr, ++index, field = DECL_CHAIN(field))
-	{
-	  go_assert(field != NULL);
-	  Named_object* no = (*this->results_)[index];
-	  Bvariable* bvar = no->get_backend_variable(gogo, named_function);
-	  tree val = var_to_tree(bvar);
-	  if (no->result_var_value()->is_in_heap())
-	    val = build_fold_indirect_ref_loc(location.gcc_location(), val);
-	  tree set = fold_build2_loc(location.gcc_location(), MODIFY_EXPR,
-                                     void_type_node,
-				     build3(COMPONENT_REF, TREE_TYPE(field),
-					    retval, field, NULL_TREE),
-				     val);
-	  append_to_statement_list(set, stmt_list);
-	}
-      return retval;
     }
 }
 

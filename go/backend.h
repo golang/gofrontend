@@ -618,6 +618,15 @@ class Backend
   function(Btype* fntype, const std::string& name, const std::string& asm_name,
            bool is_visible, bool is_declaration, bool is_inlinable,
            bool disable_split_stack, bool in_unique_section, Location) = 0;
+
+  // Create a statement that runs all deferred calls for FUNCTION.  This should
+  // be a statement that looks like this in C++:
+  //   finish:
+  //     try { UNDEFER; } catch { CHECK_DEFER; goto finish; }
+  virtual Bstatement*
+  function_defer_statement(Bfunction* function, Bexpression* undefer,
+                           Bexpression* check_defer, Location) = 0;
+
 };
 
 // The backend interface has to define this function.
