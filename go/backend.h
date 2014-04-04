@@ -415,6 +415,15 @@ class Backend
   virtual Bstatement*
   statement_list(const std::vector<Bstatement*>&) = 0;
 
+  // Create a statement that attempts to execute BSTAT and calls EXCEPT_STMT if
+  // an exception occurs. EXCEPT_STMT may be NULL.  FINALLY_STMT may be NULL and
+  // if not NULL, it will always be executed.  This is used for handling defers
+  // in Go functions.  In C++, the resulting code is of this form:
+  //   try { BSTAT; } catch { EXCEPT_STMT; } finally { FINALLY_STMT; }
+  virtual Bstatement*
+  exception_handler_statement(Bstatement* bstat, Bstatement* except_stmt,
+                              Bstatement* finally_stmt, Location) = 0;
+
   // Blocks.
 
   // Create a block.  The frontend will call this function when it
@@ -627,6 +636,17 @@ class Backend
   function_defer_statement(Bfunction* function, Bexpression* undefer,
                            Bexpression* check_defer, Location) = 0;
 
+  // Record PARAM_VARS as the variables to use for the parameters of FUNCTION.
+  // This will only be called for a function definition.  Returns true on
+  // success, false on failure.
+  virtual bool
+  function_set_parameters(Bfunction* function,
+                         const std::vector<Bvariable*>& param_vars) = 0;
+
+  // Set the function body for FUNCTION using the code in CODE_STMT.  Returns
+  // true on success, false on failure.
+  virtual bool
+  function_set_body(Bfunction* function, Bstatement* code_stmt) = 0;
 };
 
 // The backend interface has to define this function.

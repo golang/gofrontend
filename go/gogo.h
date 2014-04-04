@@ -1089,9 +1089,10 @@ class Function
   tree
   get_decl() const;
 
-  // Set the function decl to hold a tree of the function code.
+  // Set the function decl to hold a backend representation of the function
+  // code.
   void
-  build_tree(Gogo*, Named_object*);
+  build(Gogo*, Named_object*);
 
   // Get the statement that assigns values to this function's result struct.
   Bstatement*

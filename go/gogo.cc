@@ -4138,6 +4138,196 @@ Function::get_or_make_decl(Gogo* gogo, Named_object* no)
   return this->fndecl_;
 }
 
+// Build the backend representation for the function code.
+
+void
+Function::build(Gogo* gogo, Named_object* named_function)
+{
+  Translate_context context(gogo, named_function, NULL, NULL);
+
+  // A list of parameter variables for this function.
+  std::vector<Bvariable*> param_vars;
+
+  // Variables that need to be declared for this function and their
+  // initial values.
+  std::vector<Bvariable*> vars;
+  std::vector<Bexpression*> var_inits;
+  for (Bindings::const_definitions_iterator p =
+	 this->block_->bindings()->begin_definitions();
+       p != this->block_->bindings()->end_definitions();
+       ++p)
+    {
+      Location loc = (*p)->location();
+      if ((*p)->is_variable() && (*p)->var_value()->is_parameter())
+	{
+	  Bvariable* bvar = (*p)->get_backend_variable(gogo, named_function);
+          Bvariable* parm_bvar = bvar;
+
+	  // We always pass the receiver to a method as a pointer.  If
+	  // the receiver is declared as a non-pointer type, then we
+	  // copy the value into a local variable.
+	  if ((*p)->var_value()->is_receiver()
+	      && (*p)->var_value()->type()->points_to() == NULL)
+	    {
+	      std::string name = (*p)->name() + ".pointer";
+	      Type* var_type = (*p)->var_value()->type();
+	      Variable* parm_var =
+		  new Variable(Type::make_pointer_type(var_type), NULL, false,
+			       true, false, loc);
+	      Named_object* parm_no =
+                  Named_object::make_variable(name, NULL, parm_var);
+              parm_bvar = parm_no->get_backend_variable(gogo, named_function);
+
+              vars.push_back(bvar);
+	      Expression* parm_ref =
+                  Expression::make_var_reference(parm_no, loc);
+	      parm_ref = Expression::make_unary(OPERATOR_MULT, parm_ref, loc);
+	      if ((*p)->var_value()->is_in_heap())
+		parm_ref = Expression::make_heap_expression(parm_ref, loc);
+              var_inits.push_back(tree_to_expr(parm_ref->get_tree(&context)));
+	    }
+	  else if ((*p)->var_value()->is_in_heap())
+	    {
+	      // If we take the address of a parameter, then we need
+	      // to copy it into the heap.
+	      std::string parm_name = (*p)->name() + ".param";
+	      Variable* parm_var = new Variable((*p)->var_value()->type(), NULL,
+						false, true, false, loc);
+	      Named_object* parm_no =
+		  Named_object::make_variable(parm_name, NULL, parm_var);
+	      parm_bvar = parm_no->get_backend_variable(gogo, named_function);
+
+              vars.push_back(bvar);
+	      Expression* var_ref =
+		  Expression::make_var_reference(parm_no, loc);
+	      var_ref = Expression::make_heap_expression(var_ref, loc);
+              var_inits.push_back(tree_to_expr(var_ref->get_tree(&context)));
+	    }
+          param_vars.push_back(parm_bvar);
+	}
+      else if ((*p)->is_result_variable())
+	{
+	  Bvariable* bvar = (*p)->get_backend_variable(gogo, named_function);
+
+	  Type* type = (*p)->result_var_value()->type();
+	  Bexpression* init;
+	  if (!(*p)->result_var_value()->is_in_heap())
+	    {
+	      Btype* btype = type->get_backend(gogo);
+	      init = gogo->backend()->zero_expression(btype);
+	    }
+	  else
+            {
+              Expression* alloc = Expression::make_allocation(type, loc);
+              init = tree_to_expr(alloc->get_tree(&context));
+            }
+
+          vars.push_back(bvar);
+          var_inits.push_back(init);
+	}
+    }
+  if (!gogo->backend()->function_set_parameters(this->fndecl_, param_vars))
+    {
+      go_assert(saw_errors());
+      return;
+    }
+
+  // If we need a closure variable, fetch it by calling a runtime
+  // function.  The caller will have called __go_set_closure before
+  // the function call.
+  if (this->closure_var_ != NULL)
+    {
+      Bvariable* closure_bvar =
+	this->closure_var_->get_backend_variable(gogo, named_function);
+      vars.push_back(closure_bvar);
+
+      Expression* closure =
+          Runtime::make_call(Runtime::GET_CLOSURE, this->location_, 0);
+      var_inits.push_back(tree_to_expr(closure->get_tree(&context)));
+    }
+
+  if (this->block_ != NULL)
+    {
+      // Declare variables if necessary.
+      Bblock* var_decls = NULL;
+
+      Bstatement* defer_init = NULL;
+      if (!vars.empty() || this->defer_stack_ != NULL)
+	{
+          var_decls =
+              gogo->backend()->block(this->fndecl_, NULL, vars,
+                                     this->block_->start_location(),
+                                     this->block_->end_location());
+
+	  if (this->defer_stack_ != NULL)
+	    {
+	      Translate_context dcontext(gogo, named_function, this->block_,
+                                         var_decls);
+              defer_init = this->defer_stack_->get_backend(&dcontext);
+	    }
+	}
+
+      // Build the backend representation for all the statements in the
+      // function.
+      Translate_context context(gogo, named_function, NULL, NULL);
+      Bblock* code_block = this->block_->get_backend(&context);
+
+      // Initialize variables if necessary.
+      std::vector<Bstatement*> init;
+      go_assert(vars.size() == var_inits.size());
+      for (size_t i = 0; i < vars.size(); ++i)
+	{
+          Bstatement* init_stmt =
+              gogo->backend()->init_statement(vars[i], var_inits[i]);
+          init.push_back(init_stmt);
+	}
+      Bstatement* var_init = gogo->backend()->statement_list(init);
+
+      // Initialize all variables before executing this code block.
+      Bstatement* code_stmt = gogo->backend()->block_statement(code_block);
+      code_stmt = gogo->backend()->compound_statement(var_init, code_stmt);
+
+      // If we have a defer stack, initialize it at the start of a
+      // function.
+      Bstatement* except = NULL;
+      Bstatement* fini = NULL;
+      if (defer_init != NULL)
+	{
+	  // Clean up the defer stack when we leave the function.
+	  this->build_defer_wrapper(gogo, named_function, &except, &fini);
+
+          // Wrap the code for this function in an exception handler to handle
+          // defer calls.
+          code_stmt =
+              gogo->backend()->exception_handler_statement(code_stmt,
+                                                           except, fini,
+                                                           this->location_);
+	}
+
+      // Stick the code into the block we built for the receiver, if
+      // we built one.
+      if (var_decls != NULL)
+        {
+          std::vector<Bstatement*> code_stmt_list(1, code_stmt);
+          gogo->backend()->block_add_statements(var_decls, code_stmt_list);
+          code_stmt = gogo->backend()->block_statement(var_decls);
+        }
+
+      if (!gogo->backend()->function_set_body(this->fndecl_, code_stmt))
+        {
+          go_assert(saw_errors());
+          return;
+        }
+    }
+
+  // If we created a descriptor for the function, make sure we emit it.
+  if (this->descriptor_ != NULL)
+    {
+      Translate_context context(gogo, NULL, NULL, NULL);
+      this->descriptor_->get_tree(&context);
+    }
+}
+
 // Build the wrappers around function code needed if the function has
 // any defer statements.  This sets *EXCEPT to an exception handler
 // and *FINI to a finally handler.
