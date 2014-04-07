@@ -5171,6 +5171,74 @@ Variable::determine_type()
     }
 }
 
+// Get the initial value of a variable.  This does not
+// consider whether the variable is in the heap--it returns the
+// initial value as though it were always stored in the stack.
+
+Bexpression*
+Variable::get_init(Gogo* gogo, Named_object* function)
+{
+  go_assert(this->preinit_ == NULL);
+  Location loc = this->location();
+  if (this->init_ == NULL)
+    {
+      go_assert(!this->is_parameter_);
+      if (this->is_global_ || this->is_in_heap())
+	return NULL;
+      Btype* btype = this->type()->get_backend(gogo);
+      return gogo->backend()->zero_expression(btype);
+    }
+  else
+    {
+      Translate_context context(gogo, function, NULL, NULL);
+      Expression* init = Expression::make_cast(this->type(), this->init_, loc);
+      return tree_to_expr(init->get_tree(&context));
+    }
+}
+
+// Get the initial value of a variable when a block is required.
+// VAR_DECL is the decl to set; it may be NULL for a sink variable.
+
+Bstatement*
+Variable::get_init_block(Gogo* gogo, Named_object* function,
+                         Bvariable* var_decl)
+{
+  go_assert(this->preinit_ != NULL);
+
+  // We want to add the variable assignment to the end of the preinit
+  // block.
+
+  Translate_context context(gogo, function, NULL, NULL);
+  Bblock* bblock = this->preinit_->get_backend(&context);
+
+  // It's possible to have pre-init statements without an initializer
+  // if the pre-init statements set the variable.
+  Bstatement* decl_init = NULL;
+  if (this->init_ != NULL)
+    {
+      if (var_decl == NULL)
+        {
+          Bexpression* init_bexpr =
+              tree_to_expr(this->init_->get_tree(&context));
+          decl_init = gogo->backend()->expression_statement(init_bexpr);
+        }
+      else
+	{
+          Location loc = this->location();
+          Expression* val_expr =
+              Expression::convert_for_assignment(gogo, this->type(),
+                                                 this->init_, this->location());
+          Bexpression* val = tree_to_expr(val_expr->get_tree(&context));
+          Bexpression* var_ref = gogo->backend()->var_expression(var_decl, loc);
+          decl_init = gogo->backend()->assignment_statement(var_ref, val, loc);
+	}
+    }
+  Bstatement* block_stmt = gogo->backend()->block_statement(bblock);
+  if (decl_init != NULL)
+    block_stmt = gogo->backend()->compound_statement(block_stmt, decl_init);
+  return block_stmt;
+}
+
 // Export the variable
 
 void

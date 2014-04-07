@@ -264,8 +264,7 @@ Variable_declaration_statement::do_get_backend(Translate_context* context)
   Variable* var = this->var_->var_value();
   Bvariable* bvar = this->var_->get_backend_variable(context->gogo(),
 						     context->function());
-  tree init = var->get_init_tree(context->gogo(), context->function());
-  Bexpression* binit = init == NULL ? NULL : tree_to_expr(init);
+  Bexpression* binit = var->get_init(context->gogo(), context->function());
 
   if (!var->is_in_heap())
     {

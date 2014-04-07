@@ -636,10 +636,10 @@ class Var_init
 {
  public:
   Var_init()
-    : var_(NULL), init_(NULL_TREE)
+    : var_(NULL), init_(NULL)
   { }
 
-  Var_init(Named_object* var, tree init)
+  Var_init(Named_object* var, Bstatement* init)
     : var_(var), init_(init)
   { }
 
@@ -649,15 +649,15 @@ class Var_init
   { return this->var_; }
 
   // Return the initialization expression.
-  tree
+  Bstatement*
   init() const
   { return this->init_; }
 
  private:
   // The variable being initialized.
   Named_object* var_;
-  // The initialization expression to run.
-  tree init_;
+  // The initialization statement.
+  Bstatement* init_;
 };
 
 typedef std::list<Var_init> Var_inits;
@@ -868,15 +868,13 @@ Gogo::write_globals()
 	  // initializer purely for its side effects.
 	  bool is_sink = no->name()[0] == '_' && no->name()[1] == '.';
 
-	  tree var_init_tree = NULL_TREE;
+          Bstatement* var_init_stmt = NULL;
 	  if (!no->var_value()->has_pre_init())
 	    {
-	      tree init = no->var_value()->get_init_tree(this, NULL);
-	      if (init == error_mark_node)
-		go_assert(saw_errors());
-	      else if (init == NULL_TREE)
+              Bexpression* var_binit = no->var_value()->get_init(this, NULL);
+              if (var_binit == NULL)
 		;
-	      else if (TREE_CONSTANT(init))
+	      else if (TREE_CONSTANT(expr_to_tree(var_binit)))
 		{
 		  if (expression_requires(no->var_value()->init(), NULL,
 					  this->var_depends_on(no->var_value()),
@@ -885,17 +883,20 @@ Gogo::write_globals()
 			     "initialization expression for %qs depends "
 			     "upon itself",
 			     no->message_name().c_str());
-		  this->backend()->global_variable_set_init(var,
-							    tree_to_expr(init));
+		  this->backend()->global_variable_set_init(var, var_binit);
 		}
-	      else if (is_sink
-		       || int_size_in_bytes(TREE_TYPE(init)) == 0
-		       || int_size_in_bytes(TREE_TYPE(vec[i])) == 0)
-		var_init_tree = init;
+	      else if (is_sink)
+		var_init_stmt =
+                    this->backend()->expression_statement(var_binit);
 	      else
-		var_init_tree = fold_build2_loc(no->location().gcc_location(),
-                                                MODIFY_EXPR, void_type_node,
-                                                vec[i], init);
+                {
+                  Location loc = no->var_value()->location();
+                  Bexpression* var_expr =
+                      this->backend()->var_expression(var, loc);
+                  var_init_stmt =
+                      this->backend()->assignment_statement(var_expr, var_binit,
+                                                            loc);
+                }
 	    }
 	  else
 	    {
@@ -907,19 +908,21 @@ Gogo::write_globals()
 		push_struct_function(init_fndecl);
 	      else
 		push_cfun(DECL_STRUCT_FUNCTION(init_fndecl));
-	      tree var_decl = is_sink ? NULL_TREE : vec[i];
-	      var_init_tree = no->var_value()->get_init_block(this, NULL,
-							      var_decl);
+	      Bvariable* var_decl = is_sink ? NULL : var;
+              var_init_stmt =
+                  no->var_value()->get_init_block(this, NULL, var_decl);
+
 	      pop_cfun();
 	    }
 
-	  if (var_init_tree != NULL_TREE && var_init_tree != error_mark_node)
+	  if (var_init_stmt != NULL)
 	    {
 	      if (no->var_value()->init() == NULL
 		  && !no->var_value()->has_pre_init())
-		append_to_statement_list(var_init_tree, &var_init_stmt_list);
+		append_to_statement_list(stat_to_tree(var_init_stmt),
+                                         &var_init_stmt_list);
 	      else
-		var_inits.push_back(Var_init(no, var_init_tree));
+		var_inits.push_back(Var_init(no, var_init_stmt));
 	    }
 	  else if (this->var_depends_on(no->var_value()) != NULL)
 	    {
@@ -927,7 +930,12 @@ Gogo::write_globals()
 	      // not in its init or preinit.  This variable needs to
 	      // participate in dependency analysis sorting, in case
 	      // some other variable depends on this one.
-	      var_inits.push_back(Var_init(no, integer_zero_node));
+              Btype* int_btype =
+                  Type::lookup_integer_type("int")->get_backend(this);
+              Bexpression* zero = this->backend()->zero_expression(int_btype);
+              Bstatement* zero_stmt =
+                  this->backend()->expression_statement(zero);
+	      var_inits.push_back(Var_init(no, zero_stmt));
 	    }
 
 	  if (!is_sink && no->var_value()->type()->has_pointer())
@@ -950,7 +958,7 @@ Gogo::write_globals()
       for (Var_inits::const_iterator p = var_inits.begin();
 	   p != var_inits.end();
 	   ++p)
-	append_to_statement_list(p->init(), &init_stmt_list);
+	append_to_statement_list(stat_to_tree(p->init()), &init_stmt_list);
     }
 
   // After all the variables are initialized, call the "init"
@@ -1137,83 +1145,6 @@ Named_object::get_tree(Gogo* gogo, Named_object* function)
     go_preserve_from_gc(ret);
 
   return ret;
-}
-
-// Get the initial value of a variable as a tree.  This does not
-// consider whether the variable is in the heap--it returns the
-// initial value as though it were always stored in the stack.
-
-tree
-Variable::get_init_tree(Gogo* gogo, Named_object* function)
-{
-  go_assert(this->preinit_ == NULL);
-  if (this->init_ == NULL)
-    {
-      go_assert(!this->is_parameter_);
-      if (this->is_global_ || this->is_in_heap())
-	return NULL;
-      Btype* btype = this->type_->get_backend(gogo);
-      return expr_to_tree(gogo->backend()->zero_expression(btype));
-    }
-  else
-    {
-      Translate_context context(gogo, function, NULL, NULL);
-      Expression* init = Expression::make_cast(this->type(), this->init_,
-                                               this->location());
-      return init->get_tree(&context);
-    }
-}
-
-// Get the initial value of a variable when a block is required.
-// VAR_DECL is the decl to set; it may be NULL for a sink variable.
-
-tree
-Variable::get_init_block(Gogo* gogo, Named_object* function, tree var_decl)
-{
-  go_assert(this->preinit_ != NULL);
-
-  // We want to add the variable assignment to the end of the preinit
-  // block.  The preinit block may have a TRY_FINALLY_EXPR and a
-  // TRY_CATCH_EXPR; if it does, we want to add to the end of the
-  // regular statements.
-
-  Translate_context context(gogo, function, NULL, NULL);
-  Bblock* bblock = this->preinit_->get_backend(&context);
-  tree block_tree = block_to_tree(bblock);
-  if (block_tree == error_mark_node)
-    return error_mark_node;
-  go_assert(TREE_CODE(block_tree) == BIND_EXPR);
-  tree statements = BIND_EXPR_BODY(block_tree);
-  while (statements != NULL_TREE
-	 && (TREE_CODE(statements) == TRY_FINALLY_EXPR
-	     || TREE_CODE(statements) == TRY_CATCH_EXPR))
-    statements = TREE_OPERAND(statements, 0);
-
-  // It's possible to have pre-init statements without an initializer
-  // if the pre-init statements set the variable.
-  if (this->init_ != NULL)
-    {
-      tree rhs_tree = this->init_->get_tree(&context);
-      if (rhs_tree == error_mark_node)
-	return error_mark_node;
-      if (var_decl == NULL_TREE)
-	append_to_statement_list(rhs_tree, &statements);
-      else
-	{
-          Expression* val_expr =
-              Expression::convert_for_assignment(gogo, this->type(),
-                                                 this->init_, this->location());
-          tree val = val_expr->get_tree(&context);
-	  if (val == error_mark_node)
-	    return error_mark_node;
-	  tree set = fold_build2_loc(this->location().gcc_location(),
-                                     MODIFY_EXPR, void_type_node, var_decl,
-                                     val);
-	  append_to_statement_list(set, &statements);
-	}
-    }
-
-  return block_tree;
 }
 
 // Get the backend representation.

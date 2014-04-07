@@ -1495,16 +1495,16 @@ class Variable
   get_backend_variable(Gogo*, Named_object*, const Package*,
 		       const std::string&);
 
-  // Get the initial value of the variable as a tree.  This may only
+  // Get the initial value of the variable.  This may only
   // be called if has_pre_init() returns false.
-  tree
-  get_init_tree(Gogo*, Named_object* function);
+  Bexpression*
+  get_init(Gogo*, Named_object* function);
 
   // Return a series of statements which sets the value of the
   // variable in DECL.  This should only be called is has_pre_init()
   // returns true.  DECL may be NULL for a sink variable.
-  tree
-  get_init_block(Gogo*, Named_object* function, tree decl);
+  Bstatement*
+  get_init_block(Gogo*, Named_object* function, Bvariable* decl);
 
   // Export the variable.
   void
