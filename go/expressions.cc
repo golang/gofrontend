@@ -4659,9 +4659,19 @@ Binary_expression::eval_integer(Operator op, const Numeric_constant* left_nc,
     {
     case OPERATOR_PLUS:
       mpz_add(val, left_val, right_val);
+      if (mpz_sizeinbase(val, 2) > 0x100000)
+	{
+	  error_at(location, "constant addition overflow");
+	  mpz_set_ui(val, 1);
+	}
       break;
     case OPERATOR_MINUS:
       mpz_sub(val, left_val, right_val);
+      if (mpz_sizeinbase(val, 2) > 0x100000)
+	{
+	  error_at(location, "constant subtraction overflow");
+	  mpz_set_ui(val, 1);
+	}
       break;
     case OPERATOR_OR:
       mpz_ior(val, left_val, right_val);
@@ -4671,6 +4681,11 @@ Binary_expression::eval_integer(Operator op, const Numeric_constant* left_nc,
       break;
     case OPERATOR_MULT:
       mpz_mul(val, left_val, right_val);
+      if (mpz_sizeinbase(val, 2) > 0x100000)
+	{
+	  error_at(location, "constant multiplication overflow");
+	  mpz_set_ui(val, 1);
+	}
       break;
     case OPERATOR_DIV:
       if (mpz_sgn(right_val) != 0)
@@ -4698,7 +4713,7 @@ Binary_expression::eval_integer(Operator op, const Numeric_constant* left_nc,
 	else
 	  {
 	    error_at(location, "shift count overflow");
-	    mpz_set_ui(val, 0);
+	    mpz_set_ui(val, 1);
 	  }
 	break;
       }
@@ -4709,7 +4724,7 @@ Binary_expression::eval_integer(Operator op, const Numeric_constant* left_nc,
 	if (mpz_cmp_ui(right_val, shift) != 0)
 	  {
 	    error_at(location, "shift count overflow");
-	    mpz_set_ui(val, 0);
+	    mpz_set_ui(val, 1);
 	  }
 	else
 	  {
