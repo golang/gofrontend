@@ -26,10 +26,11 @@
 
 # Please keep the list sorted.
 
+Andrew Wilkins <axwalk@gmail.com>
+Chris Manghane <cmang@golang.org>
 Christopher Wedgwood <cw@f00f.org>
 Dave Cheney <dave@cheney.net>
 David Daney <david.daney@cavium.com>
-Chris Manghane <cmang@golang.org>
 Diego Novillo <dnovillo@google.com>
 Ettl Martin <ettl.martin78@googlemail.com>
 Evan Shaw <edsrzf@gmail.com>
@@ -40,8 +41,8 @@ Matthias Klose <doko@ubuntu.com>
 Michael Hudson-Doyle <michael.hudson@linaro.org>
 Peter Collingbourne <pcc@google.com>
 Rainer Orth <ro@cebitec.uni-bielefeld.de>
-Rémy Oudompheng <oudomphe@phare.normalesup.org> <remyoudompheng@gmail.com>
 Roberto Lublinerman Reitzes <rluble@google.com> <rluble@gmail.com>
+Rémy Oudompheng <oudomphe@phare.normalesup.org> <remyoudompheng@gmail.com>
 Sanjoy Das <sanjoy@playingwithpointers.com> <thedigitalangel@gmail.com>
 Shenghou Ma <minux.ma@gmail.com>
 Uros Bizjak <ubizjak@gmail.com>
