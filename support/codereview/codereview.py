@@ -75,6 +75,7 @@ real_rollback = None
 releaseBranch = None
 server = "codereview.appspot.com"
 server_url_base = None
+testing = None
 
 #######################################################################
 # Normally I would split this into multiple files, but it simplifies
@@ -277,7 +278,7 @@ class CL(object):
 			s += "\tAuthor: " + cl.copied_from + "\n"
 		if not quick:
 			s += "\tReviewer: " + JoinComma(cl.reviewer) + "\n"
-			for (who, line) in cl.lgtm:
+			for (who, line, _) in cl.lgtm:
 				s += "\t\t" + who + ": " + line + "\n"
 			s += "\tCC: " + JoinComma(cl.cc) + "\n"
 		s += "\tFiles:\n"
@@ -306,14 +307,14 @@ class CL(object):
 		dir = CodeReviewDir(ui, repo)
 		os.unlink(dir + "/cl." + self.name)
 
-	def Subject(self):
+	def Subject(self, ui, repo):
 		s = line1(self.desc)
 		if len(s) > 60:
 			s = s[0:55] + "..."
 		if self.name != "new":
 			s = "code review %s: %s" % (self.name, s)
 		typecheck(s, str)
-		return s
+		return branch_prefix(ui, repo) + s
 
 	def Upload(self, ui, repo, send_mail=False, gofmt=True, gofmt_just_warn=False, creating=False, quiet=False):
 		if not self.files and not creating:
@@ -322,6 +323,7 @@ class CL(object):
 			CheckFormat(ui, repo, self.files, just_warn=gofmt_just_warn)
 		set_status("uploading CL metadata + diffs")
 		os.chdir(repo.root)
+
 		form_fields = [
 			("content_upload", "1"),
 			("reviewers", JoinComma(self.reviewer)),
@@ -357,7 +359,8 @@ class CL(object):
 			form_fields.append(("subject", "diff -r " + vcs.base_rev + " " + ui.expandpath("default")))
 		else:
 			# First upload sets the subject for the CL itself.
-			form_fields.append(("subject", self.Subject()))
+			form_fields.append(("subject", self.Subject(ui, repo)))
+		
 		ctype, body = EncodeMultipartFormData(form_fields, uploaded_diff_file)
 		response_body = MySend("/upload", body, content_type=ctype)
 		patchset = None
@@ -367,6 +370,8 @@ class CL(object):
 			msg = lines[0]
 			patchset = lines[1].strip()
 			patches = [x.split(" ", 1) for x in lines[2:]]
+		else:
+			print >>sys.stderr, "Server says there is nothing to upload (probably wrong):\n" + msg
 		if response_body.startswith("Issue updated.") and quiet:
 			pass
 		else:
@@ -384,6 +389,8 @@ class CL(object):
 		if vcs:
 			set_status("uploading base files")
 			vcs.UploadBaseFiles(issue, rpc, patches, patchset, upload_options, files)
+		if patchset != "1":
+			MySend("/" + issue + "/upload_complete/" + patchset, payload="")
 		if send_mail:
 			set_status("sending mail")
 			MySend("/" + issue + "/mail", payload="")
@@ -400,11 +407,15 @@ class CL(object):
 		pmsg += "\n"
 		repourl = ui.expandpath("default")
 		if not self.mailed:
-			pmsg += "I'd like you to review this change to\n" + repourl + "\n"
+			pmsg += "I'd like you to review this change to"
+			branch = repo[None].branch()
+			if branch.startswith("dev."):
+				pmsg += " the " + branch + " branch of"
+			pmsg += "\n" + repourl + "\n"
 		else:
 			pmsg += "Please take another look.\n"
 		typecheck(pmsg, str)
-		PostMessage(ui, self.name, pmsg, subject=self.Subject())
+		PostMessage(ui, self.name, pmsg, subject=self.Subject(ui, repo))
 		self.mailed = True
 		self.Flush(ui, repo)
 
@@ -493,9 +504,15 @@ def CutDomain(s):
 	return s
 
 def JoinComma(l):
+	seen = {}
+	uniq = []
 	for s in l:
 		typecheck(s, str)
-	return ", ".join(l)
+		if s not in seen:
+			seen[s] = True
+			uniq.append(s)
+			
+	return ", ".join(uniq)
 
 def ExceptionDetail():
 	s = str(sys.exc_info()[0])
@@ -556,7 +573,7 @@ def LoadCL(ui, repo, name, web=True):
 			if m.get('approval', False) == True or m.get('disapproval', False) == True:
 				who = re.sub('@.*', '', m.get('sender', ''))
 				text = re.sub("\n(.|\n)*", '', m.get('text', ''))
-				cl.lgtm.append((who, text))
+				cl.lgtm.append((who, text, m.get('approval', False)))
 
 	set_status("loaded CL " + name)
 	return cl, ''
@@ -838,7 +855,7 @@ def CommandLineCL(ui, repo, pats, opts, op="verb", defaultcc=None):
 		cl.reviewer = Add(cl.reviewer, SplitCommaSpace(opts.get('reviewer')))
 	if opts.get('cc'):
 		cl.cc = Add(cl.cc, SplitCommaSpace(opts.get('cc')))
-	if defaultcc:
+	if defaultcc and not cl.private:
 		cl.cc = Add(cl.cc, defaultcc)
 	if cl.name == "new":
 		if opts.get('message'):
@@ -1324,7 +1341,7 @@ def change(ui, repo, *pats, **opts):
 	else:
 		name = "new"
 		cl = CL("new")
-		if repo[None].branch() != "default":
+		if not workbranch(repo[None].branch()):
 			raise hg_util.Abort("cannot create CL outside default branch; switch with 'hg update default'")
 		dirty[cl] = True
 		files = ChangedFiles(ui, repo, pats, taken=Taken(ui, repo))
@@ -1425,7 +1442,7 @@ def clpatch(ui, repo, clname, **opts):
 	Submitting an imported patch will keep the original author's
 	name as the Author: line but add your own name to a Committer: line.
 	"""
-	if repo[None].branch() != "default":
+	if not workbranch(repo[None].branch()):
 		raise hg_util.Abort("cannot run hg clpatch outside default branch")
 	err = clpatch_or_undo(ui, repo, clname, opts, mode="clpatch")
 	if err:
@@ -1439,7 +1456,7 @@ def undo(ui, repo, clname, **opts):
 	After creating the CL, opens the CL text for editing so that
 	you can add the reason for the undo to the description.
 	"""
-	if repo[None].branch() != "default":
+	if not workbranch(repo[None].branch()):
 		raise hg_util.Abort("cannot run hg undo outside default branch")
 	err = clpatch_or_undo(ui, repo, clname, opts, mode="undo")
 	if err:
@@ -1837,7 +1854,7 @@ def mail(ui, repo, *pats, **opts):
 		# This makes sure that it appears in the 
 		# codereview.appspot.com/user/defaultcc
 		# page, so that it doesn't get dropped on the floor.
-		if not defaultcc:
+		if not defaultcc or cl.private:
 			raise hg_util.Abort("no reviewers listed in CL")
 		cl.cc = Sub(cl.cc, defaultcc)
 		cl.reviewer = defaultcc
@@ -1901,6 +1918,13 @@ def pending(ui, repo, *pats, **opts):
 def need_sync():
 	raise hg_util.Abort("local repository out of date; must sync before submit")
 
+def branch_prefix(ui, repo):
+	prefix = ""
+	branch = repo[None].branch()
+	if branch.startswith("dev."):
+		prefix = "[" + branch + "] "
+	return prefix
+
 @hgcommand
 def submit(ui, repo, *pats, **opts):
 	"""submit change to remote repository
@@ -1928,16 +1952,25 @@ def submit(ui, repo, *pats, **opts):
 	typecheck(userline, str)
 
 	about = ""
-	if cl.reviewer:
-		about += "R=" + JoinComma([CutDomain(s) for s in cl.reviewer]) + "\n"
+
+	if not cl.lgtm and not opts.get('tbr') and needLGTM(cl):
+		raise hg_util.Abort("this CL has not been LGTM'ed")
+	if cl.lgtm:
+		about += "LGTM=" + JoinComma([CutDomain(who) for (who, line, approval) in cl.lgtm if approval]) + "\n"
+	reviewer = cl.reviewer
 	if opts.get('tbr'):
 		tbr = SplitCommaSpace(opts.get('tbr'))
+		for name in tbr:
+			if name.startswith('golang-'):
+				raise hg_util.Abort("--tbr requires a person, not a mailing list")
 		cl.reviewer = Add(cl.reviewer, tbr)
 		about += "TBR=" + JoinComma([CutDomain(s) for s in tbr]) + "\n"
+	if reviewer:
+		about += "R=" + JoinComma([CutDomain(s) for s in reviewer]) + "\n"
 	if cl.cc:
 		about += "CC=" + JoinComma([CutDomain(s) for s in cl.cc]) + "\n"
 
-	if not cl.reviewer:
+	if not cl.reviewer and needLGTM(cl):
 		raise hg_util.Abort("no reviewers listed in CL")
 
 	if not cl.local:
@@ -1961,7 +1994,7 @@ def submit(ui, repo, *pats, **opts):
 		cl.Mail(ui, repo)
 
 	# submit changes locally
-	message = cl.desc.rstrip() + "\n\n" + about
+	message = branch_prefix(ui, repo) + cl.desc.rstrip() + "\n\n" + about
 	typecheck(message, str)
 
 	set_status("pushing " + cl.name + " to remote server")
@@ -1971,12 +2004,22 @@ def submit(ui, repo, *pats, **opts):
 	
 	old_heads = len(hg_heads(ui, repo).split())
 
+	# Normally we commit listing the specific files in the CL.
+	# If there are no changed files other than those in the CL, however,
+	# let hg build the list, because then committing a merge works.
+	# (You cannot name files for a merge commit, even if you name
+	# all the files that would be committed by not naming any.)
+	files = ['path:'+f for f in cl.files]
+	if ChangedFiles(ui, repo, []) == cl.files:
+		files = []
+
 	global commit_okay
 	commit_okay = True
-	ret = hg_commit(ui, repo, *['path:'+f for f in cl.files], message=message, user=userline)
+	ret = hg_commit(ui, repo, *files, message=message, user=userline)
 	commit_okay = False
 	if ret:
 		raise hg_util.Abort("nothing changed")
+
 	node = repo["-1"].node()
 	# push to remote; if it fails for any reason, roll back
 	try:
@@ -2034,6 +2077,22 @@ def submit(ui, repo, *pats, **opts):
 		if err:
 			return err
 	return 0
+
+def needLGTM(cl):
+	rev = cl.reviewer
+	isGobot = 'gobot' in rev or 'gobot@swtch.com' in rev or 'gobot@golang.org' in rev
+	
+	# A+C CLs generated by addca do not need LGTM
+	if cl.desc.startswith('A+C:') and 'Generated by a+c.' in cl.desc and isGobot:
+		return False
+	
+	# CLs modifying only go1.x.txt do not need LGTM
+	if len(cl.files) == 1 and cl.files[0].startswith('doc/go1.') and cl.files[0].endswith('.txt'):
+		return False
+	
+	# Other CLs need LGTM
+	# But not on gofrontend where there is only committed.
+	return False
 
 #######################################################################
 # hg sync
@@ -2253,6 +2312,14 @@ def norollback(*pats, **opts):
 
 codereview_init = False
 
+def uisetup(ui):
+	global testing
+	testing = ui.config("codereview", "testing")
+	# Disable the Mercurial commands that might change the repository.
+	# Only commands in this extension are supposed to do that.
+	ui.setconfig("hooks", "pre-commit.codereview", precommithook) # runs before 'hg commit'
+	ui.setconfig("hooks", "precommit.codereview", precommithook) # catches all cases
+
 def reposetup(ui, repo):
 	global codereview_disabled
 	global defaultcc
@@ -2295,15 +2362,11 @@ def reposetup(ui, repo):
 		return
 
 	remote = ui.config("paths", "default", "")
-	if remote.find("://") < 0:
+	if remote.find("://") < 0 and not testing:
 		raise hg_util.Abort("codereview: default path '%s' is not a URL" % (remote,))
 
 	InstallMatch(ui, repo)
 	RietveldSetup(ui, repo)
-
-	# Disable the Mercurial commands that might change the repository.
-	# Only commands in this extension are supposed to do that.
-	ui.setconfig("hooks", "precommit.codereview", precommithook)
 
 	# Rollback removes an existing commit.  Don't do that either.
 	global real_rollback
@@ -2402,7 +2465,10 @@ def IsRietveldSubmitted(ui, clname, hex):
 		return False
 	for msg in dict.get("messages", []):
 		text = msg.get("text", "")
-		m = re.match('\*\*\* Submitted as [^*]*?r=([0-9a-f]+)[^ ]* \*\*\*', text)
+		regex = '\*\*\* Submitted as [^*]*?r=([0-9a-f]+)[^ ]* \*\*\*'
+		if testing:
+			regex = '\*\*\* Submitted as ([0-9a-f]+) \*\*\*'
+		m = re.match(regex, text)
 		if m is not None and len(m.group(1)) >= 8 and hex.startswith(m.group(1)):
 			return True
 	return False
@@ -2507,6 +2573,8 @@ def MySend1(request_path, payload=None,
 			tries += 1
 			args = dict(kwargs)
 			url = "https://%s%s" % (self.host, request_path)
+			if testing:
+				url = url.replace("https://", "http://")
 			if args:
 				url += "?" + urllib.urlencode(args)
 			req = self._CreateRequest(url=url, data=payload)
@@ -2619,8 +2687,9 @@ def RietveldSetup(ui, repo):
 		email = x
 
 	server_url_base = "https://" + server + "/"
+	if testing:
+		server_url_base = server_url_base.replace("https://", "http://")
 
-	testing = ui.config("codereview", "testing")
 	force_google_account = ui.configbool("codereview", "force_google_account", False)
 
 	upload_options = opt()
@@ -2634,7 +2703,6 @@ def RietveldSetup(ui, repo):
 	upload_options.message = None
 	upload_options.issue = None
 	upload_options.download_base = False
-	upload_options.revision = None
 	upload_options.send_mail = False
 	upload_options.vcs = None
 	upload_options.server = server
@@ -2647,7 +2715,7 @@ def RietveldSetup(ui, repo):
 	rpc = None
 	
 	global releaseBranch
-	tags = repo.branchtags().keys()
+	tags = repo.branchmap().keys()
 	if 'release-branch.go10' in tags:
 		# NOTE(rsc): This tags.sort is going to get the wrong
 		# answer when comparing release-branch.go9 with
@@ -2657,6 +2725,9 @@ def RietveldSetup(ui, repo):
 	for t in tags:
 		if t.startswith('release-branch.go'):
 			releaseBranch = t			
+
+def workbranch(name):
+	return name == "default" or name.startswith('dev.')
 
 #######################################################################
 # http://codereview.appspot.com/static/upload.py, heavily edited.
@@ -2898,7 +2969,10 @@ class AbstractRpcServer(object):
 		# This is a dummy value to allow us to identify when we're successful.
 		continue_location = "http://localhost/"
 		args = {"continue": continue_location, "auth": auth_token}
-		req = self._CreateRequest("https://%s/_ah/login?%s" % (self.host, urllib.urlencode(args)))
+		reqUrl = "https://%s/_ah/login?%s" % (self.host, urllib.urlencode(args))
+		if testing:
+			reqUrl = reqUrl.replace("https://", "http://")
+		req = self._CreateRequest(reqUrl)
 		try:
 			response = self.opener.open(req)
 		except urllib2.HTTPError, e:
@@ -2989,6 +3063,8 @@ class AbstractRpcServer(object):
 				tries += 1
 				args = dict(kwargs)
 				url = "https://%s%s" % (self.host, request_path)
+				if testing:
+					url = url.replace("https://", "http://")
 				if args:
 					url += "?" + urllib.urlencode(args)
 				req = self._CreateRequest(url=url, data=payload)
@@ -3413,18 +3489,28 @@ class MercurialVCS(VersionControlSystem):
 		cwd = os.path.normpath(os.getcwd())
 		assert cwd.startswith(self.repo_dir)
 		self.subdir = cwd[len(self.repo_dir):].lstrip(r"\/")
-		if self.options.revision:
-			self.base_rev = self.options.revision
+		mqparent, err = RunShellWithReturnCode(['hg', 'log', '--rev', 'qparent', '--template={node}'])
+		if not err and mqparent != "":
+			self.base_rev = mqparent
 		else:
-			mqparent, err = RunShellWithReturnCode(['hg', 'log', '--rev', 'qparent', '--template={node}'])
-			if not err and mqparent != "":
-				self.base_rev = mqparent
-			else:
-				out = RunShell(["hg", "parents", "-q"], silent_ok=True).strip()
-				if not out:
-					# No revisions; use 0 to mean a repository with nothing.
-					out = "0:0"
-				self.base_rev = out.split(':')[1].strip()
+			out = RunShell(["hg", "parents", "-q", "--template={node} {branch}"], silent_ok=True).strip()
+			if not out:
+				# No revisions; use 0 to mean a repository with nothing.
+				out = "0:0 default"
+			
+			# Find parent along current branch.
+			branch = repo[None].branch()
+			base = ""
+			for line in out.splitlines():
+				fields = line.strip().split(' ')
+				if fields[1] == branch:
+					base = fields[0]
+					break
+			if base == "":
+				# Use the first parent
+				base = out.strip().split(' ')[0]
+			self.base_rev = base
+
 	def _GetRelPath(self, filename):
 		"""Get relative path of a file according to the current directory,
 		given its logical path in the repo."""
