@@ -2759,7 +2759,7 @@ class Package
   Location location_;
   // The amount of times some name from this package was used.  This is mutable
   // because we can use a package even if we have a const pointer to it.
-  mutable int used_;
+  mutable size_t used_;
   // A set of possibly fake uses of this package.  This is mutable because we
   // can track fake uses of a package even if we have a const pointer to it.
   mutable std::set<Expression*> fake_uses_;
