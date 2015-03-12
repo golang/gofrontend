@@ -14,6 +14,7 @@
 #include "backend.h"
 #include "statements.h"
 #include "ast-dump.h"
+#include "dataflow.h"
 
 // Class Statement.
 
@@ -520,45 +521,7 @@ Statement::make_temporary(Type* type, Expression* init,
   return new Temporary_statement(type, init, location);
 }
 
-// An assignment statement.
-
-class Assignment_statement : public Statement
-{
- public:
-  Assignment_statement(Expression* lhs, Expression* rhs,
-		       Location location)
-    : Statement(STATEMENT_ASSIGNMENT, location),
-      lhs_(lhs), rhs_(rhs)
-  { }
-
- protected:
-  int
-  do_traverse(Traverse* traverse);
-
-  bool
-  do_traverse_assignments(Traverse_assignments*);
-
-  void
-  do_determine_types();
-
-  void
-  do_check_types(Gogo*);
-
-  Statement*
-  do_flatten(Gogo*, Named_object*, Block*, Statement_inserter*);
-
-  Bstatement*
-  do_get_backend(Translate_context*);
-
-  void
-  do_dump_statement(Ast_dump_context*) const;
-
- private:
-  // Left hand side--the lvalue.
-  Expression* lhs_;
-  // Right hand side--the rvalue.
-  Expression* rhs_;
-};
+// Class Assignment_statement.
 
 // Traversal.
 
@@ -4676,7 +4639,6 @@ Select_clauses::Select_clause::lower(Gogo* gogo, Named_object* function,
   // through here.
   this->is_lowered_ = true;
   this->val_ = NULL;
-  this->var_ = NULL;
 }
 
 // Lower a default clause in a select statement.
@@ -4840,6 +4802,22 @@ Select_clauses::Select_clause::check_types()
     error_at(this->location(), "invalid receive on send-only channel");
 }
 
+// Analyze the dataflow across each case statement.
+
+void
+Select_clauses::Select_clause::analyze_dataflow(Dataflow* dataflow)
+{
+  if (this->is_default_)
+    return;
+
+  // For a CommClause, the dataflow analysis should record a definition of
+  // VAR and CLOSEDVAR
+  if (this->var_ != NULL && !this->var_->is_sink())
+    dataflow->add_def(this->var_, this->channel_, NULL, false);
+  if (this->closedvar_ != NULL && !this->closedvar_->is_sink())
+    dataflow->add_def(this->closedvar_, this->channel_, NULL, false);
+}
+
 // Whether this clause may fall through to the statement which follows
 // the overall select statement.
 
@@ -4956,6 +4934,17 @@ Select_clauses::check_types()
        p != this->clauses_.end();
        ++p)
     p->check_types();
+}
+
+// Analyze the dataflow across each case statement.
+
+void
+Select_clauses::analyze_dataflow(Dataflow* dataflow)
+{
+  for (Clauses::iterator p = this->clauses_.begin();
+       p != this->clauses_.end();
+       ++p)
+    p->analyze_dataflow(dataflow);
 }
 
 // Return whether these select clauses fall through to the statement

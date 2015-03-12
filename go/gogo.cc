@@ -10,14 +10,15 @@
 
 #include "go-c.h"
 #include "go-dump.h"
+#include "go-optimize.h"
 #include "lex.h"
 #include "types.h"
 #include "statements.h"
 #include "expressions.h"
-#include "dataflow.h"
 #include "runtime.h"
 #include "import.h"
 #include "export.h"
+#include "escape.h"
 #include "backend.h"
 #include "gogo.h"
 
@@ -1604,9 +1605,9 @@ Gogo::start_function(const std::string& name, Function_type* type,
 
   Block* block = new Block(NULL, location);
 
-  Function* enclosing = (at_top_level
+  Named_object* enclosing = (at_top_level
 			 ? NULL
-			 : this->functions_.back().function->func_value());
+			 : this->functions_.back().function);
 
   Function* function = new Function(type, enclosing, block, location);
 
@@ -1902,6 +1903,74 @@ Gogo::add_label_reference(const std::string& label_name,
   Function* func = this->functions_.back().function->func_value();
   return func->add_label_reference(this, label_name, location,
 				   issue_goto_errors);
+}
+
+// Add a function to the call graph.
+
+Node*
+Gogo::add_call_node(Named_object* function)
+{
+  Node* call = this->lookup_call_node(function);
+  if (call == NULL)
+    {
+      call = Node::make_call(function);
+      this->call_graph_.insert(call);
+      this->named_call_nodes_[function] = call;
+    }
+  return call;
+}
+
+// Find the call node that represents FUNCTION.  Return NULL if it does not
+// exist.
+
+Node*
+Gogo::lookup_call_node(Named_object* function) const
+{
+  Named_escape_nodes::const_iterator p = this->named_call_nodes_.find(function);
+  if (p == this->named_call_nodes_.end())
+    return NULL;
+  return p->second;
+}
+
+// Add a connection node for OBJECT.
+
+Node*
+Gogo::add_connection_node(Named_object* object)
+{
+  Node* connection = this->lookup_connection_node(object);
+  if (connection == NULL)
+    {
+      connection = Node::make_connection(object, Node::ESCAPE_NONE);
+
+      // Each global variable is a part of the global connection graph.
+      if (object->is_variable()
+	  && object->var_value()->is_global())
+	{
+	  connection->connection_node()->set_escape_state(Node::ESCAPE_GLOBAL);
+	  this->global_connections_.insert(connection);
+	}
+
+      // Each function declaration or definition is the root of its own
+      // connection graph.  This means closures will have their own
+      // connection graph that objects in the enclosing function might
+      // refer to.
+      if (object->is_function() || object->is_function_declaration())
+	this->connection_roots_.insert(connection);
+      this->named_connection_nodes_[object] = connection;
+    }
+  return connection;
+}
+
+// Find the connection node for OBJECT.  Return NULL if it does not exist.
+
+Node*
+Gogo::lookup_connection_node(Named_object* object) const
+{
+  Named_escape_nodes::const_iterator p =
+    this->named_connection_nodes_.find(object);
+  if (p == this->named_connection_nodes_.end())
+    return NULL;
+  return p->second;
 }
 
 // Return the current binding state.
@@ -4262,11 +4331,14 @@ Build_method_tables::type(Type* type)
 // Return an expression which allocates memory to hold values of type TYPE.
 
 Expression*
-Gogo::allocate_memory(Type* type, Location location)
+Gogo::allocate_memory(Type* type, bool, Location location)
 {
   Expression* td = Expression::make_type_descriptor(type, location);
   Expression* size =
     Expression::make_type_info(type, Expression::TYPE_INFO_SIZE);
+
+  // TODO(cmang): Implement a backend function to allocate memory on the
+  // stack if ON_STACK if true.
 
   // If this package imports unsafe, then it may play games with
   // pointers that look like integers.  We should be able to determine
@@ -4455,7 +4527,7 @@ Gogo::convert_named_types_in_bindings(Bindings* bindings)
 
 // Class Function.
 
-Function::Function(Function_type* type, Function* enclosing, Block* block,
+Function::Function(Function_type* type, Named_object* enclosing, Block* block,
 		   Location location)
   : type_(type), enclosing_(enclosing), results_(NULL),
     closure_var_(NULL), block_(block), location_(location), labels_(),
@@ -5765,7 +5837,7 @@ Variable::Variable(Type* type, Expression* init, bool is_global,
     type_from_init_tuple_(false), type_from_range_index_(false),
     type_from_range_value_(false), type_from_chan_element_(false),
     is_type_switch_var_(false), determined_type_(false),
-    in_unique_section_(false)
+    in_unique_section_(false), escapes_(true)
 {
   go_assert(type != NULL || init != NULL);
   go_assert(!is_parameter || init == NULL);

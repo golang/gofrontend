@@ -18,6 +18,7 @@ class Type_identical;
 class Typed_identifier;
 class Typed_identifier_list;
 class Function_type;
+class Node;
 class Expression;
 class Statement;
 class Temporary_statement;
@@ -124,6 +125,21 @@ class Gogo
   Linemap*
   linemap()
   { return this->linemap_; }
+
+  // Get the Call Graph.
+  const std::set<Node*>&
+  call_graph() const
+  { return this->call_graph_; }
+
+  // Get the roots of each connection graph.
+  const std::set<Node*>&
+  connection_roots() const
+  { return this->connection_roots_; }
+
+  // Get the nodes that escape globally.
+  const std::set<Node*>&
+  global_connections() const
+  { return this->global_connections_; }
 
   // Get the package name.
   const std::string&
@@ -345,6 +361,22 @@ class Gogo
   add_label_reference(const std::string&, Location,
 		      bool issue_goto_errors);
 
+  // Add a FUNCTION to the call graph.
+  Node*
+  add_call_node(Named_object* function);
+
+  // Lookup the call node for FUNCTION.
+  Node*
+  lookup_call_node(Named_object* function) const;
+
+  // Add a connection node for OBJECT.
+  Node*
+  add_connection_node(Named_object* object);
+
+  // Lookup the connection node for OBJECT.
+  Node*
+  lookup_connection_node(Named_object* object) const;
+
   // Return a snapshot of the current binding state.
   Bindings_snapshot*
   bindings_snapshot(Location);
@@ -544,6 +576,22 @@ class Gogo
   void
   check_return_statements();
 
+  // Build call graph.
+  void
+  build_call_graph();
+
+  // Build connection graphs.
+  void
+  build_connection_graphs();
+
+  // Analyze reachability in the connection graphs.
+  void
+  analyze_reachability();
+
+  // Optimize variable allocation.
+  void
+  optimize_allocations(const char** filenames);
+
   // Do all exports.
   void
   do_exports();
@@ -578,6 +626,14 @@ class Gogo
   // Dump AST if -fgo-dump-ast is set 
   void
   dump_ast(const char* basename);
+
+  // Dump Call Graph if -fgo-dump-calls is set.
+  void
+  dump_call_graph(const char* basename);
+
+  // Dump Connection Graphs if -fgo-dump-connections is set.
+  void
+  dump_connection_graphs(const char* basename);
 
   // Convert named types to the backend representation.
   void
@@ -620,8 +676,9 @@ class Gogo
   build_interface_method_tables();
 
   // Return an expression which allocates memory to hold values of type TYPE.
+  // This memory will be allocated on the stack if ON_STACK is true.
   Expression*
-  allocate_memory(Type *type, Location);
+  allocate_memory(Type *type, bool on_stack, Location);
 
   // Get the name of the magic initialization function.
   const std::string&
@@ -684,6 +741,10 @@ class Gogo
   // where they were defined.
   typedef Unordered_map(std::string, Location) File_block_names;
 
+  // Type used to map named objects that refer to objects to the
+  // node that represent them in the escape analysis graphs.
+  typedef Unordered_map(Named_object*, Node*)  Named_escape_nodes;
+
   // Type used to queue writing a type specific function.
   struct Specific_type_function
   {
@@ -716,6 +777,20 @@ class Gogo
   // The global binding contour.  This includes the builtin functions
   // and the package we are compiling.
   Bindings* globals_;
+  // The call graph for a program execution which represents the functions
+  // encountered and the caller-callee relationship between the functions.
+  std::set<Node*> call_graph_;
+  // The nodes that form the roots of the connection graphs for each called
+  // function and represent the connectivity relationship between all objects
+  // in the function.
+  std::set<Node*> connection_roots_;
+  // All connection nodes that have an escape state of ESCAPE_GLOBAL are a part
+  // of a special connection graph of only global variables.
+  std::set<Node*> global_connections_;
+  // Mapping from named objects to nodes in the call graph.
+  Named_escape_nodes named_call_nodes_;
+  // Mapping from named objects to nodes in a connection graph.
+  Named_escape_nodes named_connection_nodes_;
   // The list of names we have seen in the file block.
   File_block_names file_block_names_;
   // Mapping from import file names to packages.
@@ -886,7 +961,7 @@ class Block
 class Function
 {
  public:
-  Function(Function_type* type, Function*, Block*, Location);
+  Function(Function_type* type, Named_object*, Block*, Location);
 
   // Return the function's type.
   Function_type*
@@ -894,14 +969,14 @@ class Function
   { return this->type_; }
 
   // Return the enclosing function if there is one.
-  Function*
-  enclosing()
+  Named_object*
+  enclosing() const
   { return this->enclosing_; }
 
   // Set the enclosing function.  This is used when building thunks
   // for functions which call recover.
   void
-  set_enclosing(Function* enclosing)
+  set_enclosing(Named_object* enclosing)
   {
     go_assert(this->enclosing_ == NULL);
     this->enclosing_ = enclosing;
@@ -1169,7 +1244,7 @@ class Function
   Function_type* type_;
   // The enclosing function.  This is NULL when there isn't one, which
   // is the normal case.
-  Function* enclosing_;
+  Named_object* enclosing_;
   // The result variables, if any.
   Results* results_;
   // If there is a closure, this is the list of variables which appear
@@ -1414,7 +1489,11 @@ class Variable
   // Whether this variable should live in the heap.
   bool
   is_in_heap() const
-  { return this->is_address_taken_ && !this->is_global_; }
+  {
+    return this->is_address_taken_ 
+      && this->escapes_
+      && !this->is_global_;
+  }
 
   // Note that something takes the address of this variable.
   void
@@ -1431,6 +1510,16 @@ class Variable
   void
   set_non_escaping_address_taken()
   { this->is_non_escaping_address_taken_ = true; }
+
+  // Return whether this variable escapes the function it is declared in.
+  bool
+  escapes()
+  { return this->escapes_; }
+
+  // Note that this variable does not escape the function it is declared in.
+  void
+  set_does_not_escape()
+  { this->escapes_ = false; }
 
   // Get the source location of the variable's declaration.
   Location
@@ -1524,6 +1613,11 @@ class Variable
     go_assert(this->type_from_chan_element_);
     this->type_from_chan_element_ = false;
   }
+
+  // TRUE if this variable was created for a type switch clause.
+  bool
+  is_type_switch_var() const
+  { return this->is_type_switch_var_; }
 
   // Note that this variable was created for a type switch clause.
   void
@@ -1635,6 +1729,9 @@ class Variable
   // True if this variable should be put in a unique section.  This is
   // used for field tracking.
   bool in_unique_section_ : 1;
+  // Whether this variable escapes the function it is created in.  This is
+  // true until shown otherwise.
+  bool escapes_ : 1;
 };
 
 // A variable which is really the name for a function return value, or
@@ -1647,7 +1744,7 @@ class Result_variable
 		  Location location)
     : type_(type), function_(function), index_(index), location_(location),
       backend_(NULL), is_address_taken_(false),
-      is_non_escaping_address_taken_(false)
+      is_non_escaping_address_taken_(false), escapes_(true)
   { }
 
   // Get the type of the result variable.
@@ -1690,11 +1787,24 @@ class Result_variable
   void
   set_non_escaping_address_taken()
   { this->is_non_escaping_address_taken_ = true; }
+  
+  // Return whether this variable escapes the function it is declared in.
+  bool
+  escapes()
+  { return this->escapes_; }
+
+  // Note that this variable does not escape the function it is declared in.
+  void
+  set_does_not_escape()
+  { this->escapes_ = false; }
 
   // Whether this variable should live in the heap.
   bool
   is_in_heap() const
-  { return this->is_address_taken_; }
+  {
+    return this->is_address_taken_
+      && this->escapes_;
+  }
 
   // Set the function.  This is used when cloning functions which call
   // recover.
@@ -1722,6 +1832,9 @@ class Result_variable
   // Whether something takes the address of this variable such that
   // the address does not escape the function.
   bool is_non_escaping_address_taken_;
+  // Whether this variable escapes the function it is created in.  This is
+  // true until shown otherwise.
+  bool escapes_;
 };
 
 // The value we keep for a named constant.  This lets us hold a type
