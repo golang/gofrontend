@@ -441,6 +441,10 @@ class Build_connection_graphs : public Traverse
   void
   handle_call(Named_object* object, Expression* expr);
 
+  // Get the initialization values of a composite literal EXPR.
+  Expression_list*
+  get_composite_arguments(Expression* expr);
+
   // Handle defining OBJECT as a composite literal EXPR.
   void
   handle_composite_literal(Named_object* object, Expression* expr);
@@ -581,34 +585,27 @@ Build_connection_graphs::handle_call(Named_object* object, Expression* e)
   if (ce == NULL || ce->args() == NULL)
     return;
   
-  if (ce->fn()->var_expression() != NULL)
+  // If the function call that references OBJECT is unknown, we must be
+  // conservative and assume every argument escapes.  A function call is unknown
+  // if it is a call to a function stored in a variable or a call to an
+  // interface method.
+  if (ce->fn()->func_expression() == NULL)
     {
-      // Here we are calling a function stored in a variable.
-      Variable* fnvar = ce->fn()->var_expression()->named_object()->var_value();
-      if (fnvar != NULL && fnvar->is_parameter())
+      for (Expression_list::const_iterator arg = ce->args()->begin();
+	   arg != ce->args()->end();
+	   ++arg)
 	{
-	  // If this function variable is a parameter of a function, it is
-	  // unknown what function is being called and so all the arguments
-	  // escape.  We cannot just mark OBJECT as escaping because OBJECT
-	  // might be a subexpression of an argument.
-	  for (Expression_list::const_iterator arg = ce->args()->begin();
-	       arg != ce->args()->end();
-	       ++arg)
+	  Named_object* arg_no = this->resolve_var_reference(*arg);
+	  if (arg_no != NULL)
 	    {
-	      Named_object* arg_no = this->resolve_var_reference(*arg);
-	      if (arg_no != NULL)
-		{
-		  Connection_node* arg_node =
-		    this->gogo_->add_connection_node(arg_no)->connection_node();
-		  arg_node->set_escape_state(Node::ESCAPE_ARG);
-		}
+	      Connection_node* arg_node =
+		this->gogo_->add_connection_node(arg_no)->connection_node();
+	      arg_node->set_escape_state(Node::ESCAPE_ARG);
 	    }
 	}
       return;
     }
 
-  if (ce->fn()->func_expression() == NULL)
-    return;
   Named_object* callee = ce->fn()->func_expression()->named_object();
   Function_type* fntype;
   if (callee->is_function())
@@ -617,14 +614,13 @@ Build_connection_graphs::handle_call(Named_object* object, Expression* e)
     fntype = callee->func_declaration_value()->type();
 
   Node* callee_node = this->gogo_->lookup_connection_node(callee);
-  if (callee_node == NULL)
+  if (callee_node == NULL && callee->is_function())
     {
       // Might be a nested closure that hasn't been analyzed yet.
       Named_object* currfn = this->current_function_;
       callee_node = this->gogo_->add_connection_node(callee);
       this->current_function_ = callee;
-      if (callee->is_function())
-	callee->func_value()->traverse(this);
+      callee->func_value()->traverse(this);
       this->current_function_ = currfn;
     }
 
@@ -632,8 +628,6 @@ Build_connection_graphs::handle_call(Named_object* object, Expression* e)
   // OBJECT could be an argument multiple times e.g. CALLEE(OBJECT, OBJECT).
   // TODO(cmang): This should be done by the Dataflow analysis so we don't have
   // to do it each time we see a function call.  FIXME.
-  size_t arg_position = 0;
-  std::list<size_t> positions;
   Expression_list* args = ce->args()->copy();
   if (fntype->is_varargs()
       && args->back()->slice_literal() != NULL)
@@ -650,37 +644,94 @@ Build_connection_graphs::handle_call(Named_object* object, Expression* e)
 	    args->push_back(*p);
 	}
     }
-  for (Expression_list::const_iterator arg = args->begin();
-       arg != args->end();
-       ++arg, ++arg_position)
+
+  // ARG_POSITION is just a counter used to keep track of the index in the list
+  // of arguments to this call.  In a method call, the receiver will always be
+  // the first argument.  When looking at the function type, it will not be the
+  // first element in the parameter list; instead, the receiver will be
+  // non-NULL.  For convenience, mark the position of the receiver argument
+  // as negative.
+  int arg_position = fntype->is_method() ? -1 : 0;
+  std::list<int> positions;
+  for (Expression_list::const_iterator p = args->begin();
+       p != args->end();
+       ++p, ++arg_position)
     {
-      if ((*arg)->call_expression() != NULL)
-	this->handle_call(object, *arg);
+      Expression* arg = *p;
 
-      Named_object* arg_no = this->resolve_var_reference(*arg);
-      if (arg_no == NULL)
-	continue;
+      // An argument might be a chain of method calls, some of which are
+      // converted from value to pointer types.  Just remove the unary
+      // conversion if it exists.
+      if (arg->unary_expression() != NULL)
+	arg = arg->unary_expression()->operand();
 
-      // If CALLEE is defined in another package, we have to assume all
-      // arguments escape since escape analysis info is not currently imported.
-      // TODO(cmang): add escape analysis info to export data.
-      if (callee->package() != NULL
-	  || fntype->is_builtin()
-	  || (fntype->is_method()
-	      && fntype->receiver()->type()->interface_type() != NULL))
+      // The reference to OBJECT might be in a nested call argument.
+      if (arg->call_expression() != NULL)
+	this->handle_call(object, arg);
+
+      std::vector<Named_object*> objects;
+      if (arg->is_composite_literal()
+	  || arg->heap_expression() != NULL)
 	{
-	  Connection_node* arg_node =
-	    this->gogo_->add_connection_node(arg_no)->connection_node();
-	  if (arg_node->escape_state() > Node::ESCAPE_ARG)
-	    arg_node->set_escape_state(Node::ESCAPE_ARG);
+	  // For a call that has a composite literal as an argument, traverse
+	  // the initializers of the composite literal for extra objects to
+	  // associate with a parameter in this function.
+	  Expression_list* comp_args = this->get_composite_arguments(arg);
+	  if (comp_args == NULL)
+	    continue;
+
+	  for (size_t i = 0; i < comp_args->size(); ++i)
+	    {
+	      Expression* comp_arg = comp_args->at(i);
+	      if (comp_arg == NULL)
+		continue;
+	      else if (comp_arg->is_composite_literal()
+		       || comp_arg->heap_expression() != NULL)
+		{
+		  // Of course, there are situations where a composite literal
+		  // initialization value is also a composite literal.
+		  Expression_list* nested_args =
+		    this->get_composite_arguments(comp_arg);
+		  if (nested_args != NULL)
+		    comp_args->append(nested_args);
+		}
+
+	      Named_object* no = this->resolve_var_reference(comp_arg);
+	      if (no != NULL)
+		objects.push_back(no);
+	    }
+	}
+      else
+	{
+	  Named_object* arg_no = this->resolve_var_reference(arg);
+	  if (arg_no != NULL)
+	    objects.push_back(arg_no);
 	}
 
-      if (arg_no == object)
+      // There are no variables to consider for this parameter.
+      if (objects.empty())
+	continue;
+
+      for (std::vector<Named_object*>::const_iterator p1 = objects.begin();
+	   p1 != objects.end();
+	   ++p1)
 	{
-	  size_t position = arg_position;
-	  if (position > 0 && fntype->is_method())
-	    --position;
-	  positions.push_back(position);
+	  // If CALLEE is defined in another package, we have to assume all
+	  // arguments escape since escape analysis info is not currently
+	  // imported.
+	  // TODO(cmang): add escape analysis info to export data.
+	  // TODO(cmang): use known escape info for builtin calls.
+	  if (callee->package() != NULL
+	      || fntype->is_builtin())
+	    {
+	      Connection_node* arg_node =
+		this->gogo_->add_connection_node(*p1)->connection_node();
+	      if (arg_node->escape_state() > Node::ESCAPE_ARG)
+		arg_node->set_escape_state(Node::ESCAPE_ARG);
+	    }
+
+	  if (*p1 == object)
+	    positions.push_back(arg_position);
 	}
     }
 
@@ -701,20 +752,33 @@ Build_connection_graphs::handle_call(Named_object* object, Expression* e)
 
   // Next find the corresponding named parameters in the function signature.
   const Typed_identifier_list* params = fntype->parameters();
-  for (std::list<size_t>::const_iterator pos = positions.begin();
+  for (std::list<int>::const_iterator pos = positions.begin();
        params != NULL && pos != positions.end();
        ++pos)
     {
       std::string param_name;
-      if (params->size() <= *pos)
+      bool param_is_interface = false;
+      if (*pos >= 0 && params->size() <= static_cast<size_t>(*pos))
 	{
 	  // There were more arguments than there are parameters. This must be
 	  // varargs and the argument corresponds to the last parameter.
 	  go_assert(fntype->is_varargs());
 	  param_name = params->back().name();
 	}
+      else if (*pos < 0)
+	{
+	  // We adjust the recorded position of method arguments by one to
+	  // account for the receiver, so *pos == -1 implies this is the
+	  // receiver and this must be a method call.
+	  go_assert(fntype->is_method() && fntype->receiver() != NULL);
+	  param_name = fntype->receiver()->name();
+	}
       else
-	param_name = params->at(*pos).name();
+	{
+	  param_name = params->at(*pos).name();
+	  param_is_interface =
+	    (params->at(*pos).type()->interface_type() != NULL);
+	}
 
       if (Gogo::is_sink_name(param_name) || param_name.empty())
 	continue;
@@ -727,21 +791,68 @@ Build_connection_graphs::handle_call(Named_object* object, Expression* e)
       // the callee context.
       if (object->is_variable() && object->var_value()->is_closure())
 	{
+	  int position = *pos;
+	  if (fntype->is_method())
+	    ++position;
+
 	  // Calling a function within a closure with a closure argument.
 	  // Resolve the real variable using the closure argument.
-	  object = this->resolve_var_reference(ce->args()->at(*pos));
+	  object = this->resolve_var_reference(ce->args()->at(position));
 	}
 
-      Node* arg_node = this->gogo_->lookup_connection_node(object);
+      Node* arg_node = this->gogo_->add_connection_node(object);
       Node* param_node = this->gogo_->add_connection_node(param_no);
-      arg_node->add_edge(param_node);
 
-      Node::Escapement_lattice arg_escape =
-	arg_node->connection_node()->escape_state();
-      Node::Escapement_lattice param_escape =
-	param_node->connection_node()->escape_state();
-      if (param_escape < arg_escape)
-	arg_node->connection_node()->set_escape_state(param_escape);
+      // Act conservatively when an argument is converted into an interface
+      // value.  FIXME.
+      if (param_is_interface)
+	param_node->connection_node()->set_escape_state(Node::ESCAPE_ARG);
+      param_node->add_edge(arg_node);
+    }
+
+  // This is a method call with one argument: the receiver.
+  if (params == NULL)
+    {
+      go_assert(positions.size() == 1);
+      std::string rcvr_name = fntype->receiver()->name();
+      if (Gogo::is_sink_name(rcvr_name) || rcvr_name.empty())
+	return;
+
+      Named_object* rcvr_no = callee_bindings->lookup_local(rcvr_name);
+      Node* arg_node = this->gogo_->add_connection_node(object);
+      Node* rcvr_node = this->gogo_->add_connection_node(rcvr_no);
+      rcvr_node->add_edge(arg_node);
+    }
+}
+
+// Given a composite literal expression, return the initialization values.
+// This is used to handle situations where call and composite literal
+// expressions have nested composite literals as arguments/initializers.
+
+Expression_list*
+Build_connection_graphs::get_composite_arguments(Expression* expr)
+{
+  // A heap expression is just any expression that takes the address of a
+  // composite literal.
+  if (expr->heap_expression() != NULL)
+    expr = expr->heap_expression()->expr();
+
+  switch (expr->classification())
+    {
+    case Expression::EXPRESSION_STRUCT_CONSTRUCTION:
+      return expr->struct_literal()->vals();
+
+    case Expression::EXPRESSION_FIXED_ARRAY_CONSTRUCTION:
+      return expr->array_literal()->vals();
+
+    case Expression::EXPRESSION_SLICE_CONSTRUCTION:
+      return expr->slice_literal()->vals();
+
+    case Expression::EXPRESSION_MAP_CONSTRUCTION:
+      return expr->map_literal()->vals();
+
+    default:
+      return NULL;
     }
 }
 
@@ -752,34 +863,7 @@ void
 Build_connection_graphs::handle_composite_literal(Named_object* object,
 						  Expression* expr)
 {
-  // A heap expression is just any expression that takes the address of a
-  // composite literal.
-  if (expr->heap_expression() != NULL)
-    expr = expr->heap_expression()->expr();
-
-  Expression_list* args = NULL;
-  switch (expr->classification())
-    {
-    case Expression::EXPRESSION_STRUCT_CONSTRUCTION:
-      args = expr->struct_literal()->vals();
-      break;
-
-    case Expression::EXPRESSION_FIXED_ARRAY_CONSTRUCTION:
-      args = expr->array_literal()->vals();
-      break;
-
-    case Expression::EXPRESSION_SLICE_CONSTRUCTION:
-      args = expr->slice_literal()->vals();
-      break;
-
-    case Expression::EXPRESSION_MAP_CONSTRUCTION:
-      args = expr->map_literal()->vals();
-      break;
-
-    default:
-      break;
-    }
-
+  Expression_list* args = this->get_composite_arguments(expr);
   if (args == NULL)
     return;
 
@@ -875,22 +959,29 @@ Build_connection_graphs::variable(Named_object* var)
 	      Named_object* lhs_no = this->resolve_var_reference(assn->lhs());
 	      Named_object* rhs_no = this->resolve_var_reference(assn->rhs());
 
-	      if (lhs_no == NULL)
+	      if (assn->rhs()->is_composite_literal()
+		  || assn->rhs()->heap_expression() != NULL)
+		this->handle_composite_literal(var, assn->rhs());
+	      else if (assn->rhs()->call_result_expression() != NULL)
 		{
-		  if (assn->rhs()->is_composite_literal()
-		      || assn->rhs()->heap_expression() != NULL)
-		    this->handle_composite_literal(var, assn->rhs());
-		  else if (assn->rhs()->call_expression() != NULL)
-		    this->handle_call(var, assn->rhs());
+		  // V's initialization will be a call result if
+		  // V, V1 := call(VAR).
+		  // There are no useful edges to make from V, but we want
+		  // to make sure we handle the call that references VAR.
+		  Expression* call =
+		    assn->rhs()->call_result_expression()->call();
+		  this->handle_call(var, call);
 		}
-	      break;
+	      else if (assn->rhs()->call_expression() != NULL)
+		this->handle_call(var, assn->rhs());
 
 	      // If there is no standalone variable on the rhs, this could be a
 	      // binary expression, which isn't interesting for analysis or a
 	      // composite literal or call expression, which we handled above.
 	      // If the underlying variable on the rhs isn't VAR then it is
 	      // likely an indexing expression where VAR is the index.
-	      if(rhs_no == NULL
+	      if(lhs_no == NULL
+		 || rhs_no == NULL
 		 || rhs_no != var)
 		break;
 
@@ -930,6 +1021,76 @@ Build_connection_graphs::variable(Named_object* var)
 	    this->handle_call(var, p->statement->thunk_statement()->call());
 	    break;
 
+	  case Statement::STATEMENT_IF:
+	    {
+	      // If this is a reference via an if statement, it is interesting
+	      // if there is a function call in the condition.  References in
+	      // the then and else blocks would be discovered in an earlier
+	      // case.
+	      If_statement* if_stmt = p->statement->if_statement();
+	      Expression* cond = if_stmt->condition();
+	      if (cond->call_expression() != NULL)
+		this->handle_call(var, cond);
+	      else if (cond->binary_expression() != NULL)
+		{
+		  Binary_expression* comp = cond->binary_expression();
+		  if (comp->left()->call_expression() != NULL)
+		    this->handle_call(var, comp->left());
+		  if (comp->right()->call_expression() != NULL)
+		    this->handle_call(var, comp->right());
+		}
+	    }
+	    break;
+
+	  case Statement::STATEMENT_VARIABLE_DECLARATION:
+	    {
+	      // VAR could be referenced as the initialization for another
+	      // variable, V e.g. V := call(VAR) or V := &T{field: VAR}.
+	      Variable_declaration_statement* decl =
+		p->statement->variable_declaration_statement();
+	      Named_object* decl_no = decl->var();
+	      Variable* v = decl_no->var_value();
+
+	      Expression* init = v->init();
+	      if (init == NULL)
+		break;
+
+	      if (init->is_composite_literal()
+		  || init->heap_expression() != NULL)
+		{
+		  // Create edges between DECL_NO and each named object in the
+		  // composite literal.
+		  this->handle_composite_literal(decl_no, init);
+		}
+	      else if (init->call_result_expression() != NULL)
+		{
+		  // V's initialization will be a call result if
+		  // V, V1 := call(VAR).
+		  // There's no useful edges to make from V or V1, but we want
+		  // to make sure we handle the call that references VAR.
+		  Expression* call = init->call_result_expression()->call();
+		  this->handle_call(var, call);
+		}
+	      else if (init->call_expression() != NULL)
+		this->handle_call(var, init);
+	    }
+	    break;
+
+	  case Statement::STATEMENT_TEMPORARY:
+	    {
+	      // A call to a function with mutliple results that references VAR
+	      // will be lowered into a temporary at this point.  Make sure the
+	      // call that references VAR is handled.
+	      Expression* init = p->statement->temporary_statement()->init();
+	      if (init == NULL)
+		break;
+	      else if (init->call_result_expression() != NULL)
+		{
+		  Expression* call = init->call_result_expression()->call();
+		  this->handle_call(var, call);
+		}
+	    }
+
 	  default:
 	    break;
 	  }
@@ -939,7 +1100,10 @@ Build_connection_graphs::variable(Named_object* var)
 }
 
 // Traverse statements to find interesting references that might have not
-// been recorded in the dataflow analysis.
+// been recorded in the dataflow analysis.  For example, many statements
+// in closures are not properly recorded during dataflow analysis.  This should
+// handle all of the cases handled above in statements that reference a
+// variable.  FIXME.
 
 int
 Build_connection_graphs::statement(Block*, size_t*, Statement* s)
@@ -991,6 +1155,29 @@ Build_connection_graphs::statement(Block*, size_t*, Statement* s)
     }
     break;
 
+  case Statement::STATEMENT_EXPRESSION:
+    {
+      Expression* expr = s->expression_statement()->expr();
+      if (expr->call_expression() != NULL)
+	{
+	  // It's not clear what variables we are trying to find references to
+	  // so just use the arguments to this call.
+	  Expression_list* args = expr->call_expression()->args();
+	  if (args == NULL)
+	    break;
+
+	  for (Expression_list::const_iterator p = args->begin();
+	       p != args->end();
+	       ++p)
+	    {
+	      Named_object* no = this->resolve_var_reference(*p);
+	      if (no != NULL)
+		this->handle_call(no, expr);
+	    }
+	}
+    }
+    break;
+
   default:
     break;
   }
@@ -1023,7 +1210,23 @@ Gogo::build_connection_graphs()
       this->add_connection_node(func);
       build_conns.set_current_function(func);
       if (func->is_function())
-	func->func_value()->traverse(&build_conns);
+	{
+	  // A pointer receiver of a method always escapes from the method.
+	  if (fntype->is_method() &&
+	      fntype->receiver()->type()->points_to() != NULL)
+	    {
+	      const Bindings* callee_bindings =
+		func->func_value()->block()->bindings();
+	      std::string rcvr_name = fntype->receiver()->name();
+	      if (Gogo::is_sink_name(rcvr_name) || rcvr_name.empty())
+		return;
+
+	      Named_object* rcvr_no = callee_bindings->lookup_local(rcvr_name);
+	      Node* rcvr_node = this->add_connection_node(rcvr_no);
+	      rcvr_node->connection_node()->set_escape_state(Node::ESCAPE_ARG);
+	    }
+	  func->func_value()->traverse(&build_conns);
+	}
     }
 }
 

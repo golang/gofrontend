@@ -35,6 +35,7 @@ class Type_conversion_expression;
 class Unary_expression;
 class Binary_expression;
 class Call_expression;
+class Call_result_expression;
 class Func_expression;
 class Func_descriptor_expression;
 class Unknown_expression;
@@ -598,6 +599,13 @@ class Expression
   Call_expression*
   call_expression()
   { return this->convert<Call_expression, EXPRESSION_CALL>(); }
+
+  // If this is a call_result expression, return the Call_result_expression
+  // structure.  Otherwise, return NULL.  This is a controlled dynamic
+  // cast.
+  Call_result_expression*
+  call_result_expression()
+  { return this->convert<Call_result_expression, EXPRESSION_CALL_RESULT>(); }
 
   // If this is an expression which refers to a function, return the
   // Func_expression structure.  Otherwise, return NULL.
@@ -2002,6 +2010,57 @@ class Call_expression : public Expression
   bool is_flattened_;
 };
 
+// A single result from a call which returns multiple results.
+
+class Call_result_expression : public Expression
+{
+ public:
+  Call_result_expression(Call_expression* call, unsigned int index)
+    : Expression(EXPRESSION_CALL_RESULT, call->location()),
+      call_(call), index_(index)
+  { }
+
+  Expression*
+  call() const
+  { return this->call_; }
+
+ protected:
+  int
+  do_traverse(Traverse*);
+
+  Type*
+  do_type();
+
+  void
+  do_determine_type(const Type_context*);
+
+  void
+  do_check_types(Gogo*);
+
+  Expression*
+  do_copy()
+  {
+    return new Call_result_expression(this->call_->call_expression(),
+				      this->index_);
+  }
+
+  bool
+  do_must_eval_in_order() const
+  { return true; }
+
+  Bexpression*
+  do_get_backend(Translate_context*);
+
+  void
+  do_dump_expression(Ast_dump_context*) const;
+
+ private:
+  // The underlying call expression.
+  Expression* call_;
+  // Which result we want.
+  unsigned int index_;
+};
+
 // An expression which represents a pointer to a function.
 
 class Func_expression : public Expression
@@ -2727,7 +2786,7 @@ class Allocation_expression : public Expression
  public:
   Allocation_expression(Type* type, Location location)
     : Expression(EXPRESSION_ALLOCATION, location),
-      type_(type), allocate_on_stack_(false)
+      type_(type), allocate_on_stack_(false), stack_temp_(NULL)
   { }
 
   void
@@ -2748,6 +2807,9 @@ class Allocation_expression : public Expression
   Expression*
   do_copy();
 
+  Expression*
+  do_flatten(Gogo*, Named_object*, Statement_inserter*);
+
   Bexpression*
   do_get_backend(Translate_context*);
 
@@ -2759,6 +2821,9 @@ class Allocation_expression : public Expression
   Type* type_;
   // Whether or not this is a stack allocation.
   bool allocate_on_stack_;
+  // If this memory is stack allocated, it will use the address of STACK_TEMP.
+  // Otherwise, STACK_TEMP is NULL.
+  Temporary_statement* stack_temp_;
 };
 
 // Construct a struct.

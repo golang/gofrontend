@@ -9435,52 +9435,7 @@ Expression::make_call(Expression* fn, Expression_list* args, bool is_varargs,
   return new Call_expression(fn, args, is_varargs, location);
 }
 
-// A single result from a call which returns multiple results.
-
-class Call_result_expression : public Expression
-{
- public:
-  Call_result_expression(Call_expression* call, unsigned int index)
-    : Expression(EXPRESSION_CALL_RESULT, call->location()),
-      call_(call), index_(index)
-  { }
-
- protected:
-  int
-  do_traverse(Traverse*);
-
-  Type*
-  do_type();
-
-  void
-  do_determine_type(const Type_context*);
-
-  void
-  do_check_types(Gogo*);
-
-  Expression*
-  do_copy()
-  {
-    return new Call_result_expression(this->call_->call_expression(),
-				      this->index_);
-  }
-
-  bool
-  do_must_eval_in_order() const
-  { return true; }
-
-  Bexpression*
-  do_get_backend(Translate_context*);
-
-  void
-  do_dump_expression(Ast_dump_context*) const;
-
- private:
-  // The underlying call expression.
-  Expression* call_;
-  // Which result we want.
-  unsigned int index_;
-};
+// Class Call_result_expression.
 
 // Traverse a call result.
 
@@ -11473,6 +11428,20 @@ Allocation_expression::do_copy()
   return alloc;
 }
 
+Expression*
+Allocation_expression::do_flatten(Gogo*, Named_object*,
+				  Statement_inserter* inserter)
+{
+  if (this->allocate_on_stack_)
+    {
+      this->stack_temp_ = Statement::make_temporary(this->type_, NULL,
+						    this->location());
+      this->stack_temp_->set_is_address_taken();
+      inserter->insert(this->stack_temp_);
+    }
+  return this;
+}
+
 // Return the backend representation for an allocation expression.
 
 Bexpression*
@@ -11480,9 +11449,17 @@ Allocation_expression::do_get_backend(Translate_context* context)
 {
   Gogo* gogo = context->gogo();
   Location loc = this->location();
+
+  if (this->stack_temp_ != NULL)
+    {
+      Expression* ref =
+	Expression::make_temporary_reference(this->stack_temp_, loc);
+      ref = Expression::make_unary(OPERATOR_AND, ref, loc);
+      return ref->get_backend(context);
+    }
+
   Bexpression* space = 
-    gogo->allocate_memory(this->type_,
-			  this->allocate_on_stack_, loc)->get_backend(context);
+    gogo->allocate_memory(this->type_, loc)->get_backend(context);
   Btype* pbtype = gogo->backend()->pointer_type(this->type_->get_backend(gogo));
   return gogo->backend()->convert_expression(pbtype, space, loc);
 }

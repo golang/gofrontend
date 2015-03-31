@@ -4331,14 +4331,11 @@ Build_method_tables::type(Type* type)
 // Return an expression which allocates memory to hold values of type TYPE.
 
 Expression*
-Gogo::allocate_memory(Type* type, bool, Location location)
+Gogo::allocate_memory(Type* type, Location location)
 {
   Expression* td = Expression::make_type_descriptor(type, location);
   Expression* size =
     Expression::make_type_info(type, Expression::TYPE_INFO_SIZE);
-
-  // TODO(cmang): Implement a backend function to allocate memory on the
-  // stack if ON_STACK if true.
 
   // If this package imports unsafe, then it may play games with
   // pointers that look like integers.  We should be able to determine

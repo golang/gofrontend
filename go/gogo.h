@@ -676,9 +676,8 @@ class Gogo
   build_interface_method_tables();
 
   // Return an expression which allocates memory to hold values of type TYPE.
-  // This memory will be allocated on the stack if ON_STACK is true.
   Expression*
-  allocate_memory(Type *type, bool on_stack, Location);
+  allocate_memory(Type *type, Location);
 
   // Get the name of the magic initialization function.
   const std::string&
@@ -1703,7 +1702,7 @@ class Variable
   bool is_used_ : 1;
   // Whether something takes the address of this variable.  For a
   // local variable this implies that the variable has to be on the
-  // heap.
+  // heap if it escapes from its function.
   bool is_address_taken_ : 1;
   // Whether something takes the address of this variable such that
   // the address does not escape the function.

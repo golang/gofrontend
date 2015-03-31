@@ -3113,41 +3113,7 @@ Statement::make_unnamed_label_statement(Unnamed_label* label)
   return new Unnamed_label_statement(label);
 }
 
-// An if statement.
-
-class If_statement : public Statement
-{
- public:
-  If_statement(Expression* cond, Block* then_block, Block* else_block,
-	       Location location)
-    : Statement(STATEMENT_IF, location),
-      cond_(cond), then_block_(then_block), else_block_(else_block)
-  { }
-
- protected:
-  int
-  do_traverse(Traverse*);
-
-  void
-  do_determine_types();
-
-  void
-  do_check_types(Gogo*);
-
-  bool
-  do_may_fall_through() const;
-
-  Bstatement*
-  do_get_backend(Translate_context*);
-
-  void
-  do_dump_statement(Ast_dump_context*) const;
-
- private:
-  Expression* cond_;
-  Block* then_block_;
-  Block* else_block_;
-};
+// Class If_statement.
 
 // Traversal.
 

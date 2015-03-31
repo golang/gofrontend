@@ -22,6 +22,7 @@ class Expression_statement;
 class Return_statement;
 class Thunk_statement;
 class Label_statement;
+class If_statement;
 class For_statement;
 class For_range_statement;
 class Switch_statement;
@@ -341,6 +342,14 @@ class Statement
     return this->convert<Assignment_statement, STATEMENT_ASSIGNMENT>();
   }
 
+  // If this is an temporary statement, return it.  Otherwise return
+  // NULL.
+  Temporary_statement*
+  temporary_statement()
+  {
+    return this->convert<Temporary_statement, STATEMENT_TEMPORARY>();
+  }
+
   // If this is a variable declaration statement, return it.
   // Otherwise return NULL.
   Variable_declaration_statement*
@@ -372,6 +381,11 @@ class Statement
   Label_statement*
   label_statement()
   { return this->convert<Label_statement, STATEMENT_LABEL>(); }
+
+  // If this is an if statement, return it.  Otherwise return NULL.
+  If_statement*
+  if_statement()
+  { return this->convert<If_statement, STATEMENT_IF>(); }
 
   // If this is a for statement, return it.  Otherwise return NULL.
   For_statement*
@@ -1189,6 +1203,46 @@ class Label_statement : public Statement
  private:
   // The label.
   Label* label_;
+};
+
+// An if statement.
+
+class If_statement : public Statement
+{
+ public:
+  If_statement(Expression* cond, Block* then_block, Block* else_block,
+	       Location location)
+    : Statement(STATEMENT_IF, location),
+      cond_(cond), then_block_(then_block), else_block_(else_block)
+  { }
+
+  Expression*
+  condition() const
+  { return this->cond_; }
+
+ protected:
+  int
+  do_traverse(Traverse*);
+
+  void
+  do_determine_types();
+
+  void
+  do_check_types(Gogo*);
+
+  bool
+  do_may_fall_through() const;
+
+  Bstatement*
+  do_get_backend(Translate_context*);
+
+  void
+  do_dump_statement(Ast_dump_context*) const;
+
+ private:
+  Expression* cond_;
+  Block* then_block_;
+  Block* else_block_;
 };
 
 // A for statement.
