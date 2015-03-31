@@ -7887,7 +7887,10 @@ Builtin_call_expression::do_check_types(Gogo*)
 	Type* arg1_type = args->front()->type();
 	Type* arg2_type = args->back()->type();
 	if (arg1_type->is_error() || arg2_type->is_error())
-	  break;
+	  {
+	    this->set_is_error();
+	    break;
+	  }
 
 	Type* e1;
 	if (arg1_type->is_slice_type())
@@ -7929,7 +7932,10 @@ Builtin_call_expression::do_check_types(Gogo*)
 	  }
 	if (args->front()->type()->is_error()
 	    || args->back()->type()->is_error())
-	  break;
+	  {
+	    this->set_is_error();
+	    break;
+	  }
 
 	Array_type* at = args->front()->type()->array_type();
 	Type* e = at->element_type();
