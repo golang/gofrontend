@@ -7,6 +7,7 @@
 #ifndef GO_GOGO_H
 #define GO_GOGO_H
 
+#include "escape.h"
 #include "go-linemap.h"
 
 class Traverse;
@@ -18,7 +19,6 @@ class Type_identical;
 class Typed_identifier;
 class Typed_identifier_list;
 class Function_type;
-class Node;
 class Expression;
 class Statement;
 class Temporary_statement;
@@ -587,6 +587,10 @@ class Gogo
   // Analyze reachability in the connection graphs.
   void
   analyze_reachability();
+
+  // Record escape information in function signatures for export data.
+  void
+  mark_escaping_signatures();
 
   // Optimize variable allocation.
   void
@@ -1226,8 +1230,11 @@ class Function
   // Import a function.
   static void
   import_func(Import*, std::string* pname, Typed_identifier** receiver,
+	      Node::Escapement_lattice* rcvr_escape,
 	      Typed_identifier_list** pparameters,
-	      Typed_identifier_list** presults, bool* is_varargs);
+	      Node::Escape_states** pparam_escapes,
+	      Typed_identifier_list** presults, bool* is_varargs,
+	      bool* has_escape_info);
 
  private:
   // Type for mapping from label names to Label objects.

@@ -9,11 +9,12 @@
 
 #include "go-system.h"
 #include "string-dump.h"
-#include "gogo.h"
 
 class Call_node;
 class Connection_node;
 class Connection_dump_context;
+class Gogo;
+class Named_object;
 
 // A basic escape analysis implementation for the Go frontend based on the
 // algorithm from "Escape Analysis for Java" by Choi et. al in OOPSLA '99.
@@ -60,17 +61,22 @@ class Node
   make_call(Named_object* function);
 
   // Make a connection node for OBJECT.
+  // Note: values in this enum appear in export data, and therefore MUST NOT
+  // change.
   enum Escapement_lattice
   {
     // ESCAPE_GLOBAL means that the object escapes all functions globally.
-    ESCAPE_GLOBAL,
+    ESCAPE_GLOBAL = 0,
     // ESCAPE_ARG with respect to a function means that the object escapes that
     // function it is created in via the function's arguments or results.
-    ESCAPE_ARG,
+    ESCAPE_ARG = 1,
     // ESCAPE_NONE means that the object does not escape the function in which
     // it was created.
-    ESCAPE_NONE
+    ESCAPE_NONE = 2
   };
+
+  // A list of states usually corresponding to a list of function parameters.
+  typedef std::vector<Escapement_lattice> Escape_states;
 
   static Node*
   make_connection(Named_object* object, Escapement_lattice e);
@@ -182,9 +188,7 @@ class Node
 class Call_node : public Node
 {
  public:
-  Call_node(Named_object* function)
-    : Node(NODE_CALL, function)
-  { go_assert(function->is_function() || function->is_function_declaration()); }
+  Call_node(Named_object* function);
 
   const std::string&
   name();

@@ -65,6 +65,10 @@ Node::label()
 
 // Class Call_node.
 
+Call_node::Call_node(Named_object* function)
+  : Node(NODE_CALL, function)
+{ go_assert(function->is_function() || function->is_function_declaration()); }
+
 const std::string&
 Call_node::name()
 {
@@ -716,18 +720,44 @@ Build_connection_graphs::handle_call(Named_object* object, Expression* e)
 	   p1 != objects.end();
 	   ++p1)
 	{
-	  // If CALLEE is defined in another package, we have to assume all
-	  // arguments escape since escape analysis info is not currently
-	  // imported.
-	  // TODO(cmang): add escape analysis info to export data.
-	  // TODO(cmang): use known escape info for builtin calls.
+	  // If CALLEE is defined in another package and we have imported escape
+	  // information about its parameters, update the escape state of this
+	  // argument appropriately. If there is no escape information for this
+	  // function, we have to assume all arguments escape.
 	  if (callee->package() != NULL
 	      || fntype->is_builtin())
 	    {
+	      Node::Escapement_lattice param_escape = Node::ESCAPE_NONE;
+	      if (fntype->has_escape_info())
+		{
+		  if (arg_position == -1)
+		    {
+		      // Use the escape info from the receiver.
+		      param_escape = fntype->receiver_escape_state();
+		    }
+		  else if (fntype->parameters() != NULL)
+		    {
+		      const Node::Escape_states* states =
+			fntype->parameter_escape_states();
+
+		      int param_size = fntype->parameters()->size();
+		      if (arg_position >= param_size)
+			{
+			  go_assert(fntype->is_varargs());
+			  param_escape = states->back();
+			}
+		      else
+			param_escape =
+			  fntype->parameter_escape_states()->at(arg_position);
+		    }
+		}
+	      else
+		param_escape = Node::ESCAPE_ARG;
+
 	      Connection_node* arg_node =
 		this->gogo_->add_connection_node(*p1)->connection_node();
-	      if (arg_node->escape_state() > Node::ESCAPE_ARG)
-		arg_node->set_escape_state(Node::ESCAPE_ARG);
+	      if (arg_node->escape_state() > param_escape)
+		arg_node->set_escape_state(param_escape);
 	    }
 
 	  if (*p1 == object)
@@ -1290,6 +1320,83 @@ Gogo::analyze_reachability()
     }  
 }
 
+// Iterate over all functions analyzed in the analysis, recording escape
+// information for each receiver and parameter.
+
+void
+Gogo::mark_escaping_signatures()
+{
+  for (std::set<Node*>::const_iterator p = this->call_graph_.begin();
+       p != this->call_graph_.end();
+       ++p)
+    {
+      Named_object* fn = (*p)->object();
+      if (!fn->is_function())
+	continue;
+
+      Function* func = fn->func_value();
+      Function_type* fntype = func->type();
+      const Bindings* bindings = func->block()->bindings();
+
+      // If this is a method, set the escape state of the receiver.
+      if (fntype->is_method())
+	{
+	  std::string rcvr_name = fntype->receiver()->name();
+	  if (rcvr_name.empty() || Gogo::is_sink_name(rcvr_name))
+	    fntype->set_receiver_escape_state(Node::ESCAPE_NONE);
+	  else
+	    {
+	      Named_object* rcvr_no = bindings->lookup_local(rcvr_name);
+	      go_assert(rcvr_no != NULL);
+
+	      Node* rcvr_node = this->lookup_connection_node(rcvr_no);
+	      if (rcvr_node != NULL)
+		{
+		  Node::Escapement_lattice e =
+		    rcvr_node->connection_node()->escape_state();
+		  fntype->set_receiver_escape_state(e);
+		}
+	      else
+		fntype->set_receiver_escape_state(Node::ESCAPE_NONE);
+	    }
+	  fntype->set_has_escape_info();
+	}
+
+      const Typed_identifier_list* params = fntype->parameters();
+      if (params == NULL)
+	continue;
+
+      fntype->set_has_escape_info();
+      Node::Escape_states* param_escape_states = new Node::Escape_states;
+      for (Typed_identifier_list::const_iterator p1 = params->begin();
+	   p1 != params->end();
+	   ++p1)
+	{
+	  std::string param_name = p1->name();
+	  if (param_name.empty() || Gogo::is_sink_name(param_name))
+	    param_escape_states->push_back(Node::ESCAPE_NONE);
+	  else
+	    {
+	      Named_object* param_no = bindings->lookup_local(param_name);
+	      go_assert(param_no != NULL);
+
+	      Node* param_node = this->lookup_connection_node(param_no);
+	      if (param_node == NULL)
+		{
+		  param_escape_states->push_back(Node::ESCAPE_NONE);
+		  continue;
+		}
+
+	      Node::Escapement_lattice e =
+		param_node->connection_node()->escape_state();
+	      param_escape_states->push_back(e);
+	    }
+	}
+      go_assert(params->size() == param_escape_states->size());
+      fntype->set_parameter_escape_states(param_escape_states);
+    }
+}
+
 class Optimize_allocations : public Traverse
 {
  public:
@@ -1367,4 +1474,8 @@ Gogo::optimize_allocations(const char** filenames)
   // Propagate escape information to variables and variable initializations.
   Optimize_allocations optimize_allocs(this);
   this->traverse(&optimize_allocs);
+
+  // Store escape information for a function's receivers and parameters in the
+  // function's signature for use when exporting package information.
+  this->mark_escaping_signatures();
 }
