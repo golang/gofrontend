@@ -3,24 +3,25 @@ A Go frontend
 
 Ian Lance Taylor
 iant@golang.org
-29 Jan 2010
+Last update 15 June 2014
 
 This is a compiler frontend for the Go programming language
 (http://golang.org/).  The frontend was originally developed at
-Google, and was released in November 2009.  It was written by Ian
-Lance Taylor <iant@golang.org>.
+Google, and was released in November 2009.  It was originally written
+by Ian Lance Taylor <iant@golang.org>.
 
-It was originally written for gcc (http://gcc.gnu.org/).  As of this
-writing it only supports gcc, but the goal is to separate the gcc
-support from the rest of the frontend.
+It was originally written for GCC (http://gcc.gnu.org/).  As of this
+writing it only supports GCC, but the GCC support has been separated
+from the rest of the frontend, so supporting another compiler is
+feasible.
 
 The go subdirectory holds the frontend source code.  This is mirrored
-to the gcc/go subdirectory in the gcc repository.
+to the gcc/go subdirectory in the GCC repository.
 
 The libgo subdirectory holds the library source code.  This is a copy
 of the main Go library with various changes appropriate for this
 compiler.  The main Go library is hosted at
-http://code.google.com/p/go, in the src/pkg directory.  The libgo
+http://go.googlesource.com/go, in the src directory.  The libgo
 subdirectory is mirrored to the libgo subdirectory in the gcc
 repository.
 
@@ -32,7 +33,8 @@ To contribute patches to the files in this directory, please see
 http://golang.org/doc/gccgo_contribute.html .
 
 The master copy of these files is hosted at
-http://code.google.com/p/gofrontend .  Changes to these files require
+http://go.googlesource.com/gofrontend (there is a mirror at
+http://github.com/golang/gofrontend).  Changes to these files require
 signing a Google contributor license agreement.  If you are the
 copyright holder, you will need to agree to the individual contributor
 license agreement at
