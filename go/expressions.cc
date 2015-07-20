@@ -133,7 +133,7 @@ Expression::determine_type_no_context()
 // assignment.
 
 Expression*
-Expression::convert_for_assignment(Gogo* gogo, Type* lhs_type,
+Expression::convert_for_assignment(Gogo*, Type* lhs_type,
 				   Expression* rhs, Location location)
 {
   Type* rhs_type = rhs->type();
