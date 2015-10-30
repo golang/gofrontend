@@ -265,8 +265,8 @@ struct MStats
 	uint64	pause_ns[256];
 	uint64	pause_end[256];
 	uint32	numgc;
-	bool	enablegc;
 	float64	gc_cpu_fraction;
+	bool	enablegc;
 	bool	debuggc;
 
 	// Statistics about allocation size classes.
