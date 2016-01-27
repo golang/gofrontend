@@ -2933,13 +2933,16 @@ class Composite_literal_expression : public Parser_expression
   Expression*
   do_copy()
   {
-    return new Composite_literal_expression(this->type_, this->depth_,
-					    this->has_keys_,
-					    (this->vals_ == NULL
-					     ? NULL
-					     : this->vals_->copy()),
-					    this->all_are_names_,
-					    this->location());
+    Composite_literal_expression *ret =
+      new Composite_literal_expression(this->type_, this->depth_,
+				       this->has_keys_,
+				       (this->vals_ == NULL
+					? NULL
+					: this->vals_->copy()),
+				       this->all_are_names_,
+				       this->location());
+    ret->key_path_ = this->key_path_;
+    return ret;
   }
 
   void
