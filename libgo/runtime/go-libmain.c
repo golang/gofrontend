@@ -15,7 +15,6 @@
 #include "runtime.h"
 #include "array.h"
 #include "arch.h"
-#include "malloc.h"
 
 /* This is used when building a standalone Go library using the Go
    command's -buildmode=c-archive or -buildmode=c-shared option.  It

@@ -40,10 +40,6 @@ import (
 // Function called by misc/cgo/test.
 //go:linkname lockedOSThread runtime.lockedOSThread
 
-// Functions temporarily in C that have not yet been ported.
-func gchelper()
-func mallocinit()
-
 // C functions for thread and context management.
 func newosproc(*m)
 func malg(bool, bool, *unsafe.Pointer, *uintptr) *g
@@ -454,6 +450,7 @@ func schedinit() {
 
 	sched.maxmcount = 10000
 
+	tracebackinit()
 	mallocinit()
 	mcommoninit(_g_.m)
 	alginit() // maps must not be used before this call
@@ -766,6 +763,122 @@ func casgstatus(gp *g, oldval, newval uint32) {
 	if newval == _Grunning && gp.gcscanvalid {
 		// Run queueRescan on the system stack so it has more space.
 		systemstack(func() { queueRescan(gp) })
+	}
+}
+
+// scang blocks until gp's stack has been scanned.
+// It might be scanned by scang or it might be scanned by the goroutine itself.
+// Either way, the stack scan has completed when scang returns.
+func scang(gp *g, gcw *gcWork) {
+	// Invariant; we (the caller, markroot for a specific goroutine) own gp.gcscandone.
+	// Nothing is racing with us now, but gcscandone might be set to true left over
+	// from an earlier round of stack scanning (we scan twice per GC).
+	// We use gcscandone to record whether the scan has been done during this round.
+	// It is important that the scan happens exactly once: if called twice,
+	// the installation of stack barriers will detect the double scan and die.
+
+	gp.gcscandone = false
+
+	// See http://golang.org/cl/21503 for justification of the yield delay.
+	const yieldDelay = 10 * 1000
+	var nextYield int64
+
+	// Endeavor to get gcscandone set to true,
+	// either by doing the stack scan ourselves or by coercing gp to scan itself.
+	// gp.gcscandone can transition from false to true when we're not looking
+	// (if we asked for preemption), so any time we lock the status using
+	// castogscanstatus we have to double-check that the scan is still not done.
+loop:
+	for i := 0; !gp.gcscandone; i++ {
+		switch s := readgstatus(gp); s {
+		default:
+			dumpgstatus(gp)
+			throw("stopg: invalid status")
+
+		case _Gdead:
+			// No stack.
+			gp.gcscandone = true
+			break loop
+
+		case _Gcopystack:
+		// Stack being switched. Go around again.
+
+		case _Grunnable, _Gsyscall, _Gwaiting:
+			// Claim goroutine by setting scan bit.
+			// Racing with execution or readying of gp.
+			// The scan bit keeps them from running
+			// the goroutine until we're done.
+			if castogscanstatus(gp, s, s|_Gscan) {
+				if gp.scanningself {
+					// Don't try to scan the stack
+					// if the goroutine is going to do
+					// it itself.
+					restartg(gp)
+					break
+				}
+				if !gp.gcscandone {
+					scanstack(gp, gcw)
+					gp.gcscandone = true
+				}
+				restartg(gp)
+				break loop
+			}
+
+		case _Gscanwaiting:
+			// newstack is doing a scan for us right now. Wait.
+
+		case _Gscanrunning:
+			// checkPreempt is scanning. Wait.
+
+		case _Grunning:
+			// Goroutine running. Try to preempt execution so it can scan itself.
+			// The preemption handler (in newstack) does the actual scan.
+
+			// Optimization: if there is already a pending preemption request
+			// (from the previous loop iteration), don't bother with the atomics.
+			if gp.preemptscan && gp.preempt {
+				break
+			}
+
+			// Ask for preemption and self scan.
+			if castogscanstatus(gp, _Grunning, _Gscanrunning) {
+				if !gp.gcscandone {
+					gp.preemptscan = true
+					gp.preempt = true
+				}
+				casfrom_Gscanstatus(gp, _Gscanrunning, _Grunning)
+			}
+		}
+
+		if i == 0 {
+			nextYield = nanotime() + yieldDelay
+		}
+		if nanotime() < nextYield {
+			procyield(10)
+		} else {
+			osyield()
+			nextYield = nanotime() + yieldDelay/2
+		}
+	}
+
+	gp.preemptscan = false // cancel scan request if no longer needed
+}
+
+// The GC requests that this routine be moved from a scanmumble state to a mumble state.
+func restartg(gp *g) {
+	s := readgstatus(gp)
+	switch s {
+	default:
+		dumpgstatus(gp)
+		throw("restartg: unexpected status")
+
+	case _Gdead:
+	// ok
+
+	case _Gscanrunnable,
+		_Gscanwaiting,
+		_Gscansyscall:
+		casfrom_Gscanstatus(gp, s, s&^_Gscan)
 	}
 }
 
@@ -2016,6 +2129,7 @@ top:
 		// goroutines on the global queue.
 		// Since we preempt by storing the goroutine on the global
 		// queue, this is the only place we need to check preempt.
+		// This does not call checkPreempt because gp is not running.
 		if gp != nil && gp.preempt {
 			gp.preempt = false
 			lock(&sched.lock)
@@ -2110,6 +2224,13 @@ func goschedImpl(gp *g) {
 func gosched_m(gp *g) {
 	if trace.enabled {
 		traceGoSched()
+	}
+	goschedImpl(gp)
+}
+
+func gopreempt_m(gp *g) {
+	if trace.enabled {
+		traceGoPreempt()
 	}
 	goschedImpl(gp)
 }

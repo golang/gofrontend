@@ -112,6 +112,35 @@ if test "${GOOS}" = "aix" && `oslevel | grep -q "^7.1"`; then
     mv ${OUT}-2 ${OUT}
 fi
 
+# Make sure _MAP_FAILED is defined.
+if ! grep '^const _MAP_FAILED =' gen-sysinfo.go > /dev/null 2>&1; then
+  echo "const _MAP_FAILED = ^uintptr(0)" >> ${OUT}
+fi
+# Make sure _MAP_ANON is defined.
+if ! grep '^const _MAP_ANON =' gen-sysinfo.go > /dev/null 2>&1; then
+  if grep '^const _MAP_ANONYMOUS ' gen-sysinfo.go > /dev/null 2>&1; then
+    echo "const _MAP_ANON = _MAP_ANONYMOUS" >> ${OUT}
+  else
+    echo "const _MAP_ANON = 0" >> ${OUT}
+  fi
+fi
+# Make sure _MADV_DONTNEED is defined.
+if ! grep '^const _MADV_DONTNEED =' gen-sysinfo.go > /dev/null 2>&1; then
+  echo "const _MADV_DONTNEED = 0" >> ${OUT}
+fi
+# Make sure _MADV_FREE is defined.
+if ! grep '^const _MADV_FREE =' gen-sysinfo.go > /dev/null 2>&1; then
+  echo "const _MADV_FREE = 0" >> ${OUT}
+fi
+# Make sure _MADV_HUGEPAGE is defined.
+if ! grep '^const _MADV_HUGEPAGE =' gen-sysinfo.go > /dev/null 2>&1; then
+  echo "const _MADV_HUGEPAGE = 0" >> ${OUT}
+fi
+# Make sure _MADV_NOHUGEPAGE is defined.
+if ! grep '^const _MADV_NOHUGEPAGE =' gen-sysinfo.go > /dev/null 2>&1; then
+  echo "const _MADV_NOHUGEPAGE = 0" >> ${OUT}
+fi
+
 # The semt structure, for Solaris.
 grep '^type _sem_t ' gen-sysinfo.go | \
     sed -e 's/_sem_t/semt/' >> ${OUT}

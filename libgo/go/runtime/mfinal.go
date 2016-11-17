@@ -12,14 +12,6 @@ import (
 	"unsafe"
 )
 
-// Functions still in C.
-func addfinalizer(p unsafe.Pointer, f *funcval, ft *functype, ot *ptrtype) bool
-func removefinalizer(p unsafe.Pointer)
-
-// Temporary for calling from C code.
-//go:linkname queuefinalizer runtime.queuefinalizer
-//go:linkname iterate_finq runtime.iterate_finq
-
 // finblock is allocated from non-GC'd memory, so any heap pointers
 // must be specially handled.
 //
@@ -65,9 +57,6 @@ func queuefinalizer(p unsafe.Pointer, fn *funcval, ft *functype, ot *ptrtype) {
 				// pointer mask to use while scanning.
 				// Since all the values in finalizer are
 				// pointers, just turn all bits on.
-				//
-				// Note for gccgo: this is not used yet,
-				// but will be used soon with the new GC.
 				for i := range finptrmask {
 					finptrmask[i] = 0xff
 				}
@@ -287,7 +276,18 @@ func SetFinalizer(obj interface{}, finalizer interface{}) {
 			return
 		}
 
-		throw("runtime.SetFinalizer: pointer not in allocated block")
+		// Global initializers might be linker-allocated.
+		//	var Foo = &Object{}
+		//	func main() {
+		//		runtime.SetFinalizer(Foo, nil)
+		//	}
+		// The relevant segments are: noptrdata, data, bss, noptrbss.
+		// We cannot assume they are in any order or even contiguous,
+		// due to external linking.
+		//
+		// For gccgo we have no reliable way to detect them,
+		// so we just return.
+		return
 	}
 
 	if e.data != base {
@@ -355,18 +355,44 @@ okarg:
 	})
 }
 
-//extern runtime_mlookup
-func runtime_mlookup(unsafe.Pointer, **byte, *uintptr, **mspan) int32
-
 // Look up pointer v in heap. Return the span containing the object,
 // the start of the object, and the size of the object. If the object
 // does not exist, return nil, nil, 0.
 func findObject(v unsafe.Pointer) (s *mspan, x unsafe.Pointer, n uintptr) {
-	var base *byte
-	if runtime_mlookup(v, &base, &n, &s) == 0 {
-		return nil, nil, 0
+	c := gomcache()
+	c.local_nlookup++
+	if sys.PtrSize == 4 && c.local_nlookup >= 1<<30 {
+		// purge cache stats to prevent overflow
+		lock(&mheap_.lock)
+		purgecachedstats(c)
+		unlock(&mheap_.lock)
 	}
-	return s, unsafe.Pointer(base), n
+
+	// find span
+	arena_start := mheap_.arena_start
+	arena_used := mheap_.arena_used
+	if uintptr(v) < arena_start || uintptr(v) >= arena_used {
+		return
+	}
+	p := uintptr(v) >> pageShift
+	q := p - arena_start>>pageShift
+	s = mheap_.spans[q]
+	if s == nil {
+		return
+	}
+	x = unsafe.Pointer(s.base())
+
+	if uintptr(v) < uintptr(x) || uintptr(v) >= uintptr(unsafe.Pointer(s.limit)) || s.state != mSpanInUse {
+		s = nil
+		x = nil
+		return
+	}
+
+	n = s.elemsize
+	if s.sizeclass != 0 {
+		x = add(x, (uintptr(v)-uintptr(x))/n*n)
+	}
+	return
 }
 
 // Mark KeepAlive as noinline so that the current compiler will ensure

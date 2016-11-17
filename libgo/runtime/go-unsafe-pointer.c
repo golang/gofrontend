@@ -8,7 +8,6 @@
 
 #include "runtime.h"
 #include "go-type.h"
-#include "mgc0.h"
 
 /* This file provides the type descriptor for the unsafe.Pointer type.
    The unsafe package is defined by the compiler itself, which means
@@ -18,7 +17,7 @@
 extern const struct __go_type_descriptor unsafe_Pointer
   __asm__ (GOSYM_PREFIX "__go_tdn_unsafe.Pointer");
 
-extern const uintptr unsafe_Pointer_gc[]
+extern const byte unsafe_Pointer_gc[]
   __asm__ (GOSYM_PREFIX "__go_tdn_unsafe.Pointer$gc");
 
 /* Used to determine the field alignment.  */
@@ -36,8 +35,7 @@ static const String reflection_string =
   sizeof REFLECTION - 1
 };
 
-const uintptr unsafe_Pointer_gc[] __attribute__((aligned(4))) =
-  {sizeof(void*), GC_APTR, 0, GC_END};
+const byte unsafe_Pointer_gc[] = { 1 };
 
 extern const FuncVal runtime_pointerhash_descriptor
   __asm__ (GOSYM_PREFIX "runtime.pointerhash$descriptor");
@@ -63,7 +61,7 @@ const struct __go_type_descriptor unsafe_Pointer =
   /* __equalfn */
   &runtime_pointerequal_descriptor,
   /* __gcdata */
-  (const byte*)(unsafe_Pointer_gc),
+  unsafe_Pointer_gc,
   /* __reflection */
   &reflection_string,
   /* __uncommon */
@@ -87,11 +85,10 @@ static const String preflection_string =
   sizeof PREFLECTION - 1,
 };
 
-extern const uintptr pointer_unsafe_Pointer_gc[]
+extern const byte pointer_unsafe_Pointer_gc[]
   __asm__ (GOSYM_PREFIX "__go_td_pN14_unsafe.Pointer$gc");
 
-const uintptr pointer_unsafe_Pointer_gc[] __attribute__((aligned(4))) =
-  {sizeof(void*), GC_APTR, 0, GC_END};
+const byte pointer_unsafe_Pointer_gc[] = { 1 };
 
 const struct __go_ptr_type pointer_unsafe_Pointer =
 {
@@ -114,7 +111,7 @@ const struct __go_ptr_type pointer_unsafe_Pointer =
     /* __equalfn */
     &runtime_pointerequal_descriptor,
     /* __gcdata */
-    (const byte*)(pointer_unsafe_Pointer_gc),
+    pointer_unsafe_Pointer_gc,
     /* __reflection */
     &preflection_string,
     /* __uncommon */

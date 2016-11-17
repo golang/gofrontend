@@ -382,7 +382,18 @@ var dbgvars = []dbgVar{
 func parsedebugvars() {
 	// defaults
 	debug.cgocheck = 1
-	debug.invalidptr = 1
+
+	// Unfortunately, because gccgo uses conservative stack scanning,
+	// we can not enable invalid pointer checking. It is possible for
+	// memory block M1 to point to M2, and for both to be dead.
+	// We release M2, causing the entire span to be released.
+	// Before we release M1, a stack pointer appears that point into it.
+	// This stack pointer is presumably dead, but causes M1 to be marked.
+	// We scan M1 and see the pointer to M2 on a released span.
+	// At that point, if debug.invalidptr is set, we crash.
+	// This is not a problem, assuming that M1 really is dead and
+	// the pointer we discovered to it will not be used.
+	// debug.invalidptr = 1
 
 	for p := gogetenv("GODEBUG"); p != ""; {
 		field := ""

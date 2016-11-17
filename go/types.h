@@ -89,28 +89,6 @@ static const int RUNTIME_TYPE_KIND_DIRECT_IFACE = (1 << 5);
 static const int RUNTIME_TYPE_KIND_GC_PROG = (1 << 6);
 static const int RUNTIME_TYPE_KIND_NO_POINTERS = (1 << 7);
 
-// GC instruction opcodes.  These must match the values in libgo/runtime/mgc0.h.
-enum GC_Opcode
-{
-  GC_END = 0,     // End of object, loop or subroutine.
-  GC_PTR,         // A typed pointer.
-  GC_APTR,        // Pointer to an arbitrary object.
-  GC_ARRAY_START, // Start an array with a fixed length.
-  GC_ARRAY_NEXT,  // The next element of an array.
-  GC_CALL,        // Call a subroutine.
-  GC_CHAN_PTR,    // Go channel.
-  GC_STRING,      // Go string.
-  GC_EFACE,       // interface{}.
-  GC_IFACE,       // interface{...}.
-  GC_SLICE,       // Go slice.
-  GC_REGION,      // A region/part of the current object.
-
-  GC_NUM_INSTR    // Number of instruction opcodes
-};
-
-// The GC Stack Capacity must match the value in libgo/runtime/mgc0.h.
-static const int GC_STACK_CAPACITY = 8;
-
 // To build the complete list of methods for a named type we need to
 // gather all methods from anonymous fields.  Those methods may
 // require an arbitrary set of indirections and field offsets.  There
@@ -1067,9 +1045,6 @@ class Type
   do_type_descriptor(Gogo*, Named_type* name) = 0;
 
   virtual void
-  do_gc_symbol(Gogo*, Expression_list**, Expression**, int) = 0;
-
-  virtual void
   do_reflection(Gogo*, std::string*) const = 0;
 
   virtual void
@@ -1123,22 +1098,6 @@ class Type
   Expression*
   type_descriptor_constructor(Gogo*, int runtime_type_kind, Named_type*,
 			      const Methods*, bool only_value_methods);
-
-  // Generate the GC symbol for this TYPE.  VALS is the data so far in this
-  // symbol; extra values will be appended in do_gc_symbol.  OFFSET is the
-  // offset into the symbol where the GC data is located.  STACK_SIZE is the
-  // size of the GC stack when dealing with array types.
-  static void
-  gc_symbol(Gogo*, Type* type, Expression_list** vals, Expression** offset,
-	    int stack_size);
-
-  // Build a composite literal for the GC symbol of this type.
-  Expression*
-  gc_symbol_constructor(Gogo*);
-
-  // Advance the OFFSET of the GC symbol by the size of this type.
-  void
-  advance_gc_offset(Expression** offset);
 
   // For the benefit of child class reflection string generation.
   void
@@ -1639,10 +1598,6 @@ protected:
   do_reflection(Gogo*, std::string*) const;
 
   void
-  do_gc_symbol(Gogo*, Expression_list**, Expression** offset, int)
-  { this->advance_gc_offset(offset); }
-
-  void
   do_mangled_name(Gogo*, std::string*) const;
 
  private:
@@ -1729,10 +1684,6 @@ class Float_type : public Type
   do_reflection(Gogo*, std::string*) const;
 
   void
-  do_gc_symbol(Gogo*, Expression_list**, Expression** offset, int)
-  { this->advance_gc_offset(offset); }
-
-  void
   do_mangled_name(Gogo*, std::string*) const;
 
  private:
@@ -1811,10 +1762,6 @@ class Complex_type : public Type
   do_reflection(Gogo*, std::string*) const;
 
   void
-  do_gc_symbol(Gogo*, Expression_list**, Expression** offset, int)
-  { this->advance_gc_offset(offset); }
-
-  void
   do_mangled_name(Gogo*, std::string*) const;
 
  private:
@@ -1867,9 +1814,6 @@ class String_type : public Type
 
   void
   do_reflection(Gogo*, std::string*) const;
-
-  void
-  do_gc_symbol(Gogo*, Expression_list**, Expression**, int);
 
   void
   do_mangled_name(Gogo*, std::string* ret) const;
@@ -2027,9 +1971,6 @@ class Function_type : public Type
   do_reflection(Gogo*, std::string*) const;
 
   void
-  do_gc_symbol(Gogo*, Expression_list**, Expression**, int);
-
-  void
   do_mangled_name(Gogo*, std::string*) const;
 
   void
@@ -2151,9 +2092,6 @@ class Pointer_type : public Type
 
   void
   do_reflection(Gogo*, std::string*) const;
-
-  void
-  do_gc_symbol(Gogo*, Expression_list**, Expression**, int);
 
   void
   do_mangled_name(Gogo*, std::string*) const;
@@ -2475,9 +2413,6 @@ class Struct_type : public Type
   do_reflection(Gogo*, std::string*) const;
 
   void
-  do_gc_symbol(Gogo*, Expression_list**, Expression**, int);
-
-  void
   do_mangled_name(Gogo*, std::string*) const;
 
   void
@@ -2650,9 +2585,6 @@ class Array_type : public Type
   do_reflection(Gogo*, std::string*) const;
 
   void
-  do_gc_symbol(Gogo*, Expression_list**, Expression**, int);
-
-  void
   do_mangled_name(Gogo*, std::string*) const;
 
   void
@@ -2667,12 +2599,6 @@ class Array_type : public Type
 
   Expression*
   slice_type_descriptor(Gogo*, Named_type*);
-
-  void
-  slice_gc_symbol(Gogo*, Expression_list**, Expression**, int);
-
-  void
-  array_gc_symbol(Gogo*, Expression_list**, Expression**, int);
 
   // The type of elements of the array.
   Type* element_type_;
@@ -2771,9 +2697,6 @@ class Map_type : public Type
 
   void
   do_reflection(Gogo*, std::string*) const;
-
-  void
-  do_gc_symbol(Gogo*, Expression_list**, Expression**, int);
 
   void
   do_mangled_name(Gogo*, std::string*) const;
@@ -2886,9 +2809,6 @@ class Channel_type : public Type
 
   void
   do_reflection(Gogo*, std::string*) const;
-
-  void
-  do_gc_symbol(Gogo*, Expression_list**, Expression**, int);
 
   void
   do_mangled_name(Gogo*, std::string*) const;
@@ -3033,9 +2953,6 @@ class Interface_type : public Type
 
   void
   do_reflection(Gogo*, std::string*) const;
-
-  void
-  do_gc_symbol(Gogo*, Expression_list**, Expression**, int);
 
   void
   do_mangled_name(Gogo*, std::string*) const;
@@ -3343,10 +3260,6 @@ class Named_type : public Type
   do_reflection(Gogo*, std::string*) const;
 
   void
-  do_gc_symbol(Gogo* gogo, Expression_list** vals, Expression** offset,
-	       int stack);
-
-  void
   do_mangled_name(Gogo*, std::string* ret) const;
 
   void
@@ -3501,11 +3414,6 @@ class Forward_declaration_type : public Type
 
   void
   do_reflection(Gogo*, std::string*) const;
-
-  void
-  do_gc_symbol(Gogo* gogo, Expression_list** vals, Expression** offset,
-	       int stack_size)
-  { Type::gc_symbol(gogo, this->real_type(), vals, offset, stack_size); }
 
   void
   do_mangled_name(Gogo*, std::string* ret) const;

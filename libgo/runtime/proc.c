@@ -18,7 +18,6 @@
 #include "runtime.h"
 #include "arch.h"
 #include "defs.h"
-#include "malloc.h"
 #include "go-type.h"
 
 #ifdef USING_SPLIT_STACK
@@ -727,12 +726,12 @@ runtime_malg(bool allocatestack, bool signalstack, byte** ret_stack, uintptr* re
                 // 32-bit mode, the Go allocation space is all of
                 // memory anyhow.
 		if(sizeof(void*) == 8) {
-			void *p = runtime_SysAlloc(stacksize, &mstats()->other_sys);
+			void *p = runtime_sysAlloc(stacksize, &mstats()->other_sys);
 			if(p == nil)
 				runtime_throw("runtime: cannot allocate memory for goroutine stack");
 			*ret_stack = (byte*)p;
 		} else {
-			*ret_stack = runtime_mallocgc(stacksize, 0, FlagNoProfiling|FlagNoGC);
+			*ret_stack = runtime_mallocgc(stacksize, nil, false);
 			runtime_xadd(&runtime_stacks_sys, stacksize);
 		}
 		*ret_stacksize = (uintptr)stacksize;

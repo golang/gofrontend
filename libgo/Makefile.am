@@ -392,12 +392,6 @@ toolexeclibgounicode_DATA = \
 	unicode/utf16.gox \
 	unicode/utf8.gox
 
-if HAVE_SYS_MMAN_H
-runtime_mem_file = runtime/mem.c
-else
-runtime_mem_file = runtime/mem_posix_memalign.c
-endif
-
 if LIBGO_IS_RTEMS
 rtems_task_variable_add_file = runtime/rtems-task-variable-add.c
 else
@@ -457,7 +451,6 @@ runtime_files = \
 	runtime/go-memmove.c \
 	runtime/go-nanotime.c \
 	runtime/go-now.c \
-	runtime/go-new.c \
 	runtime/go-nosys.c \
 	runtime/go-reflect-call.c \
 	runtime/go-runtime-error.c \
@@ -465,31 +458,20 @@ runtime_files = \
 	runtime/go-signal.c \
 	runtime/go-strslice.c \
 	runtime/go-typedesc-equal.c \
-	runtime/go-unsafe-new.c \
-	runtime/go-unsafe-newarray.c \
 	runtime/go-unsafe-pointer.c \
 	runtime/go-unsetenv.c \
 	runtime/go-unwind.c \
 	runtime/go-varargs.c \
 	runtime/env_posix.c \
-	runtime/heapdump.c \
-	runtime/mcache.c \
-	runtime/mcentral.c \
-	$(runtime_mem_file) \
-	runtime/mfixalloc.c \
-	runtime/mgc0.c \
-	runtime/mheap.c \
-	runtime/msize.c \
 	runtime/panic.c \
-	runtime/parfor.c \
 	runtime/print.c \
 	runtime/proc.c \
 	runtime/runtime_c.c \
+	runtime/stack.c \
 	runtime/thread.c \
 	$(runtime_thread_files) \
 	runtime/yield.c \
 	$(rtems_task_variable_add_file) \
-	malloc.c \
 	$(runtime_getncpu_file)
 
 goc2c.$(OBJEXT): runtime/goc2c.c
@@ -497,10 +479,6 @@ goc2c.$(OBJEXT): runtime/goc2c.c
 
 goc2c: goc2c.$(OBJEXT)
 	$(CC_FOR_BUILD) $(CFLAGS_FOR_BUILD) $(LDFLAGS_FOR_BUILD) -o $@ $<
-
-malloc.c: $(srcdir)/runtime/malloc.goc goc2c
-	./goc2c $< > $@.tmp
-	mv -f $@.tmp $@
 
 %.c: $(srcdir)/runtime/%.goc goc2c
 	./goc2c $< > $@.tmp
@@ -579,7 +557,7 @@ s-sigtab: $(srcdir)/mksigtab.sh gen-sysinfo.go
 runtime.inc: s-runtime-inc; @true
 s-runtime-inc: runtime.lo Makefile
 	rm -f runtime.inc.tmp2
-	grep -v "#define _" runtime.inc.tmp | grep -v "#define [cm][01234] " > runtime.inc.tmp2
+	grep -v "#define _" runtime.inc.tmp | grep -v "#define [cm][01234] " | grep -v "#define empty " > runtime.inc.tmp2
 	for pattern in '_[GP][a-z]' _Max _Lock _Sig _Trace _MHeap _Num; do \
 	  grep "#define $$pattern" runtime.inc.tmp >> runtime.inc.tmp2; \
 	done

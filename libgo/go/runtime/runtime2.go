@@ -413,8 +413,7 @@ type g struct {
 	entryfn  uintptr              // function address passed to __go_go
 	fromgogo bool                 // whether entered from gogo function
 
-	issystem     bool // do not output in stack dump
-	isbackground bool // ignore in deadlock detector
+	scanningself bool // whether goroutine is scanning its own stack
 
 	traceback *tracebackg // stack traceback buffer
 
@@ -542,7 +541,7 @@ type p struct {
 
 	tracebuf traceBufPtr
 
-	// Not for gccgo for now: palloc persistentAlloc // per-P to avoid mutex
+	palloc persistentAlloc // per-P to avoid mutex
 
 	// Per-P GC state
 	gcAssistTime     int64 // Nanoseconds in assistAlloc
@@ -552,7 +551,7 @@ type p struct {
 	// gcw is this P's GC work buffer cache. The work buffer is
 	// filled by write barriers, drained by mutator assists, and
 	// disposed on certain GC state transitions.
-	// Not for gccgo for now: gcw gcWork
+	gcw gcWork
 
 	runSafePointFn uint32 // if 1, run sched.safePointFn at next safe point
 

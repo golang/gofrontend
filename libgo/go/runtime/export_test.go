@@ -183,7 +183,6 @@ func SetEnvs(e []string) { envs = e }
 
 // For benchmarking.
 
-/*
 func BenchSetType(n int, x interface{}) {
 	e := *efaceOf(&x)
 	t := e._type
@@ -214,7 +213,6 @@ func BenchSetType(n int, x interface{}) {
 const PtrSize = sys.PtrSize
 
 var ForceGCPeriod = &forcegcperiod
-*/
 
 // SetTracebackEnv is like runtime/debug.SetTraceback, but it raises
 // the "environment" traceback level, so later calls to
@@ -227,7 +225,6 @@ func SetTracebackEnv(level string) {
 var ReadUnaligned32 = readUnaligned32
 var ReadUnaligned64 = readUnaligned64
 
-/*
 func CountPagesInUse() (pagesInUse, counted uintptr) {
 	stopTheWorld("CountPagesInUse")
 
@@ -243,7 +240,6 @@ func CountPagesInUse() (pagesInUse, counted uintptr) {
 
 	return
 }
-*/
 
 // BlockOnSystemStack switches to the system stack, prints "x\n" to
 // stderr, and blocks in a stack containing
