@@ -6,10 +6,12 @@ package runtime
 
 import (
 	"runtime/internal/atomic"
+	"runtime/internal/sys"
 	"unsafe"
 )
 
-// Functions temporarily called by C code.
+// Functions called by C code.
+//go:linkname main runtime.main
 //go:linkname newextram runtime.newextram
 //go:linkname acquirep runtime.acquirep
 //go:linkname releasep runtime.releasep
@@ -18,6 +20,7 @@ import (
 //go:linkname sysmon runtime.sysmon
 //go:linkname schedtrace runtime.schedtrace
 //go:linkname allgadd runtime.allgadd
+//go:linkname schedinit runtime.schedinit
 //go:linkname mcommoninit runtime.mcommoninit
 //go:linkname ready runtime.ready
 //go:linkname gcprocs runtime.gcprocs
@@ -36,6 +39,8 @@ import (
 //go:linkname helpgc runtime.helpgc
 //go:linkname stopTheWorldWithSema runtime.stopTheWorldWithSema
 //go:linkname startTheWorldWithSema runtime.startTheWorldWithSema
+//go:linkname mstart runtime.mstart
+//go:linkname mstart1 runtime.mstart1
 //go:linkname mput runtime.mput
 //go:linkname mget runtime.mget
 //go:linkname globrunqput runtime.globrunqput
@@ -49,24 +54,248 @@ import (
 // Functions temporarily in C that have not yet been ported.
 func allocm(*p, bool, *unsafe.Pointer, *uintptr) *m
 func malg(bool, bool, *unsafe.Pointer, *uintptr) *g
-func startm(*p, bool)
-func newm(unsafe.Pointer, *p)
 func gchelper()
 func getfingwait() bool
 func getfingwake() bool
 func wakefing() *g
+func mallocinit()
 
-// C functions for ucontext management.
+// C functions for thread and context management.
+func newosproc(*m)
 func gogo(*g)
 func setGContext()
 func makeGContext(*g, unsafe.Pointer, uintptr)
+func mstartInitContext(*g, unsafe.Pointer)
 func getTraceback(me, gp *g)
+func _cgo_notify_runtime_init_done()
+
+// Functions created by the compiler.
+//extern __go_init_main
+func main_init()
+
+//extern main.main
+func main_main()
+
+var buildVersion = sys.TheVersion
+
+// Goroutine scheduler
+// The scheduler's job is to distribute ready-to-run goroutines over worker threads.
+//
+// The main concepts are:
+// G - goroutine.
+// M - worker thread, or machine.
+// P - processor, a resource that is required to execute Go code.
+//     M must have an associated P to execute Go code, however it can be
+//     blocked or in a syscall w/o an associated P.
+//
+// Design doc at https://golang.org/s/go11sched.
+
+// Worker thread parking/unparking.
+// We need to balance between keeping enough running worker threads to utilize
+// available hardware parallelism and parking excessive running worker threads
+// to conserve CPU resources and power. This is not simple for two reasons:
+// (1) scheduler state is intentionally distributed (in particular, per-P work
+// queues), so it is not possible to compute global predicates on fast paths;
+// (2) for optimal thread management we would need to know the future (don't park
+// a worker thread when a new goroutine will be readied in near future).
+//
+// Three rejected approaches that would work badly:
+// 1. Centralize all scheduler state (would inhibit scalability).
+// 2. Direct goroutine handoff. That is, when we ready a new goroutine and there
+//    is a spare P, unpark a thread and handoff it the thread and the goroutine.
+//    This would lead to thread state thrashing, as the thread that readied the
+//    goroutine can be out of work the very next moment, we will need to park it.
+//    Also, it would destroy locality of computation as we want to preserve
+//    dependent goroutines on the same thread; and introduce additional latency.
+// 3. Unpark an additional thread whenever we ready a goroutine and there is an
+//    idle P, but don't do handoff. This would lead to excessive thread parking/
+//    unparking as the additional threads will instantly park without discovering
+//    any work to do.
+//
+// The current approach:
+// We unpark an additional thread when we ready a goroutine if (1) there is an
+// idle P and there are no "spinning" worker threads. A worker thread is considered
+// spinning if it is out of local work and did not find work in global run queue/
+// netpoller; the spinning state is denoted in m.spinning and in sched.nmspinning.
+// Threads unparked this way are also considered spinning; we don't do goroutine
+// handoff so such threads are out of work initially. Spinning threads do some
+// spinning looking for work in per-P run queues before parking. If a spinning
+// thread finds work it takes itself out of the spinning state and proceeds to
+// execution. If it does not find work it takes itself out of the spinning state
+// and then parks.
+// If there is at least one spinning thread (sched.nmspinning>1), we don't unpark
+// new threads when readying goroutines. To compensate for that, if the last spinning
+// thread finds work and stops spinning, it must unpark a new spinning thread.
+// This approach smooths out unjustified spikes of thread unparking,
+// but at the same time guarantees eventual maximal CPU parallelism utilization.
+//
+// The main implementation complication is that we need to be very careful during
+// spinning->non-spinning thread transition. This transition can race with submission
+// of a new goroutine, and either one part or another needs to unpark another worker
+// thread. If they both fail to do that, we can end up with semi-persistent CPU
+// underutilization. The general pattern for goroutine readying is: submit a goroutine
+// to local work queue, #StoreLoad-style memory barrier, check sched.nmspinning.
+// The general pattern for spinning->non-spinning transition is: decrement nmspinning,
+// #StoreLoad-style memory barrier, check all per-P work queues for new work.
+// Note that all this complexity does not apply to global run queue as we are not
+// sloppy about thread unparking when submitting to global queue. Also see comments
+// for nmspinning manipulation.
+
+var (
+	m0 m
+	g0 g
+)
 
 // main_init_done is a signal used by cgocallbackg that initialization
 // has been completed. It is made before _cgo_notify_runtime_init_done,
 // so all cgo calls can rely on it existing. When main_init is complete,
 // it is closed, meaning cgocallbackg can reliably receive from it.
 var main_init_done chan bool
+
+// runtimeInitTime is the nanotime() at which the runtime started.
+var runtimeInitTime int64
+
+// Value to use for signal mask for newly created M's.
+var initSigmask sigset
+
+// The main goroutine.
+func main() {
+	g := getg()
+
+	// Max stack size is 1 GB on 64-bit, 250 MB on 32-bit.
+	// Using decimal instead of binary GB and MB because
+	// they look nicer in the stack overflow failure message.
+	if sys.PtrSize == 8 {
+		maxstacksize = 1000000000
+	} else {
+		maxstacksize = 250000000
+	}
+
+	// Record when the world started.
+	runtimeInitTime = nanotime()
+
+	systemstack(func() {
+		newm(sysmon, nil)
+	})
+
+	// Lock the main goroutine onto this, the main OS thread,
+	// during initialization. Most programs won't care, but a few
+	// do require certain calls to be made by the main thread.
+	// Those can arrange for main.main to run in the main thread
+	// by calling runtime.LockOSThread during initialization
+	// to preserve the lock.
+	lockOSThread()
+
+	if g.m != &m0 {
+		throw("runtime.main not on m0")
+	}
+
+	// Defer unlock so that runtime.Goexit during init does the unlock too.
+	needUnlock := true
+	defer func() {
+		if needUnlock {
+			unlockOSThread()
+		}
+	}()
+
+	main_init_done = make(chan bool)
+	if iscgo {
+		_cgo_notify_runtime_init_done()
+	}
+
+	fn := main_init // make an indirect call, as the linker doesn't know the address of the main package when laying down the runtime
+	fn()
+	close(main_init_done)
+
+	needUnlock = false
+	unlockOSThread()
+
+	// For gccgo we have to wait until after main is initialized
+	// to enable GC, because initializing main registers the GC roots.
+	gcenable()
+
+	if isarchive || islibrary {
+		// A program compiled with -buildmode=c-archive or c-shared
+		// has a main, but it is not executed.
+		return
+	}
+	fn = main_main // make an indirect call, as the linker doesn't know the address of the main package when laying down the runtime
+	fn()
+	if raceenabled {
+		racefini()
+	}
+
+	// Make racy client program work: if panicking on
+	// another goroutine at the same time as main returns,
+	// let the other goroutine finish printing the panic trace.
+	// Once it does, it will exit. See issue 3934.
+	if panicking != 0 {
+		gopark(nil, nil, "panicwait", traceEvGoStop, 1)
+	}
+
+	exit(0)
+	for {
+		var x *int32
+		*x = 0
+	}
+}
+
+// os_beforeExit is called from os.Exit(0).
+//go:linkname os_beforeExit os.runtime_beforeExit
+func os_beforeExit() {
+	if raceenabled {
+		racefini()
+	}
+}
+
+// start forcegc helper goroutine
+func init() {
+	go forcegchelper()
+}
+
+func forcegchelper() {
+	forcegc.g = getg()
+	for {
+		lock(&forcegc.lock)
+		if forcegc.idle != 0 {
+			throw("forcegc: phase error")
+		}
+		atomic.Store(&forcegc.idle, 1)
+		goparkunlock(&forcegc.lock, "force gc (idle)", traceEvGoBlock, 1)
+		// this goroutine is explicitly resumed by sysmon
+		if debug.gctrace > 0 {
+			println("GC forced")
+		}
+		gcStart(gcBackgroundMode, true)
+	}
+}
+
+// Puts the current goroutine into a waiting state and calls unlockf.
+// If unlockf returns false, the goroutine is resumed.
+// unlockf must not access this G's stack, as it may be moved between
+// the call to gopark and the call to unlockf.
+func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason string, traceEv byte, traceskip int) {
+	mp := acquirem()
+	gp := mp.curg
+	status := readgstatus(gp)
+	if status != _Grunning && status != _Gscanrunning {
+		throw("gopark: bad g status")
+	}
+	mp.waitlock = lock
+	mp.waitunlockf = *(*unsafe.Pointer)(unsafe.Pointer(&unlockf))
+	gp.waitreason = reason
+	mp.waittraceev = traceEv
+	mp.waittraceskip = traceskip
+	releasem(mp)
+	// can't do anything that might move the G between Ms here.
+	mcall(park_m)
+}
+
+// Puts the current goroutine into a waiting state and unlocks the lock.
+// The goroutine can be made runnable again by calling goready(gp).
+func goparkunlock(lock *mutex, reason string, traceEv byte, traceskip int) {
+	gopark(parkunlock_c, unsafe.Pointer(lock), reason, traceEv, traceskip)
+}
 
 func goready(gp *g, traceskip int) {
 	systemstack(func() {
@@ -205,6 +434,55 @@ func allgadd(gp *g) {
 		unlock(&work.rescan.lock)
 	}
 	unlock(&allglock)
+}
+
+// The bootstrap sequence is:
+//
+//	call osinit
+//	call schedinit
+//	make & queue new G
+//	call runtime·mstart
+//
+// The new G calls runtime·main.
+func schedinit() {
+	_m_ := &m0
+	_g_ := &g0
+	_m_.g0 = _g_
+	_m_.curg = _g_
+	_g_.m = _m_
+	setg(_g_)
+
+	sched.maxmcount = 10000
+
+	mallocinit()
+	mcommoninit(_g_.m)
+	alginit() // maps must not be used before this call
+
+	msigsave(_g_.m)
+	initSigmask = _g_.m.sigmask
+
+	goargs()
+	goenvs()
+	parsedebugvars()
+	gcinit()
+
+	sched.lastpoll = uint64(nanotime())
+	procs := ncpu
+	if n, ok := atoi32(gogetenv("GOMAXPROCS")); ok && n > 0 {
+		procs = n
+	}
+	if procs > _MaxGomaxprocs {
+		procs = _MaxGomaxprocs
+	}
+	if procresize(procs) != nil {
+		throw("unknown runnable goroutine during bootstrap")
+	}
+
+	if buildVersion == "" {
+		// Condition should never trigger. This code just serves
+		// to ensure runtime·buildVersion is kept in the resulting binary.
+		buildVersion = "unknown"
+	}
 }
 
 func dumpgstatus(gp *g) {
@@ -684,9 +962,64 @@ func startTheWorldWithSema() {
 		// coordinate. This lazy approach works out in practice:
 		// we don't mind if the first couple gc rounds don't have quite
 		// the maximum number of procs.
-		newm(unsafe.Pointer(funcPC(mhelpgc)), nil)
+		newm(mhelpgc, nil)
 	}
 	_g_.m.locks--
+}
+
+// Called to start an M.
+// For gccgo this is called directly by pthread_create.
+//go:nosplit
+func mstart(mpu unsafe.Pointer) unsafe.Pointer {
+	mp := (*m)(mpu)
+	_g_ := mp.g0
+	_g_.m = mp
+	setg(_g_)
+
+	_g_.entry = nil
+	_g_.param = nil
+
+	mstartInitContext(_g_, unsafe.Pointer(&mp))
+
+	// This is never reached, but is required because pthread_create
+	// expects a function that returns a pointer.
+	return nil
+}
+
+// This is called from mstartInitContext.
+func mstart1() {
+	_g_ := getg()
+
+	if _g_ != _g_.m.g0 {
+		throw("bad runtime·mstart")
+	}
+
+	asminit()
+	minit()
+
+	// Install signal handlers; after minit so that minit can
+	// prepare the thread to be able to handle the signals.
+	if _g_.m == &m0 {
+		// Create an extra M for callbacks on threads not created by Go.
+		if iscgo && !cgoHasExtraM {
+			cgoHasExtraM = true
+			newextram()
+		}
+		initsig(false)
+	}
+
+	if fn := _g_.m.mstartfn; fn != nil {
+		fn()
+	}
+
+	if _g_.m.helpgc != 0 {
+		_g_.m.helpgc = 0
+		stopm()
+	} else if _g_.m != &m0 {
+		acquirep(_g_.m.nextp.ptr())
+		_g_.m.nextp = 0
+	}
+	schedule()
 }
 
 // forEachP calls fn(p) for every P p when p reaches a GC safe point.
@@ -1051,6 +1384,18 @@ func unlockextra(mp *m) {
 	atomic.Storeuintptr(&extram, uintptr(unsafe.Pointer(mp)))
 }
 
+// Create a new m. It will start off with a call to fn, or else the scheduler.
+// fn needs to be static and not a heap allocated closure.
+// May run with m.p==nil, so write barriers are not allowed.
+//go:nowritebarrierrec
+func newm(fn func(), _p_ *p) {
+	mp := allocm(_p_, false, nil, nil)
+	mp.nextp.set(_p_)
+	mp.mstartfn = fn
+	mp.sigmask = initSigmask
+	newosproc(mp)
+}
+
 // Stops execution of the current m until new work is available.
 // Returns with acquired P.
 func stopm() {
@@ -1081,6 +1426,59 @@ retry:
 	}
 	acquirep(_g_.m.nextp.ptr())
 	_g_.m.nextp = 0
+}
+
+func mspinning() {
+	// startm's caller incremented nmspinning. Set the new M's spinning.
+	getg().m.spinning = true
+}
+
+// Schedules some M to run the p (creates an M if necessary).
+// If p==nil, tries to get an idle P, if no idle P's does nothing.
+// May run with m.p==nil, so write barriers are not allowed.
+// If spinning is set, the caller has incremented nmspinning and startm will
+// either decrement nmspinning or set m.spinning in the newly started M.
+//go:nowritebarrierrec
+func startm(_p_ *p, spinning bool) {
+	lock(&sched.lock)
+	if _p_ == nil {
+		_p_ = pidleget()
+		if _p_ == nil {
+			unlock(&sched.lock)
+			if spinning {
+				// The caller incremented nmspinning, but there are no idle Ps,
+				// so it's okay to just undo the increment and give up.
+				if int32(atomic.Xadd(&sched.nmspinning, -1)) < 0 {
+					throw("startm: negative nmspinning")
+				}
+			}
+			return
+		}
+	}
+	mp := mget()
+	unlock(&sched.lock)
+	if mp == nil {
+		var fn func()
+		if spinning {
+			// The caller incremented nmspinning, so set m.spinning in the new M.
+			fn = mspinning
+		}
+		newm(fn, _p_)
+		return
+	}
+	if mp.spinning {
+		throw("startm: m is spinning")
+	}
+	if mp.nextp != 0 {
+		throw("startm: m has p")
+	}
+	if spinning && !runqempty(_p_) {
+		throw("startm: p has runnable gs")
+	}
+	// The caller incremented nmspinning, so set m.spinning in the new M.
+	mp.spinning = spinning
+	mp.nextp.set(_p_)
+	notewakeup(&mp.park)
 }
 
 // Hands off P from syscall or locked M.
@@ -1634,6 +2032,38 @@ func dropg() {
 
 	setMNoWB(&_g_.m.curg.m, nil)
 	setGNoWB(&_g_.m.curg, nil)
+}
+
+func parkunlock_c(gp *g, lock unsafe.Pointer) bool {
+	unlock((*mutex)(lock))
+	return true
+}
+
+// park continuation on g0.
+func park_m(gp *g) {
+	_g_ := getg()
+
+	if trace.enabled {
+		traceGoPark(_g_.m.waittraceev, _g_.m.waittraceskip, gp)
+	}
+
+	casgstatus(gp, _Grunning, _Gwaiting)
+	dropg()
+
+	if _g_.m.waitunlockf != nil {
+		fn := *(*func(*g, unsafe.Pointer) bool)(unsafe.Pointer(&_g_.m.waitunlockf))
+		ok := fn(gp, _g_.m.waitlock)
+		_g_.m.waitunlockf = nil
+		_g_.m.waitlock = nil
+		if !ok {
+			if trace.enabled {
+				traceGoUnpark(gp, 2)
+			}
+			casgstatus(gp, _Gwaiting, _Grunnable)
+			execute(gp, true) // Schedule it back, never returns.
+		}
+	}
+	schedule()
 }
 
 func beforefork() {

@@ -128,8 +128,8 @@ callback (void *data, uintptr_t pc, const char *filename, int lineno,
 	  if (__builtin_strcmp (p, "/proc.c") == 0)
 	    {
 	      if (__builtin_strcmp (function, "kickoff") == 0
-		  || __builtin_strcmp (function, "runtime_mstart") == 0
-		  || __builtin_strcmp (function, "runtime_main") == 0)
+		  || __builtin_strcmp (function, "runtime.mstart") == 0
+		  || __builtin_strcmp (function, "runtime.main") == 0)
 		return 1;
 	    }
 	}

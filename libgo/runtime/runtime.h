@@ -122,8 +122,10 @@ extern M*	runtime_m(void);
 extern G*	runtime_g(void)
   __asm__(GOSYM_PREFIX "runtime.getg");
 
-extern M	runtime_m0;
-extern G	runtime_g0;
+extern M*	runtime_m0(void)
+  __asm__(GOSYM_PREFIX "runtime.runtime_m0");
+extern G*	runtime_g0(void)
+  __asm__(GOSYM_PREFIX "runtime.runtime_g0");
 
 enum
 {
@@ -198,7 +200,6 @@ struct ParFor
 	uint64 nsleep;
 };
 
-extern bool runtime_precisestack;
 extern bool runtime_copystack;
 
 /*
@@ -236,16 +237,12 @@ extern G* runtime_getallg(intgo)
   __asm__(GOSYM_PREFIX "runtime.getallg");
 extern uintptr runtime_getallglen(void)
   __asm__(GOSYM_PREFIX "runtime.getallglen");
-extern	G*	runtime_lastg;
 extern	M*	runtime_getallm(void)
   __asm__(GOSYM_PREFIX "runtime.getallm");
-extern	P**	runtime_allp;
 extern	Sched*  runtime_sched;
 extern	uint32	runtime_panicking(void)
   __asm__ (GOSYM_PREFIX "runtime.getPanicking");
-extern	int8*	runtime_goos;
 extern	int32	runtime_ncpu;
-extern 	void	(*runtime_sysargs)(int32, uint8**);
 extern	struct debugVars runtime_debug;
 
 extern	bool	runtime_isstarted;
@@ -270,9 +267,6 @@ void	runtime_alginit(void)
   __asm__ (GOSYM_PREFIX "runtime.alginit");
 void	runtime_goargs(void)
   __asm__ (GOSYM_PREFIX "runtime.goargs");
-void	runtime_goenvs(void);
-void	runtime_goenvs_unix(void)
-  __asm__ (GOSYM_PREFIX "runtime.goenvs_unix");
 void	runtime_throw(const char*) __attribute__ ((noreturn));
 void	runtime_panicstring(const char*) __attribute__ ((noreturn));
 bool	runtime_canpanic(G*);
@@ -283,7 +277,8 @@ int32	runtime_snprintf(byte*, int32, const char*, ...);
 void*	runtime_mal(uintptr);
 String	runtime_gostringnocopy(const byte*)
   __asm__ (GOSYM_PREFIX "runtime.gostringnocopy");
-void	runtime_schedinit(void);
+void	runtime_schedinit(void)
+  __asm__ (GOSYM_PREFIX "runtime.schedinit");
 void	runtime_initsig(bool)
   __asm__ (GOSYM_PREFIX "runtime.initsig");
 int32	runtime_gotraceback(bool *crash);
@@ -299,7 +294,8 @@ void	runtime_ready(G*, intgo, bool)
   __asm__ (GOSYM_PREFIX "runtime.ready");
 String	runtime_getenv(const char*);
 int32	runtime_atoi(const byte*, intgo);
-void*	runtime_mstart(void*);
+void*	runtime_mstart(void*)
+	__asm__(GOSYM_PREFIX "runtime.mstart");
 G*	runtime_malg(bool, bool, byte**, uintptr*)
 	__asm__(GOSYM_PREFIX "runtime.malg");
 void	runtime_minit(void)
@@ -310,7 +306,8 @@ MCache*	runtime_allocmcache(void)
   __asm__ (GOSYM_PREFIX "runtime.allocmcache");
 void	runtime_freemcache(MCache*)
   __asm__ (GOSYM_PREFIX "runtime.freemcache");
-void	runtime_mallocinit(void);
+void	runtime_mallocinit(void)
+  __asm__ (GOSYM_PREFIX "runtime.mallocinit");
 void	runtime_mprofinit(void);
 #define runtime_getcallersp(p) __builtin_frame_address(0)
 void	runtime_mcall(void(*)(G*));
@@ -350,7 +347,6 @@ void	runtime_schedtrace(bool)
 void	runtime_park(bool(*)(G*, void*), void*, const char*);
 void	runtime_parkunlock(Lock*, const char*);
 void	runtime_tsleep(int64, const char*);
-M*	runtime_newm(void);
 void	runtime_goexit1(void)
   __asm__ (GOSYM_PREFIX "runtime.goexit1");
 void	runtime_entersyscall(int32)
@@ -551,7 +547,8 @@ extern uintptr runtime_stacks_sys;
 struct backtrace_state;
 extern struct backtrace_state *__go_get_backtrace_state(void);
 extern _Bool __go_file_line(uintptr, int, String*, String*, intgo *);
-extern void runtime_main(void*);
+extern void runtime_main(void*)
+  __asm__(GOSYM_PREFIX "runtime.main");
 extern uint32 runtime_in_callers;
 
 int32 getproccount(void);
@@ -573,7 +570,8 @@ struct time_now_ret now() __asm__ (GOSYM_PREFIX "time.now")
   __attribute__ ((no_split_stack));
 
 extern void _cgo_wait_runtime_init_done (void);
-extern void _cgo_notify_runtime_init_done (void);
+extern void _cgo_notify_runtime_init_done (void)
+  __asm__ (GOSYM_PREFIX "runtime._cgo_notify_runtime_init_done");
 extern _Bool runtime_iscgo;
 extern uintptr __go_end __attribute__ ((weak));
 extern void *getitab(const struct __go_type_descriptor *,
@@ -588,9 +586,13 @@ extern void setCpuidECX(uint32)
   __asm__ (GOSYM_PREFIX "runtime.setCpuidECX");
 extern void setSupportAES(bool)
   __asm__ (GOSYM_PREFIX "runtime.setSupportAES");
-extern void makeMainInitDone(void)
-  __asm__ (GOSYM_PREFIX "runtime.makeMainInitDone");
-extern void closeMainInitDone(void)
-  __asm__ (GOSYM_PREFIX "runtime.closeMainInitDone");
 extern void typedmemmove(const Type *, void *, const void *)
   __asm__ (GOSYM_PREFIX "runtime.typedmemmove");
+extern void setncpu(int32)
+  __asm__(GOSYM_PREFIX "runtime.setncpu");
+extern P** runtime_getAllP()
+  __asm__ (GOSYM_PREFIX "runtime.getAllP");
+extern Sched* runtime_getsched()
+  __asm__ (GOSYM_PREFIX "runtime.getsched");
+extern void setpagesize(uintptr_t)
+  __asm__(GOSYM_PREFIX "runtime.setpagesize");
