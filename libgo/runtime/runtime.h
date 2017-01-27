@@ -281,7 +281,6 @@ void	runtime_schedinit(void)
   __asm__ (GOSYM_PREFIX "runtime.schedinit");
 void	runtime_initsig(bool)
   __asm__ (GOSYM_PREFIX "runtime.initsig");
-int32	runtime_gotraceback(bool *crash);
 void	runtime_goroutineheader(G*)
   __asm__ (GOSYM_PREFIX "runtime.goroutineheader");
 void	runtime_printtrace(Slice, G*)
