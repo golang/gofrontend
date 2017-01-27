@@ -1821,7 +1821,7 @@ bgsweep(void* dummy __attribute__ ((unused)))
 		}
 		sweep.parked = true;
 		runtime_g()->isbackground = true;
-		runtime_parkunlock(&gclock, "GC sweep wait");
+		runtime_goparkunlock(&gclock, runtime_gostringnocopy((const byte*)"GC sweep wait"), traceEvGoBlock, 1);
 		runtime_g()->isbackground = false;
 	}
 }
@@ -2469,7 +2469,7 @@ runfinq(void* dummy __attribute__ ((unused)))
 		if(fb == nil) {
 			runtime_fingwait = true;
 			runtime_g()->isbackground = true;
-			runtime_parkunlock(&finlock, "finalizer wait");
+			runtime_goparkunlock(&finlock, runtime_gostringnocopy((const byte*)"finalizer wait"), traceEvGoBlock, 1);
 			runtime_g()->isbackground = false;
 			continue;
 		}

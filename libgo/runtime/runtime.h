@@ -339,12 +339,12 @@ void runtime_newextram(void)
   __asm__ (GOSYM_PREFIX "runtime.newextram");
 #define runtime_exit(s) exit(s)
 #define runtime_breakpoint() __builtin_trap()
-void	runtime_gosched(void);
-void	runtime_gosched0(G*);
+void	runtime_gosched(void)
+  __asm__ (GOSYM_PREFIX "runtime.Gosched");
 void	runtime_schedtrace(bool)
   __asm__ (GOSYM_PREFIX "runtime.schedtrace");
-void	runtime_park(bool(*)(G*, void*), void*, const char*);
-void	runtime_parkunlock(Lock*, const char*);
+void	runtime_goparkunlock(Lock*, String, byte, intgo)
+  __asm__ (GOSYM_PREFIX "runtime.goparkunlock");
 void	runtime_tsleep(int64, const char*);
 void	runtime_goexit1(void)
   __asm__ (GOSYM_PREFIX "runtime.goexit1");
@@ -505,10 +505,6 @@ void	runtime_procyield(uint32)
   __asm__(GOSYM_PREFIX "runtime.procyield");
 void	runtime_osyield(void)
   __asm__(GOSYM_PREFIX "runtime.osyield");
-void	runtime_lockOSThread(void)
-  __asm__(GOSYM_PREFIX "runtime.lockOSThread");
-void	runtime_unlockOSThread(void)
-  __asm__(GOSYM_PREFIX "runtime.unlockOSThread");
 
 void	runtime_printcreatedby(G*)
   __asm__(GOSYM_PREFIX "runtime.printcreatedby");

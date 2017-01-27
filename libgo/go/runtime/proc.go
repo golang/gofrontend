@@ -12,48 +12,34 @@ import (
 
 // Functions called by C code.
 //go:linkname main runtime.main
+//go:linkname goparkunlock runtime.goparkunlock
 //go:linkname newextram runtime.newextram
 //go:linkname acquirep runtime.acquirep
 //go:linkname releasep runtime.releasep
 //go:linkname incidlelocked runtime.incidlelocked
-//go:linkname checkdead runtime.checkdead
-//go:linkname sysmon runtime.sysmon
-//go:linkname schedtrace runtime.schedtrace
-//go:linkname allgadd runtime.allgadd
 //go:linkname schedinit runtime.schedinit
-//go:linkname mcommoninit runtime.mcommoninit
 //go:linkname ready runtime.ready
 //go:linkname gcprocs runtime.gcprocs
-//go:linkname needaddgcproc runtime.needaddgcproc
 //go:linkname stopm runtime.stopm
 //go:linkname handoffp runtime.handoffp
 //go:linkname wakep runtime.wakep
 //go:linkname stoplockedm runtime.stoplockedm
 //go:linkname schedule runtime.schedule
 //go:linkname execute runtime.execute
-//go:linkname gfput runtime.gfput
+//go:linkname goexit1 runtime.goexit1
 //go:linkname gfget runtime.gfget
-//go:linkname lockOSThread runtime.lockOSThread
-//go:linkname unlockOSThread runtime.unlockOSThread
-//go:linkname procresize runtime.procresize
 //go:linkname helpgc runtime.helpgc
 //go:linkname stopTheWorldWithSema runtime.stopTheWorldWithSema
 //go:linkname startTheWorldWithSema runtime.startTheWorldWithSema
 //go:linkname mstart runtime.mstart
 //go:linkname mstart1 runtime.mstart1
-//go:linkname mput runtime.mput
-//go:linkname mget runtime.mget
 //go:linkname globrunqput runtime.globrunqput
 //go:linkname pidleget runtime.pidleget
-//go:linkname runqempty runtime.runqempty
-//go:linkname runqput runtime.runqput
 
 // Function called by misc/cgo/test.
 //go:linkname lockedOSThread runtime.lockedOSThread
 
 // Functions temporarily in C that have not yet been ported.
-func allocm(*p, bool, *unsafe.Pointer, *uintptr) *m
-func malg(bool, bool, *unsafe.Pointer, *uintptr) *g
 func gchelper()
 func getfingwait() bool
 func getfingwake() bool
@@ -62,6 +48,8 @@ func mallocinit()
 
 // C functions for thread and context management.
 func newosproc(*m)
+func malg(bool, bool, *unsafe.Pointer, *uintptr) *g
+func resetNewG(*g, *unsafe.Pointer, *uintptr)
 func gogo(*g)
 func setGContext()
 func makeGContext(*g, unsafe.Pointer, uintptr)
@@ -270,6 +258,14 @@ func forcegchelper() {
 	}
 }
 
+//go:nosplit
+
+// Gosched yields the processor, allowing other goroutines to run. It does not
+// suspend the current goroutine, so execution resumes automatically.
+func Gosched() {
+	mcall(gosched_m)
+}
+
 // Puts the current goroutine into a waiting state and calls unlockf.
 // If unlockf returns false, the goroutine is resumed.
 // unlockf must not access this G's stack, as it may be moved between
@@ -393,12 +389,11 @@ func releaseSudog(s *sudog) {
 
 // funcPC returns the entry PC of the function f.
 // It assumes that f is a func value. Otherwise the behavior is undefined.
-// For gccgo here unless and until we port proc.go.
-// Note that this differs from the gc implementation; the gc implementation
-// adds sys.PtrSize to the address of the interface value, but GCC's
-// alias analysis decides that that can not be a reference to the second
-// field of the interface, and in some cases it drops the initialization
-// of the second field as a dead store.
+// For gccgo note that this differs from the gc implementation; the gc
+// implementation adds sys.PtrSize to the address of the interface
+// value, but GCC's alias analysis decides that that can not be a
+// reference to the second field of the interface, and in some cases
+// it drops the initialization of the second field as a dead store.
 //go:nosplit
 func funcPC(f interface{}) uintptr {
 	i := (*iface)(unsafe.Pointer(&f))
@@ -435,6 +430,12 @@ func allgadd(gp *g) {
 	}
 	unlock(&allglock)
 }
+
+const (
+	// Number of goroutine ids to grab from sched.goidgen to local per-P cache at once.
+	// 16 seems to provide enough amortization, but other than that it's mostly arbitrary number.
+	_GoidCacheBatch = 16
+)
 
 // The bootstrap sequence is:
 //
@@ -976,7 +977,7 @@ func mstart(mpu unsafe.Pointer) unsafe.Pointer {
 	_g_.m = mp
 	setg(_g_)
 
-	_g_.entry = nil
+	_g_.entry = 0
 	_g_.param = nil
 
 	mstartInitContext(_g_, unsafe.Pointer(&mp))
@@ -1144,6 +1145,35 @@ func runSafePointFn() {
 	unlock(&sched.lock)
 }
 
+// Allocate a new m unassociated with any thread.
+// Can use p for allocation context if needed.
+// fn is recorded as the new m's m.mstartfn.
+//
+// This function is allowed to have write barriers even if the caller
+// isn't because it borrows _p_.
+//
+//go:yeswritebarrierrec
+func allocm(_p_ *p, fn func(), allocatestack bool) (mp *m, g0Stack unsafe.Pointer, g0StackSize uintptr) {
+	_g_ := getg()
+	_g_.m.locks++ // disable GC because it can be called from sysmon
+	if _g_.m.p == 0 {
+		acquirep(_p_) // temporarily borrow p for mallocs in this function
+	}
+	mp = new(m)
+	mp.mstartfn = fn
+	mcommoninit(mp)
+
+	mp.g0 = malg(allocatestack, false, &g0Stack, &g0StackSize)
+	mp.g0.m = mp
+
+	if _p_ == _g_.m.p.ptr() {
+		releasep()
+	}
+	_g_.m.locks--
+
+	return mp, g0Stack, g0StackSize
+}
+
 // needm is called when a cgo callback happens on a
 // thread without an m (a thread not created by Go).
 // In this case, needm is expected to find an m to use
@@ -1217,6 +1247,7 @@ func needm(x byte) {
 	setGContext()
 
 	// Initialize this thread to use the m.
+	asminit()
 	minit()
 }
 
@@ -1248,9 +1279,7 @@ func oneNewExtraM() {
 	// The sched.pc will never be returned to, but setting it to
 	// goexit makes clear to the traceback routines where
 	// the goroutine stack ends.
-	var g0SP unsafe.Pointer
-	var g0SPSize uintptr
-	mp := allocm(nil, true, &g0SP, &g0SPSize)
+	mp, g0SP, g0SPSize := allocm(nil, nil, true)
 	gp := malg(true, false, nil, nil)
 	gp.gcscanvalid = true // fresh G, so no dequeueRescan necessary
 	gp.gcscandone = true
@@ -1389,9 +1418,8 @@ func unlockextra(mp *m) {
 // May run with m.p==nil, so write barriers are not allowed.
 //go:nowritebarrierrec
 func newm(fn func(), _p_ *p) {
-	mp := allocm(_p_, false, nil, nil)
+	mp, _, _ := allocm(_p_, fn, false)
 	mp.nextp.set(_p_)
-	mp.mstartfn = fn
 	mp.sigmask = initSigmask
 	newosproc(mp)
 }
@@ -2066,6 +2094,71 @@ func park_m(gp *g) {
 	schedule()
 }
 
+func goschedImpl(gp *g) {
+	status := readgstatus(gp)
+	if status&^_Gscan != _Grunning {
+		dumpgstatus(gp)
+		throw("bad g status")
+	}
+	casgstatus(gp, _Grunning, _Grunnable)
+	dropg()
+	lock(&sched.lock)
+	globrunqput(gp)
+	unlock(&sched.lock)
+
+	schedule()
+}
+
+// Gosched continuation on g0.
+func gosched_m(gp *g) {
+	if trace.enabled {
+		traceGoSched()
+	}
+	goschedImpl(gp)
+}
+
+// Finishes execution of the current goroutine.
+func goexit1() {
+	if trace.enabled {
+		traceGoEnd()
+	}
+	mcall(goexit0)
+}
+
+// goexit continuation on g0.
+func goexit0(gp *g) {
+	_g_ := getg()
+
+	casgstatus(gp, _Grunning, _Gdead)
+	if isSystemGoroutine(gp) {
+		atomic.Xadd(&sched.ngsys, -1)
+	}
+	gp.m = nil
+	gp.lockedm = nil
+	_g_.m.lockedg = nil
+	gp.entry = 0
+	gp.paniconfault = false
+	gp._defer = nil // should be true already but just in case.
+	gp._panic = nil // non-nil for Goexit during panic. points at stack-allocated data.
+	gp.writebuf = nil
+	gp.waitreason = ""
+	gp.param = nil
+
+	// Note that gp's stack scan is now "valid" because it has no
+	// stack. We could dequeueRescan, but that takes a lock and
+	// isn't really necessary.
+	gp.gcscanvalid = true
+	dropg()
+
+	if _g_.m.locked&^_LockExternal != 0 {
+		print("invalid m->locked = ", _g_.m.locked, "\n")
+		throw("internal lockOSThread error")
+	}
+	_g_.m.locked = 0
+	gfput(_g_.m.p.ptr(), gp)
+	schedule()
+}
+
 func beforefork() {
 	gp := getg().m.curg
 
@@ -2099,6 +2192,83 @@ func afterfork() {
 //go:nosplit
 func syscall_runtime_AfterFork() {
 	systemstack(afterfork)
+}
+
+// Create a new g running fn passing arg as the single argument.
+// Put it on the queue of g's waiting to run.
+// The compiler turns a go statement into a call to this.
+//go:linkname newproc __go_go
+func newproc(fn uintptr, arg unsafe.Pointer) *g {
+	_g_ := getg()
+
+	if fn == 0 {
+		_g_.m.throwing = -1 // do not dump full stacks
+		throw("go of nil func value")
+	}
+	_g_.m.locks++ // disable preemption because it can be holding p in a local var
+
+	_p_ := _g_.m.p.ptr()
+	newg := gfget(_p_)
+	var (
+		sp     unsafe.Pointer
+		spsize uintptr
+	)
+	if newg == nil {
+		newg = malg(true, false, &sp, &spsize)
+		casgstatus(newg, _Gidle, _Gdead)
+		newg.gcRescan = -1
+		allgadd(newg) // publishes with a g->status of Gdead so GC scanner doesn't look at uninitialized stack.
+	} else {
+		resetNewG(newg, &sp, &spsize)
+	}
+	newg.traceback = nil
+
+	if readgstatus(newg) != _Gdead {
+		throw("newproc1: new g is not Gdead")
+	}
+
+	newg.entry = fn
+	newg.param = arg
+	newg.gopc = getcallerpc(unsafe.Pointer(&fn))
+	if isSystemGoroutine(newg) {
+		atomic.Xadd(&sched.ngsys, +1)
+	}
+	// The stack is dirty from the argument frame, so queue it for
+	// scanning. Do this before setting it to runnable so we still
+	// own the G. If we're recycling a G, it may already be on the
+	// rescan list.
+	if newg.gcRescan == -1 {
+		queueRescan(newg)
+	} else {
+		// The recycled G is already on the rescan list. Just
+		// mark the stack dirty.
+		newg.gcscanvalid = false
+	}
+	casgstatus(newg, _Gdead, _Grunnable)
+
+	if _p_.goidcache == _p_.goidcacheend {
+		// Sched.goidgen is the last allocated id,
+		// this batch must be [sched.goidgen+1, sched.goidgen+GoidCacheBatch].
+		// At startup sched.goidgen=0, so main goroutine receives goid=1.
+		_p_.goidcache = atomic.Xadd64(&sched.goidgen, _GoidCacheBatch)
+		_p_.goidcache -= _GoidCacheBatch - 1
+		_p_.goidcacheend = _p_.goidcache + _GoidCacheBatch
+	}
+	newg.goid = int64(_p_.goidcache)
+	_p_.goidcache++
+	if trace.enabled {
+		traceGoCreate(newg, newg.startpc)
+	}
+
+	makeGContext(newg, sp, spsize)
+
+	runqput(_p_, newg, true)
+
+	if atomic.Load(&sched.npidle) != 0 && atomic.Load(&sched.nmspinning) == 0 && runtimeInitTime != 0 {
+		wakep()
+	}
+	_g_.m.locks--
+	return newg
 }
 
 // Put on gfree list.

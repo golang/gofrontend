@@ -409,8 +409,8 @@ type g struct {
 	gcinitialsp   unsafe.Pointer
 	gcregs        g_ucontext_t
 
-	entry    unsafe.Pointer // goroutine entry point
-	fromgogo bool           // whether entered from gogo function
+	entry    uintptr // goroutine entry point
+	fromgogo bool    // whether entered from gogo function
 
 	issystem     bool // do not output in stack dump
 	isbackground bool // ignore in deadlock detector

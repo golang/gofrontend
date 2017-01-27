@@ -352,7 +352,8 @@ var writeBarrier struct {
 	alignme uint64 // guarantee alignment so that compiler can use a 32 or 64-bit load
 }
 
-func queueRescan(*g) {
+func queueRescan(gp *g) {
+	gp.gcscanvalid = false
 }
 
 // Here for gccgo until we port atomic_pointer.go and mgc.go.
@@ -460,7 +461,6 @@ func getZerobase() *uintptr {
 
 // Temporary for gccgo until we port proc.go.
 func sigprof()
-func goexit1()
 
 // Get signal trampoline, written in C.
 func getSigtramp() uintptr
