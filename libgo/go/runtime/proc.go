@@ -27,6 +27,9 @@ import (
 //go:linkname schedule runtime.schedule
 //go:linkname execute runtime.execute
 //go:linkname goexit1 runtime.goexit1
+//go:linkname reentersyscall runtime.reentersyscall
+//go:linkname reentersyscallblock runtime.reentersyscallblock
+//go:linkname exitsyscall runtime.exitsyscall
 //go:linkname gfget runtime.gfget
 //go:linkname helpgc runtime.helpgc
 //go:linkname stopTheWorldWithSema runtime.stopTheWorldWithSema
@@ -2157,6 +2160,338 @@ func goexit0(gp *g) {
 	_g_.m.locked = 0
 	gfput(_g_.m.p.ptr(), gp)
 	schedule()
+}
+
+// The goroutine g is about to enter a system call.
+// Record that it's not using the cpu anymore.
+// This is called only from the go syscall library and cgocall,
+// not from the low-level system calls used by the runtime.
+//
+// The entersyscall function is written in C, so that it can save the
+// current register context so that the GC will see them.
+// It calls reentersyscall.
+//
+// Syscall tracing:
+// At the start of a syscall we emit traceGoSysCall to capture the stack trace.
+// If the syscall does not block, that is it, we do not emit any other events.
+// If the syscall blocks (that is, P is retaken), retaker emits traceGoSysBlock;
+// when syscall returns we emit traceGoSysExit and when the goroutine starts running
+// (potentially instantly, if exitsyscallfast returns true) we emit traceGoStart.
+// To ensure that traceGoSysExit is emitted strictly after traceGoSysBlock,
+// we remember current value of syscalltick in m (_g_.m.syscalltick = _g_.m.p.ptr().syscalltick),
+// whoever emits traceGoSysBlock increments p.syscalltick afterwards;
+// and we wait for the increment before emitting traceGoSysExit.
+// Note that the increment is done even if tracing is not enabled,
+// because tracing can be enabled in the middle of syscall. We don't want the wait to hang.
+//
+//go:nosplit
+//go:noinline
+func reentersyscall(pc, sp uintptr) {
+	_g_ := getg()
+
+	// Disable preemption because during this function g is in Gsyscall status,
+	// but can have inconsistent g->sched, do not let GC observe it.
+	_g_.m.locks++
+
+	_g_.syscallsp = sp
+	_g_.syscallpc = pc
+	casgstatus(_g_, _Grunning, _Gsyscall)
+
+	if trace.enabled {
+		systemstack(traceGoSysCall)
+	}
+
+	if atomic.Load(&sched.sysmonwait) != 0 {
+		systemstack(entersyscall_sysmon)
+	}
+
+	if _g_.m.p.ptr().runSafePointFn != 0 {
+		// runSafePointFn may stack split if run on this stack
+		systemstack(runSafePointFn)
+	}
+
+	_g_.m.syscalltick = _g_.m.p.ptr().syscalltick
+	_g_.sysblocktraced = true
+	_g_.m.mcache = nil
+	_g_.m.p.ptr().m = 0
+	atomic.Store(&_g_.m.p.ptr().status, _Psyscall)
+	if sched.gcwaiting != 0 {
+		systemstack(entersyscall_gcwait)
+	}
+
+	_g_.m.locks--
+}
+
+func entersyscall_sysmon() {
+	lock(&sched.lock)
+	if atomic.Load(&sched.sysmonwait) != 0 {
+		atomic.Store(&sched.sysmonwait, 0)
+		notewakeup(&sched.sysmonnote)
+	}
+	unlock(&sched.lock)
+}
+
+func entersyscall_gcwait() {
+	_g_ := getg()
+	_p_ := _g_.m.p.ptr()
+
+	lock(&sched.lock)
+	if sched.stopwait > 0 && atomic.Cas(&_p_.status, _Psyscall, _Pgcstop) {
+		if trace.enabled {
+			traceGoSysBlock(_p_)
+			traceProcStop(_p_)
+		}
+		_p_.syscalltick++
+		if sched.stopwait--; sched.stopwait == 0 {
+			notewakeup(&sched.stopnote)
+		}
+	}
+	unlock(&sched.lock)
+}
+
+// The same as reentersyscall(), but with a hint that the syscall is blocking.
+//go:nosplit
+func reentersyscallblock(pc, sp uintptr) {
+	_g_ := getg()
+
+	_g_.m.locks++ // see comment in entersyscall
+	_g_.throwsplit = true
+	_g_.m.syscalltick = _g_.m.p.ptr().syscalltick
+	_g_.sysblocktraced = true
+	_g_.m.p.ptr().syscalltick++
+
+	// Leave SP around for GC and traceback.
+	_g_.syscallsp = sp
+	_g_.syscallpc = pc
+	casgstatus(_g_, _Grunning, _Gsyscall)
+	systemstack(entersyscallblock_handoff)
+
+	_g_.m.locks--
+}
+
+func entersyscallblock_handoff() {
+	if trace.enabled {
+		traceGoSysCall()
+		traceGoSysBlock(getg().m.p.ptr())
+	}
+	handoffp(releasep())
+}
+
+// The goroutine g exited its system call.
+// Arrange for it to run on a cpu again.
+// This is called only from the go syscall library, not
+// from the low-level system calls used by the runtime.
+//
+// Write barriers are not allowed because our P may have been stolen.
+//
+//go:nosplit
+//go:nowritebarrierrec
+func exitsyscall(dummy int32) {
+	_g_ := getg()
+
+	_g_.m.locks++ // see comment in entersyscall
+
+	_g_.waitsince = 0
+	oldp := _g_.m.p.ptr()
+	if exitsyscallfast() {
+		if _g_.m.mcache == nil {
+			throw("lost mcache")
+		}
+		if trace.enabled {
+			if oldp != _g_.m.p.ptr() || _g_.m.syscalltick != _g_.m.p.ptr().syscalltick {
+				systemstack(traceGoStart)
+			}
+		}
+		// There's a cpu for us, so we can run.
+		_g_.m.p.ptr().syscalltick++
+		// We need to cas the status and scan before resuming...
+		casgstatus(_g_, _Gsyscall, _Grunning)
+
+		exitsyscallclear(_g_)
+		_g_.m.locks--
+		_g_.throwsplit = false
+		return
+	}
+
+	_g_.sysexitticks = 0
+	if trace.enabled {
+		// Wait till traceGoSysBlock event is emitted.
+		// This ensures consistency of the trace (the goroutine is started after it is blocked).
+		for oldp != nil && oldp.syscalltick == _g_.m.syscalltick {
+			osyield()
+		}
+		// We can't trace syscall exit right now because we don't have a P.
+		// Tracing code can invoke write barriers that cannot run without a P.
+		// So instead we remember the syscall exit time and emit the event
+		// in execute when we have a P.
+		_g_.sysexitticks = cputicks()
+	}
+
+	_g_.m.locks--
+
+	// Call the scheduler.
+	mcall(exitsyscall0)
+
+	if _g_.m.mcache == nil {
+		throw("lost mcache")
+	}
+
+	// Scheduler returned, so we're allowed to run now.
+	// Delete the syscallsp information that we left for
+	// the garbage collector during the system call.
+	// Must wait until now because until gosched returns
+	// we don't know for sure that the garbage collector
+	// is not running.
+	exitsyscallclear(_g_)
+
+	_g_.m.p.ptr().syscalltick++
+	_g_.throwsplit = false
+}
+
+//go:nosplit
+func exitsyscallfast() bool {
+	_g_ := getg()
+
+	// Freezetheworld sets stopwait but does not retake P's.
+	if sched.stopwait == freezeStopWait {
+		_g_.m.mcache = nil
+		_g_.m.p = 0
+		return false
+	}
+
+	// Try to re-acquire the last P.
+	if _g_.m.p != 0 && _g_.m.p.ptr().status == _Psyscall && atomic.Cas(&_g_.m.p.ptr().status, _Psyscall, _Prunning) {
+		// There's a cpu for us, so we can run.
+		exitsyscallfast_reacquired()
+		return true
+	}
+
+	// Try to get any other idle P.
+	oldp := _g_.m.p.ptr()
+	_g_.m.mcache = nil
+	_g_.m.p = 0
+	if sched.pidle != 0 {
+		var ok bool
+		systemstack(func() {
+			ok = exitsyscallfast_pidle()
+			if ok && trace.enabled {
+				if oldp != nil {
+					// Wait till traceGoSysBlock event is emitted.
+					// This ensures consistency of the trace (the goroutine is started after it is blocked).
+					for oldp.syscalltick == _g_.m.syscalltick {
+						osyield()
+					}
+				}
+				traceGoSysExit(0)
+			}
+		})
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+// exitsyscallfast_reacquired is the exitsyscall path on which this G
+// has successfully reacquired the P it was running on before the
+// syscall.
+//
+// This function is allowed to have write barriers because exitsyscall
+// has acquired a P at this point.
+//
+//go:yeswritebarrierrec
+//go:nosplit
+func exitsyscallfast_reacquired() {
+	_g_ := getg()
+	_g_.m.mcache = _g_.m.p.ptr().mcache
+	_g_.m.p.ptr().m.set(_g_.m)
+	if _g_.m.syscalltick != _g_.m.p.ptr().syscalltick {
+		if trace.enabled {
+			// The p was retaken and then enter into syscall again (since _g_.m.syscalltick has changed).
+			// traceGoSysBlock for this syscall was already emitted,
+			// but here we effectively retake the p from the new syscall running on the same p.
+			systemstack(func() {
+				// Denote blocking of the new syscall.
+				traceGoSysBlock(_g_.m.p.ptr())
+				// Denote completion of the current syscall.
+				traceGoSysExit(0)
+			})
+		}
+		_g_.m.p.ptr().syscalltick++
+	}
+}
+
+func exitsyscallfast_pidle() bool {
+	lock(&sched.lock)
+	_p_ := pidleget()
+	if _p_ != nil && atomic.Load(&sched.sysmonwait) != 0 {
+		atomic.Store(&sched.sysmonwait, 0)
+		notewakeup(&sched.sysmonnote)
+	}
+	unlock(&sched.lock)
+	if _p_ != nil {
+		acquirep(_p_)
+		return true
+	}
+	return false
+}
+
+// exitsyscall slow path on g0.
+// Failed to acquire P, enqueue gp as runnable.
+//
+//go:nowritebarrierrec
+func exitsyscall0(gp *g) {
+	_g_ := getg()
+
+	casgstatus(gp, _Gsyscall, _Grunnable)
+	dropg()
+	lock(&sched.lock)
+	_p_ := pidleget()
+	if _p_ == nil {
+		globrunqput(gp)
+	} else if atomic.Load(&sched.sysmonwait) != 0 {
+		atomic.Store(&sched.sysmonwait, 0)
+		notewakeup(&sched.sysmonnote)
+	}
+	unlock(&sched.lock)
+	if _p_ != nil {
+		acquirep(_p_)
+		execute(gp, false) // Never returns.
+	}
+	if _g_.m.lockedg != nil {
+		// Wait until another thread schedules gp and so m again.
+		stoplockedm()
+		execute(gp, false) // Never returns.
+	}
+	stopm()
+	schedule() // Never returns.
+}
+
+// exitsyscallclear clears GC-related information that we only track
+// during a syscall.
+func exitsyscallclear(gp *g) {
+	// Garbage collector isn't running (since we are), so okay to
+	// clear syscallsp.
+	gp.syscallsp = 0
+
+	gp.gcstack = nil
+	gp.gcnextsp = nil
+	memclrNoHeapPointers(unsafe.Pointer(&gp.gcregs), unsafe.Sizeof(gp.gcregs))
+}
+
+// Code generated by cgo, and some library code, calls syscall.Entersyscall
+// and syscall.Exitsyscall.
+
+//go:linkname syscall_entersyscall syscall.Entersyscall
+//go:nosplit
+func syscall_entersyscall() {
+	entersyscall(0)
+}
+
+//go:linkname syscall_exitsyscall syscall.Exitsyscall
+//go:nosplit
+func syscall_exitsyscall() {
+	exitsyscall(0)
 }
 
 func beforefork() {

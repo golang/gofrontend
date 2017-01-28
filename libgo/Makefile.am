@@ -1296,6 +1296,7 @@ TEST_PACKAGES = \
 	runtime/internal/sys/check \
 	runtime/pprof/check \
 	runtime/pprof/internal/protopprof/check \
+	runtime/trace/check \
 	sync/atomic/check \
 	text/scanner/check \
 	text/tabwriter/check \

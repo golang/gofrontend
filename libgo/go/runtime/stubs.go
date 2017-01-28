@@ -375,7 +375,6 @@ func errno() int
 // Temporary for gccgo until we port proc.go.
 func entersyscall(int32)
 func entersyscallblock(int32)
-func exitsyscall(int32)
 
 // Temporary hack for gccgo until we port the garbage collector.
 func typeBitsBulkBarrier(typ *_type, dst, src, size uintptr) {}

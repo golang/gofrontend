@@ -387,9 +387,6 @@ int32	runtime_ncpu;
 
 bool	runtime_isarchive;
 
-static void exitsyscall0(G*);
-static bool exitsyscallfast(void);
-
 extern void mstart1(void)
   __asm__(GOSYM_PREFIX "runtime.mstart1");
 extern void stopm(void)
@@ -404,6 +401,10 @@ extern void schedule(void)
   __asm__(GOSYM_PREFIX "runtime.schedule");
 extern void execute(G*, bool)
   __asm__(GOSYM_PREFIX "runtime.execute");
+extern void reentersyscall(uintptr, uintptr)
+  __asm__(GOSYM_PREFIX "runtime.reentersyscall");
+extern void reentersyscallblock(uintptr, uintptr)
+  __asm__(GOSYM_PREFIX "runtime.reentersyscallblock");
 extern G* gfget(P*)
   __asm__(GOSYM_PREFIX "runtime.gfget");
 extern void acquirep(P*)
@@ -603,11 +604,8 @@ runtime_entersyscall(int32 dummy __attribute__ ((unused)))
 	// held in registers will be seen by the garbage collector.
 	getcontext(ucontext_arg(&g->gcregs[0]));
 
-	// Do the work in a separate function, so that this function
-	// doesn't save any registers on its own stack.  If this
-	// function does save any registers, we might store the wrong
-	// value in the call to getcontext.
-	//
+	// Note that if this function does save any registers itself,
+	// we might store the wrong value in the call to getcontext.
 	// FIXME: This assumes that we do not need to save any
 	// callee-saved registers to access the TLS variable g.  We
 	// don't want to put the ucontext_t on the stack because it is
@@ -619,10 +617,6 @@ runtime_entersyscall(int32 dummy __attribute__ ((unused)))
 static void
 doentersyscall(uintptr pc, uintptr sp)
 {
-	// Disable preemption because during this function g is in _Gsyscall status,
-	// but can have inconsistent g->sched, do not let GC observe it.
-	g->m->locks++;
-
 	// Leave SP around for GC and traceback.
 #ifdef USING_SPLIT_STACK
 	{
@@ -640,43 +634,28 @@ doentersyscall(uintptr pc, uintptr sp)
 	}
 #endif
 
-	g->syscallsp = sp;
-	g->syscallpc = pc;
-
-	g->atomicstatus = _Gsyscall;
-
-	if(runtime_atomicload(&runtime_sched->sysmonwait)) {  // TODO: fast atomic
-		runtime_lock(&runtime_sched->lock);
-		if(runtime_atomicload(&runtime_sched->sysmonwait)) {
-			runtime_atomicstore(&runtime_sched->sysmonwait, 0);
-			runtime_notewakeup(&runtime_sched->sysmonnote);
-		}
-		runtime_unlock(&runtime_sched->lock);
-	}
-
-	g->m->mcache = nil;
-	((P*)(g->m->p))->m = 0;
-	runtime_atomicstore(&((P*)g->m->p)->status, _Psyscall);
-	if(runtime_atomicload(&runtime_sched->gcwaiting)) {
-		runtime_lock(&runtime_sched->lock);
-		if (runtime_sched->stopwait > 0 && runtime_cas(&((P*)g->m->p)->status, _Psyscall, _Pgcstop)) {
-			if(--runtime_sched->stopwait == 0)
-				runtime_notewakeup(&runtime_sched->stopnote);
-		}
-		runtime_unlock(&runtime_sched->lock);
-	}
-
-	g->m->locks--;
+	reentersyscall(pc, sp);
 }
+
+static void doentersyscallblock(uintptr, uintptr)
+  __attribute__ ((no_split_stack, noinline));
 
 // The same as runtime_entersyscall(), but with a hint that the syscall is blocking.
 void
 runtime_entersyscallblock(int32 dummy __attribute__ ((unused)))
 {
-	P *p;
+	// Save the registers in the g structure so that any pointers
+	// held in registers will be seen by the garbage collector.
+	getcontext(ucontext_arg(&g->gcregs[0]));
 
-	g->m->locks++;  // see comment in entersyscall
+	// See comment in runtime_entersyscall.
+	doentersyscallblock((uintptr)runtime_getcallerpc(&dummy),
+			    (uintptr)runtime_getcallersp(&dummy));
+}
 
+static void
+doentersyscallblock(uintptr pc, uintptr sp)
+{
 	// Leave SP around for GC and traceback.
 #ifdef USING_SPLIT_STACK
 	{
@@ -687,175 +666,14 @@ runtime_entersyscallblock(int32 dummy __attribute__ ((unused)))
 	  g->gcstacksize = (uintptr)gcstacksize;
 	}
 #else
-	g->gcnextsp = (byte *) &p;
+	{
+		void *v;
+
+		g->gcnextsp = (byte *) &v;
+	}
 #endif
 
-	// Save the registers in the g structure so that any pointers
-	// held in registers will be seen by the garbage collector.
-	getcontext(ucontext_arg(&g->gcregs[0]));
-
-	g->syscallpc = (uintptr)runtime_getcallerpc(&dummy);
-	g->syscallsp = (uintptr)runtime_getcallersp(&dummy);
-
-	g->atomicstatus = _Gsyscall;
-
-	p = releasep();
-	handoffp(p);
-	if(g->isbackground)  // do not consider blocked scavenger for deadlock detection
-		incidlelocked(1);
-
-	g->m->locks--;
-}
-
-// The goroutine g exited its system call.
-// Arrange for it to run on a cpu again.
-// This is called only from the go syscall library, not
-// from the low-level system calls used by the runtime.
-void
-runtime_exitsyscall(int32 dummy __attribute__ ((unused)))
-{
-	G *gp;
-
-	gp = g;
-	gp->m->locks++;  // see comment in entersyscall
-
-	if(gp->isbackground)  // do not consider blocked scavenger for deadlock detection
-		incidlelocked(-1);
-
-	gp->waitsince = 0;
-	if(exitsyscallfast()) {
-		// There's a cpu for us, so we can run.
-		((P*)gp->m->p)->syscalltick++;
-		gp->atomicstatus = _Grunning;
-		// Garbage collector isn't running (since we are),
-		// so okay to clear gcstack and gcsp.
-#ifdef USING_SPLIT_STACK
-		gp->gcstack = nil;
-#endif
-		gp->gcnextsp = nil;
-		runtime_memclr(&gp->gcregs[0], sizeof gp->gcregs);
-		gp->syscallsp = 0;
-		gp->m->locks--;
-		return;
-	}
-
-	gp->m->locks--;
-
-	// Call the scheduler.
-	runtime_mcall(exitsyscall0);
-
-	// Scheduler returned, so we're allowed to run now.
-	// Delete the gcstack information that we left for
-	// the garbage collector during the system call.
-	// Must wait until now because until gosched returns
-	// we don't know for sure that the garbage collector
-	// is not running.
-#ifdef USING_SPLIT_STACK
-	gp->gcstack = nil;
-#endif
-	gp->gcnextsp = nil;
-	runtime_memclr(&gp->gcregs[0], sizeof gp->gcregs);
-
-	gp->syscallsp = 0;
-
-	// Note that this gp->m might be different than the earlier
-	// gp->m after returning from runtime_mcall.
-	((P*)gp->m->p)->syscalltick++;
-}
-
-static bool
-exitsyscallfast(void)
-{
-	G *gp;
-	P *p;
-
-	gp = g;
-
-	// Freezetheworld sets stopwait but does not retake P's.
-	if(runtime_sched->stopwait) {
-		gp->m->p = 0;
-		return false;
-	}
-
-	// Try to re-acquire the last P.
-	if(gp->m->p && ((P*)gp->m->p)->status == _Psyscall && runtime_cas(&((P*)gp->m->p)->status, _Psyscall, _Prunning)) {
-		// There's a cpu for us, so we can run.
-		gp->m->mcache = ((P*)gp->m->p)->mcache;
-		((P*)gp->m->p)->m = (uintptr)gp->m;
-		return true;
-	}
-	// Try to get any other idle P.
-	gp->m->p = 0;
-	if(runtime_sched->pidle) {
-		runtime_lock(&runtime_sched->lock);
-		p = pidleget();
-		if(p && runtime_atomicload(&runtime_sched->sysmonwait)) {
-			runtime_atomicstore(&runtime_sched->sysmonwait, 0);
-			runtime_notewakeup(&runtime_sched->sysmonnote);
-		}
-		runtime_unlock(&runtime_sched->lock);
-		if(p) {
-			acquirep(p);
-			return true;
-		}
-	}
-	return false;
-}
-
-// runtime_exitsyscall slow path on g0.
-// Failed to acquire P, enqueue gp as runnable.
-static void
-exitsyscall0(G *gp)
-{
-	M *m;
-	P *p;
-
-	m = g->m;
-	gp->atomicstatus = _Grunnable;
-	gp->m = nil;
-	m->curg = nil;
-	runtime_lock(&runtime_sched->lock);
-	p = pidleget();
-	if(p == nil)
-		globrunqput(gp);
-	else if(runtime_atomicload(&runtime_sched->sysmonwait)) {
-		runtime_atomicstore(&runtime_sched->sysmonwait, 0);
-		runtime_notewakeup(&runtime_sched->sysmonnote);
-	}
-	runtime_unlock(&runtime_sched->lock);
-	if(p) {
-		acquirep(p);
-		execute(gp, false);  // Never returns.
-	}
-	if(m->lockedg) {
-		// Wait until another thread schedules gp and so m again.
-		stoplockedm();
-		execute(gp, false);  // Never returns.
-	}
-	stopm();
-	schedule();  // Never returns.
-}
-
-void syscall_entersyscall(void)
-  __asm__(GOSYM_PREFIX "syscall.Entersyscall");
-
-void syscall_entersyscall(void) __attribute__ ((no_split_stack));
-
-void
-syscall_entersyscall()
-{
-  runtime_entersyscall(0);
-}
-
-void syscall_exitsyscall(void)
-  __asm__(GOSYM_PREFIX "syscall.Exitsyscall");
-
-void syscall_exitsyscall(void) __attribute__ ((no_split_stack));
-
-void
-syscall_exitsyscall()
-{
-  runtime_exitsyscall(0);
+	reentersyscallblock(pc, sp);
 }
 
 // Allocate a new g, with a stack big enough for stacksize bytes.
