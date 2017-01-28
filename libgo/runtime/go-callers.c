@@ -16,7 +16,7 @@
    older versions of glibc when a SIGPROF signal arrives while
    collecting a backtrace.  */
 
-uint32 runtime_in_callers;
+static uint32 runtime_in_callers;
 
 /* Argument passed to callback function.  */
 
@@ -152,6 +152,20 @@ error_callback (void *data __attribute__ ((unused)),
   if (errnum != 0)
     runtime_printf ("%s errno %d\n", msg, errnum);
   runtime_throw (msg);
+}
+
+/* Return whether we are already collecting a stack trace. This is
+   called from the signal handler.  */
+
+bool alreadyInCallers(void)
+  __attribute__ ((no_split_stack));
+bool alreadyInCallers(void)
+  __asm__ (GOSYM_PREFIX "runtime.alreadyInCallers");
+
+bool
+alreadyInCallers()
+{
+  return runtime_atomicload(&runtime_in_callers) > 0;
 }
 
 /* Gather caller PC's.  */

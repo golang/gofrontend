@@ -338,7 +338,6 @@ void runtime_setg(G*)
 void runtime_newextram(void)
   __asm__ (GOSYM_PREFIX "runtime.newextram");
 #define runtime_exit(s) exit(s)
-#define runtime_breakpoint() __builtin_trap()
 void	runtime_gosched(void)
   __asm__ (GOSYM_PREFIX "runtime.Gosched");
 void	runtime_schedtrace(bool)
@@ -364,14 +363,6 @@ void	runtime_dopanic(int32) __attribute__ ((noreturn));
 void	runtime_startpanic(void)
   __asm__ (GOSYM_PREFIX "runtime.startpanic");
 void	runtime_unwindstack(G*, byte*);
-void	runtime_sigprof()
-  __asm__ (GOSYM_PREFIX "runtime.sigprof");
-void	runtime_resetcpuprofiler(int32)
-  __asm__ (GOSYM_PREFIX "runtime.resetcpuprofiler");
-void	runtime_setcpuprofilerate_m(int32)
-     __asm__ (GOSYM_PREFIX "runtime.setcpuprofilerate_m");
-void	runtime_cpuprofAdd(Slice)
-     __asm__ (GOSYM_PREFIX "runtime.cpuprofAdd");
 void	runtime_usleep(uint32)
      __asm__ (GOSYM_PREFIX "runtime.usleep");
 int64	runtime_cputicks(void)
@@ -544,7 +535,6 @@ extern struct backtrace_state *__go_get_backtrace_state(void);
 extern _Bool __go_file_line(uintptr, int, String*, String*, intgo *);
 extern void runtime_main(void*)
   __asm__(GOSYM_PREFIX "runtime.main");
-extern uint32 runtime_in_callers;
 
 int32 getproccount(void);
 

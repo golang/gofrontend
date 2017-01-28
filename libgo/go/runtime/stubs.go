@@ -126,6 +126,8 @@ func mincore(addr unsafe.Pointer, n uintptr, dst *byte) int32
 func jmpdefer(fv *funcval, argp uintptr)
 func exit1(code int32)
 func setg(gg *g)
+
+//extern __builtin_trap
 func breakpoint()
 
 func asminit() {}
@@ -404,26 +406,9 @@ func getMstats() *mstats {
 	return &memstats
 }
 
-// Temporary for gccgo until we port proc.go.
-func setcpuprofilerate_m(hz int32)
-
 // Temporary for gccgo until we port mem_GOOS.go.
 func sysAlloc(n uintptr, sysStat *uint64) unsafe.Pointer
 func sysFree(v unsafe.Pointer, n uintptr, sysStat *uint64)
-
-// Temporary for gccgo until we port proc.go, so that the C signal
-// handler can call into cpuprof.
-//go:linkname cpuprofAdd runtime.cpuprofAdd
-func cpuprofAdd(stk []uintptr) {
-	cpuprof.add(stk)
-}
-
-// For gccgo until we port proc.go.
-func Breakpoint()
-func LockOSThread()
-func UnlockOSThread()
-func lockOSThread()
-func unlockOSThread()
 
 // Temporary for gccgo until we port malloc.go
 func persistentalloc(size, align uintptr, sysStat *uint64) unsafe.Pointer
@@ -457,9 +442,6 @@ var zerobase uintptr
 func getZerobase() *uintptr {
 	return &zerobase
 }
-
-// Temporary for gccgo until we port proc.go.
-func sigprof()
 
 // Get signal trampoline, written in C.
 func getSigtramp() uintptr

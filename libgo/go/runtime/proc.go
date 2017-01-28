@@ -59,6 +59,7 @@ func makeGContext(*g, unsafe.Pointer, uintptr)
 func mstartInitContext(*g, unsafe.Pointer)
 func getTraceback(me, gp *g)
 func _cgo_notify_runtime_init_done()
+func alreadyInCallers() bool
 
 // Functions created by the compiler.
 //extern __go_init_main
@@ -2673,6 +2674,11 @@ func gfpurge(_p_ *p) {
 	unlock(&sched.gflock)
 }
 
+// Breakpoint executes a breakpoint trap.
+func Breakpoint() {
+	breakpoint()
+}
+
 // dolockOSThread is called by LockOSThread and lockOSThread below
 // after they modify m.locked. Do not allow preemption during this call,
 // or else the m might be different in this function than in the caller.
@@ -2755,6 +2761,152 @@ func gcount() int32 {
 
 func mcount() int32 {
 	return sched.mcount
+}
+
+var prof struct {
+	lock uint32
+	hz   int32
+}
+
+func _System()       { _System() }
+func _ExternalCode() { _ExternalCode() }
+func _GC()           { _GC() }
+
+var _SystemPC = funcPC(_System)
+var _ExternalCodePC = funcPC(_ExternalCode)
+var _GCPC = funcPC(_GC)
+
+// Called if we receive a SIGPROF signal.
+// Called by the signal handler, may run during STW.
+//go:nowritebarrierrec
+func sigprof(pc uintptr, gp *g, mp *m) {
+	if prof.hz == 0 {
+		return
+	}
+
+	// Profiling runs concurrently with GC, so it must not allocate.
+	// Set a trap in case the code does allocate.
+	// Note that on windows, one thread takes profiles of all the
+	// other threads, so mp is usually not getg().m.
+	// In fact mp may not even be stopped.
+	// See golang.org/issue/17165.
+	getg().m.mallocing++
+
+	traceback := true
+
+	// If SIGPROF arrived while already fetching runtime callers
+	// we can have trouble on older systems because the unwind
+	// library calls dl_iterate_phdr which was not reentrant in
+	// the past. alreadyInCallers checks for that.
+	if gp == nil || alreadyInCallers() {
+		traceback = false
+	}
+
+	var stk [maxCPUProfStack]uintptr
+	n := 0
+	if traceback {
+		var stklocs [maxCPUProfStack]location
+		n = callers(0, stklocs[:])
+
+		for i := 0; i < n; i++ {
+			stk[i] = stklocs[i].pc
+		}
+	}
+
+	if n <= 0 {
+		// Normal traceback is impossible or has failed.
+		// Account it against abstract "System" or "GC".
+		n = 2
+		stk[0] = pc
+		if mp.preemptoff != "" || mp.helpgc != 0 {
+			stk[1] = _GCPC + sys.PCQuantum
+		} else {
+			stk[1] = _SystemPC + sys.PCQuantum
+		}
+	}
+
+	if prof.hz != 0 {
+		// Simple cas-lock to coordinate with setcpuprofilerate.
+		for !atomic.Cas(&prof.lock, 0, 1) {
+			osyield()
+		}
+		if prof.hz != 0 {
+			cpuprof.add(stk[:n])
+		}
+		atomic.Store(&prof.lock, 0)
+	}
+	getg().m.mallocing--
+}
+
+// Use global arrays rather than using up lots of stack space in the
+// signal handler. This is safe since while we are executing a SIGPROF
+// signal other SIGPROF signals are blocked.
+var nonprofGoStklocs [maxCPUProfStack]location
+var nonprofGoStk [maxCPUProfStack]uintptr
+
+// sigprofNonGo is called if we receive a SIGPROF signal on a non-Go thread,
+// and the signal handler collected a stack trace in sigprofCallers.
+// When this is called, sigprofCallersUse will be non-zero.
+// g is nil, and what we can do is very limited.
+//go:nosplit
+//go:nowritebarrierrec
+func sigprofNonGo(pc uintptr) {
+	if prof.hz != 0 {
+		n := callers(0, nonprofGoStklocs[:])
+
+		for i := 0; i < n; i++ {
+			nonprofGoStk[i] = nonprofGoStklocs[i].pc
+		}
+
+		if n <= 0 {
+			n = 2
+			nonprofGoStk[0] = pc
+			nonprofGoStk[1] = _ExternalCodePC + sys.PCQuantum
+		}
+
+		// Simple cas-lock to coordinate with setcpuprofilerate.
+		for !atomic.Cas(&prof.lock, 0, 1) {
+			osyield()
+		}
+		if prof.hz != 0 {
+			cpuprof.addNonGo(nonprofGoStk[:n])
+		}
+		atomic.Store(&prof.lock, 0)
+	}
+}
+
+// Arrange to call fn with a traceback hz times a second.
+func setcpuprofilerate_m(hz int32) {
+	// Force sane arguments.
+	if hz < 0 {
+		hz = 0
+	}
+
+	// Disable preemption, otherwise we can be rescheduled to another thread
+	// that has profiling enabled.
+	_g_ := getg()
+	_g_.m.locks++
+
+	// Stop profiler on this thread so that it is safe to lock prof.
+	// if a profiling signal came in while we had prof locked,
+	// it would deadlock.
+	resetcpuprofiler(0)
+
+	for !atomic.Cas(&prof.lock, 0, 1) {
+		osyield()
+	}
+	prof.hz = hz
+	atomic.Store(&prof.lock, 0)
+
+	lock(&sched.lock)
+	sched.profilehz = hz
+	unlock(&sched.lock)
+
+	if hz != 0 {
+		resetcpuprofiler(hz)
+	}
+
+	_g_.m.locks--
 }
 
 // Change number of processors. The world is stopped, sched is locked.
