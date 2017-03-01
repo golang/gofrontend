@@ -31,6 +31,14 @@ m4_rename_force([glibgo_PRECIOUS],[_AC_ARG_VAR_PRECIOUS])
 
 AC_SUBST(CFLAGS)
 
+case ${host} in
+  *-*-aix*)
+    # static hash tables crashes on AIX when libgo is built with O2
+    CFLAGS="$CFLAGS -fno-section-anchors"
+    GOCFLAGS="$GOCFLAGS -fno-section-anchors"
+    ;;
+esac
+
 AM_MAINTAINER_MODE
 
 AC_PROG_LD
@@ -146,7 +154,7 @@ AC_SUBST(go_include)
 # All known GOOS values.  This is the union of all operating systems
 # supported by the gofrontend and all operating systems supported by
 # the gc toolchain.
-ALLGOOS="android darwin dragonfly freebsd irix linux netbsd openbsd plan9 rtems solaris windows"
+ALLGOOS="aix android darwin dragonfly freebsd irix linux netbsd openbsd plan9 rtems solaris windows"
 
 is_darwin=no
 is_freebsd=no
@@ -157,6 +165,7 @@ is_openbsd=no
 is_dragonfly=no
 is_rtems=no
 is_solaris=no
+is_aix=no
 GOOS=unknown
 case ${host} in
   *-*-darwin*)   is_darwin=yes;  GOOS=darwin ;;
@@ -168,6 +177,7 @@ case ${host} in
   *-*-dragonfly*) is_dragonfly=yes; GOOS=dragonfly ;;
   *-*-rtems*)    is_rtems=yes;   GOOS=rtems ;;
   *-*-solaris2*) is_solaris=yes; GOOS=solaris ;;
+  *-*-aix*)      is_aix=yes;     GOOS=aix ;;
 esac
 AM_CONDITIONAL(LIBGO_IS_DARWIN, test $is_darwin = yes)
 AM_CONDITIONAL(LIBGO_IS_FREEBSD, test $is_freebsd = yes)
@@ -178,6 +188,7 @@ AM_CONDITIONAL(LIBGO_IS_OPENBSD, test $is_openbsd = yes)
 AM_CONDITIONAL(LIBGO_IS_DRAGONFLY, test $is_dragonfly = yes)
 AM_CONDITIONAL(LIBGO_IS_RTEMS, test $is_rtems = yes)
 AM_CONDITIONAL(LIBGO_IS_SOLARIS, test $is_solaris = yes)
+AM_CONDITIONAL(LIBGO_IS_AIX, test $is_aix = yes)
 AM_CONDITIONAL(LIBGO_IS_BSD, test $is_darwin = yes -o $is_dragonfly = yes -o $is_freebsd = yes -o $is_netbsd = yes -o $is_openbsd = yes)
 AC_SUBST(GOOS)
 AC_SUBST(ALLGOOS)

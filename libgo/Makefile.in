@@ -462,7 +462,9 @@ AM_CFLAGS = -fexceptions -fnon-call-exceptions -fplan9-extensions \
 	-I $(srcdir)/../libgcc -I $(srcdir)/../libbacktrace \
 	-I $(MULTIBUILDTOP)../../gcc/include
 
+AM_LDFLAGS =
 @USING_SPLIT_STACK_TRUE@AM_LDFLAGS = -XCClinker $(SPLIT_STACK)
+@LIBGO_IS_AIX_TRUE@AM_LDFLAGS += -Wl,-bbigtoc
 
 # Multilib support.
 MAKEOVERRIDES = 
