@@ -425,7 +425,11 @@ else
 if LIBGO_IS_NETBSD
 runtime_getncpu_file = runtime/getncpu-bsd.c
 else
+if LIBGO_IS_AIX
+runtime_getncpu_file = runtime/getncpu-aix.c
+else
 runtime_getncpu_file = runtime/getncpu-none.c
+endif
 endif
 endif
 endif

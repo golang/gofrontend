@@ -62,8 +62,10 @@ POST_UNINSTALL = :
 build_triplet = @build@
 host_triplet = @host@
 target_triplet = @target@
-@GOC_IS_LLGO_TRUE@am__append_1 = libgo-llgo.la libgobegin-llgo.a
-@GOC_IS_LLGO_FALSE@am__append_2 = libgo.la libgobegin.a
+@USING_SPLIT_STACK_TRUE@am__append_1 = -XCClinker $(SPLIT_STACK)
+@LIBGO_IS_AIX_TRUE@am__append_2 = -Wl,-bbigtoc
+@GOC_IS_LLGO_TRUE@am__append_3 = libgo-llgo.la libgobegin-llgo.a
+@GOC_IS_LLGO_FALSE@am__append_4 = libgo.la libgobegin.a
 subdir = .
 DIST_COMMON = README $(srcdir)/Makefile.in $(srcdir)/Makefile.am \
 	$(top_srcdir)/configure $(am__configure_deps) \
@@ -183,7 +185,8 @@ libgo_llgo_la_DEPENDENCIES = $(am__DEPENDENCIES_4)
 @LIBGO_IS_LINUX_FALSE@am__objects_2 = thread-sema.lo
 @LIBGO_IS_LINUX_TRUE@am__objects_2 = thread-linux.lo
 @LIBGO_IS_RTEMS_TRUE@am__objects_3 = rtems-task-variable-add.lo
-@LIBGO_IS_DARWIN_FALSE@@LIBGO_IS_FREEBSD_FALSE@@LIBGO_IS_IRIX_FALSE@@LIBGO_IS_LINUX_FALSE@@LIBGO_IS_NETBSD_FALSE@@LIBGO_IS_SOLARIS_FALSE@am__objects_4 = getncpu-none.lo
+@LIBGO_IS_AIX_FALSE@@LIBGO_IS_DARWIN_FALSE@@LIBGO_IS_FREEBSD_FALSE@@LIBGO_IS_IRIX_FALSE@@LIBGO_IS_LINUX_FALSE@@LIBGO_IS_NETBSD_FALSE@@LIBGO_IS_SOLARIS_FALSE@am__objects_4 = getncpu-none.lo
+@LIBGO_IS_AIX_TRUE@@LIBGO_IS_DARWIN_FALSE@@LIBGO_IS_FREEBSD_FALSE@@LIBGO_IS_IRIX_FALSE@@LIBGO_IS_LINUX_FALSE@@LIBGO_IS_NETBSD_FALSE@@LIBGO_IS_SOLARIS_FALSE@am__objects_4 = getncpu-aix.lo
 @LIBGO_IS_DARWIN_FALSE@@LIBGO_IS_FREEBSD_FALSE@@LIBGO_IS_IRIX_FALSE@@LIBGO_IS_LINUX_FALSE@@LIBGO_IS_NETBSD_TRUE@@LIBGO_IS_SOLARIS_FALSE@am__objects_4 = getncpu-bsd.lo
 @LIBGO_IS_DARWIN_FALSE@@LIBGO_IS_FREEBSD_TRUE@@LIBGO_IS_IRIX_FALSE@@LIBGO_IS_LINUX_FALSE@@LIBGO_IS_SOLARIS_FALSE@am__objects_4 = getncpu-bsd.lo
 @LIBGO_IS_DARWIN_FALSE@@LIBGO_IS_IRIX_FALSE@@LIBGO_IS_LINUX_FALSE@@LIBGO_IS_SOLARIS_TRUE@am__objects_4 = getncpu-solaris.lo
@@ -462,9 +465,7 @@ AM_CFLAGS = -fexceptions -fnon-call-exceptions -fplan9-extensions \
 	-I $(srcdir)/../libgcc -I $(srcdir)/../libbacktrace \
 	-I $(MULTIBUILDTOP)../../gcc/include
 
-AM_LDFLAGS =
-@USING_SPLIT_STACK_TRUE@AM_LDFLAGS = -XCClinker $(SPLIT_STACK)
-@LIBGO_IS_AIX_TRUE@AM_LDFLAGS += -Wl,-bbigtoc
+AM_LDFLAGS = $(am__append_1) $(am__append_2)
 
 # Multilib support.
 MAKEOVERRIDES = 
@@ -768,7 +769,8 @@ toolexeclibgounicode_DATA = \
 @LIBGO_IS_RTEMS_TRUE@rtems_task_variable_add_file = runtime/rtems-task-variable-add.c
 @LIBGO_IS_LINUX_FALSE@runtime_thread_files = runtime/thread-sema.c
 @LIBGO_IS_LINUX_TRUE@runtime_thread_files = runtime/thread-linux.c
-@LIBGO_IS_DARWIN_FALSE@@LIBGO_IS_FREEBSD_FALSE@@LIBGO_IS_IRIX_FALSE@@LIBGO_IS_LINUX_FALSE@@LIBGO_IS_NETBSD_FALSE@@LIBGO_IS_SOLARIS_FALSE@runtime_getncpu_file = runtime/getncpu-none.c
+@LIBGO_IS_AIX_FALSE@@LIBGO_IS_DARWIN_FALSE@@LIBGO_IS_FREEBSD_FALSE@@LIBGO_IS_IRIX_FALSE@@LIBGO_IS_LINUX_FALSE@@LIBGO_IS_NETBSD_FALSE@@LIBGO_IS_SOLARIS_FALSE@runtime_getncpu_file = runtime/getncpu-none.c
+@LIBGO_IS_AIX_TRUE@@LIBGO_IS_DARWIN_FALSE@@LIBGO_IS_FREEBSD_FALSE@@LIBGO_IS_IRIX_FALSE@@LIBGO_IS_LINUX_FALSE@@LIBGO_IS_NETBSD_FALSE@@LIBGO_IS_SOLARIS_FALSE@runtime_getncpu_file = runtime/getncpu-aix.c
 @LIBGO_IS_DARWIN_FALSE@@LIBGO_IS_FREEBSD_FALSE@@LIBGO_IS_IRIX_FALSE@@LIBGO_IS_LINUX_FALSE@@LIBGO_IS_NETBSD_TRUE@@LIBGO_IS_SOLARIS_FALSE@runtime_getncpu_file = runtime/getncpu-bsd.c
 @LIBGO_IS_DARWIN_FALSE@@LIBGO_IS_FREEBSD_TRUE@@LIBGO_IS_IRIX_FALSE@@LIBGO_IS_LINUX_FALSE@@LIBGO_IS_SOLARIS_FALSE@runtime_getncpu_file = runtime/getncpu-bsd.c
 @LIBGO_IS_DARWIN_FALSE@@LIBGO_IS_IRIX_FALSE@@LIBGO_IS_LINUX_FALSE@@LIBGO_IS_SOLARIS_TRUE@runtime_getncpu_file = runtime/getncpu-solaris.c
@@ -1136,7 +1138,7 @@ CHECK_DEPS = $(toolexeclibgo_DATA) $(toolexeclibgoarchive_DATA) \
 	$(toolexeclibgorpc_DATA) $(toolexeclibgoruntime_DATA) \
 	$(toolexeclibgosync_DATA) $(toolexeclibgotesting_DATA) \
 	$(toolexeclibgotext_DATA) $(toolexeclibgotexttemplate_DATA) \
-	$(toolexeclibgounicode_DATA) $(am__append_1) $(am__append_2)
+	$(toolexeclibgounicode_DATA) $(am__append_3) $(am__append_4)
 
 # Pass -ffp-contract=off, or 386-specific options, when building the
 # math package.  MATH_FLAG is defined in configure.ac.
@@ -1483,6 +1485,7 @@ distclean-compile:
 
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/aeshash.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/env_posix.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/getncpu-aix.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/getncpu-bsd.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/getncpu-irix.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/getncpu-linux.Plo@am__quote@
@@ -1960,6 +1963,13 @@ getncpu-none.lo: runtime/getncpu-none.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	source='runtime/getncpu-none.c' object='getncpu-none.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(LIBTOOL)  --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o getncpu-none.lo `test -f 'runtime/getncpu-none.c' || echo '$(srcdir)/'`runtime/getncpu-none.c
+
+getncpu-aix.lo: runtime/getncpu-aix.c
+@am__fastdepCC_TRUE@	$(LIBTOOL)  --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT getncpu-aix.lo -MD -MP -MF $(DEPDIR)/getncpu-aix.Tpo -c -o getncpu-aix.lo `test -f 'runtime/getncpu-aix.c' || echo '$(srcdir)/'`runtime/getncpu-aix.c
+@am__fastdepCC_TRUE@	$(am__mv) $(DEPDIR)/getncpu-aix.Tpo $(DEPDIR)/getncpu-aix.Plo
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='runtime/getncpu-aix.c' object='getncpu-aix.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(LIBTOOL)  --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o getncpu-aix.lo `test -f 'runtime/getncpu-aix.c' || echo '$(srcdir)/'`runtime/getncpu-aix.c
 
 getncpu-bsd.lo: runtime/getncpu-bsd.c
 @am__fastdepCC_TRUE@	$(LIBTOOL)  --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT getncpu-bsd.lo -MD -MP -MF $(DEPDIR)/getncpu-bsd.Tpo -c -o getncpu-bsd.lo `test -f 'runtime/getncpu-bsd.c' || echo '$(srcdir)/'`runtime/getncpu-bsd.c
