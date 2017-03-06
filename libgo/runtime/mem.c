@@ -222,6 +222,12 @@ runtime_SysMap(void *v, uintptr n, bool reserved, uint64 *stat)
 		return;
 	}
 
+#ifdef _AIX
+	// AIX does not allow mapping a range that is already mapped.
+	// So always unmap first even if it is already unmapped.
+	runtime_munmap(v, n);
+#endif
+
 	p = runtime_mmap(v, n, PROT_READ|PROT_WRITE, MAP_ANON|MAP_FIXED|MAP_PRIVATE, fd, 0);
 	if(p == MAP_FAILED && errno == ENOMEM)
 		runtime_throw("runtime: out of memory");

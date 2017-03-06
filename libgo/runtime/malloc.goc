@@ -39,6 +39,10 @@ package runtime
 #ifdef __aarch64__
 #define HeapBase(i) ((void*)(uintptr)(0x40ULL<<32))
 #define HeapBaseOptions 1
+#elif defined(_AIX)
+// mmap adresses range start at 0x07000000_00000000 on AIX for 64 bits processes
+#define HeapBase(i) ((void*)(uintptr)(0x70ULL<<52))
+#define HeapBaseOptions 1
 #else
 #define HeapBase(i) ((void*)(uintptr)(i<<40|0x00c0ULL<<32))
 #define HeapBaseOptions 0x80
@@ -498,10 +502,15 @@ runtime_mallocinit(void)
 		// away from the running binary image and then round up
 		// to a MB boundary.
 
+#ifdef _AIX
+		// mmap adresses range start at 0x30000000 on AIX for 32 bits processes
+		end = 0x30000000U;
+#else
 		end = 0;
 		pend = &__go_end;
 		if(pend != nil)
 			end = *pend;
+#endif
 		p = (byte*)ROUND(end + (1<<18), 1<<20);
 		p_size = bitmap_size + spans_size + arena_size + PageSize;
 		p = runtime_SysReserve(p, p_size, &reserved);
