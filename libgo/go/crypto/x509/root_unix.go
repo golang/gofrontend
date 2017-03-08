@@ -16,6 +16,7 @@ import (
 var certDirectories = []string{
 	"/etc/ssl/certs",               // SLES10/SLES11, https://golang.org/issue/12139
 	"/system/etc/security/cacerts", // Android
+	"/var/ssl/certs",               // AIX
 }
 
 func (c *Certificate) systemVerify(opts *VerifyOptions) (chains [][]*Certificate, err error) {
