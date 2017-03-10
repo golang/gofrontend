@@ -53,7 +53,10 @@ AM_LDFLAGS += -XCClinker $(SPLIT_STACK)
 endif
 
 if LIBGO_IS_AIX
-AM_LDFLAGS += -Wl,-bbigtoc
+# Using an import file for libgo avoid requiring to use the -brtl flag
+# when builing a go program
+AM_LDFLAGS += -Wl,-bbigtoc -Wl,-bI:$(srcdir)/libgo.imp
+EXTRA_libgo_la_DEPENDENCIES = libgo.imp
 endif
 
 # Multilib support.

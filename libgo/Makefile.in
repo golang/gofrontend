@@ -63,7 +63,10 @@ build_triplet = @build@
 host_triplet = @host@
 target_triplet = @target@
 @USING_SPLIT_STACK_TRUE@am__append_1 = -XCClinker $(SPLIT_STACK)
-@LIBGO_IS_AIX_TRUE@am__append_2 = -Wl,-bbigtoc
+
+# Using an import file for libgo avoid requiring to use the -brtl flag
+# when builing a go program
+@LIBGO_IS_AIX_TRUE@am__append_2 = -Wl,-bbigtoc -Wl,-bI:$(srcdir)/libgo.imp
 @GOC_IS_LLGO_TRUE@am__append_3 = libgo-llgo.la libgobegin-llgo.a
 @GOC_IS_LLGO_FALSE@am__append_4 = libgo.la libgobegin.a
 subdir = .
@@ -466,6 +469,7 @@ AM_CFLAGS = -fexceptions -fnon-call-exceptions -fplan9-extensions \
 	-I $(MULTIBUILDTOP)../../gcc/include
 
 AM_LDFLAGS = $(am__append_1) $(am__append_2)
+@LIBGO_IS_AIX_TRUE@EXTRA_libgo_la_DEPENDENCIES = libgo.imp
 
 # Multilib support.
 MAKEOVERRIDES = 
