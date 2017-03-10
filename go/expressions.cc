@@ -900,8 +900,8 @@ Temporary_reference_expression::do_get_backend(Translate_context* context)
   // the circularity down one level.
   Type* stype = this->statement_->type();
   if (!this->is_lvalue_
-      && stype->has_pointer()
-      && stype->deref()->is_void_type())
+      && stype->points_to() != NULL
+      && stype->points_to()->is_void_type())
     {
       Btype* btype = this->type()->base()->get_backend(gogo);
       ret = gogo->backend()->convert_expression(btype, ret, this->location());
