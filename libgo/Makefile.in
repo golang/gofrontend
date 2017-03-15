@@ -3205,6 +3205,9 @@ s-sigtab: $(srcdir)/mksigtab.sh gen-sysinfo.go
 	$(SHELL) $(srcdir)/mvifdiff.sh tmp-sigtab.go sigtab.go
 	$(STAMP) $@
 
+# _Complex_lock and _Reader_lock are Go translations of some AIX system
+# types and should not be exported back to C
+# sigset conflicts with system type sigset on AIX, so we need to rename it
 runtime.inc: s-runtime-inc; @true
 s-runtime-inc: runtime.lo Makefile
 	rm -f runtime.inc.tmp2
@@ -3212,7 +3215,12 @@ s-runtime-inc: runtime.lo Makefile
 	for pattern in '_[GP][a-z]' _Max _Lock _Sig _Trace _MHeap _Num; do \
 	  grep "#define $$pattern" runtime.inc.tmp >> runtime.inc.tmp2; \
 	done
-	$(SHELL) $(srcdir)/mvifdiff.sh runtime.inc.tmp2 runtime.inc
+	for TYPE in _Complex_lock _Reader_lock; do \
+	  sed -e '/struct '$${TYPE}' {/,/^}/s/^.*$$//' runtime.inc.tmp2 > runtime.inc.tmp3; \
+	  mv runtime.inc.tmp3 runtime.inc.tmp2; \
+	done
+	sed -e 's/sigset/sigset_go/' runtime.inc.tmp2 > runtime.inc.tmp3
+	$(SHELL) $(srcdir)/mvifdiff.sh runtime.inc.tmp3 runtime.inc
 	$(STAMP) $@
 
 # Generate the list of go std packages that were included in libgo
