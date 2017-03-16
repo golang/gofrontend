@@ -492,6 +492,15 @@ strerror_r (int errnum, char *buf, size_t buflen)
 
 #endif /* ! HAVE_STRERROR_R */
 
+#ifndef HAVE_SYSCALL
+int
+syscall(int number, ...)
+{
+  errno = ENOSYS;
+  return -1;
+}
+#endif
+
 #ifndef HAVE_WAIT4
 
 /* Some old systems do not have wait4.  This is a replacement that
