@@ -42,6 +42,12 @@ grep -v '^// ' gen-sysinfo.go | \
       -e 's/\([^a-zA-Z0-9_]\)_timestruc_t\([^a-zA-Z0-9_]\)/\1Timestruc\2/g' \
     >> ${OUT}
 
+# On AIX, the _arpcom struct, is filtered by the above grep sequence, as it as
+# a field of type _in6_addr, but other types depend on _arpcom, so we need to
+# put it back.
+grep '^type _arpcom ' gen-sysinfo.go | \
+  sed -e 's/_in6_addr/[16]byte/' >> ${OUT}
+
 # The errno constants.  These get type Errno.
   egrep '#define E[A-Z0-9_]+ ' errno.i | \
   sed -e 's/^#define \(E[A-Z0-9_]*\) .*$/const \1 = Errno(_\1)/' >> ${OUT}

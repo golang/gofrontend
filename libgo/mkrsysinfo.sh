@@ -30,6 +30,12 @@ grep -v '^// ' gen-sysinfo.go | \
       -e 's/\([^a-zA-Z0-9_]\)_timespec\([^a-zA-Z0-9_]\)/\1timespec\2/g' \
     >> ${OUT}
 
+# On AIX, the _arpcom struct, is filtered by the above grep sequence, as it as
+# a field of type _in6_addr, but other types depend on _arpcom, so we need to
+# put it back.
+grep '^type _arpcom ' gen-sysinfo.go | \
+  sed -e 's/_in6_addr/[16]byte/' >> ${OUT}
+
 # The time structures need special handling: we need to name the
 # types, so that we can cast integers to the right types when
 # assigning to the structures.
