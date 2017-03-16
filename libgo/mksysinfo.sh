@@ -876,6 +876,11 @@ if ! grep '^const _TIOCSCTTY ' gen-sysinfo.go >/dev/null 2>&1; then
   fi
 fi
 
+# If nothing else defined TIOCSCTTY, make sure it has a value.
+if ! grep "const TIOCSCTTY " ${OUT} >/dev/null 2>&1; then
+  echo "const TIOCSCTTY = 0" >> ${OUT}
+fi
+
 # The nlmsghdr struct.
 grep '^type _nlmsghdr ' gen-sysinfo.go | \
     sed -e 's/_nlmsghdr/NlMsghdr/' \
