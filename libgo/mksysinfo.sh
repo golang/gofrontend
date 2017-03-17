@@ -662,6 +662,11 @@ grep '^const _EAI_' gen-sysinfo.go | \
 grep '^const _NI_' gen-sysinfo.go | \
   sed -e 's/^\(const \)_\(NI_[^= ]*\)\(.*\)$/\1\2 = _\2/' >> ${OUT}
 
+# If nothing else defined EAI_OVERFLOW, make sure it has a value.
+if ! grep "const EAI_OVERFLOW " ${OUT} >/dev/null 2>&1; then
+  echo "const EAI_OVERFLOW = 0" >> ${OUT}
+fi
+
 # The passwd struct.
 grep '^type _passwd ' gen-sysinfo.go | \
     sed -e 's/_passwd/Passwd/' \
