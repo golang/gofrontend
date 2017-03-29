@@ -85,7 +85,6 @@ enum {
 	ConcurrentSweep = 1,
 
 	WorkbufSize	= 16*1024,
-	FinBlockSize	= 4*1024,
 
 	handoffThreshold = 4,
 	IntermediateBufferCapacity = 64,
@@ -172,27 +171,13 @@ struct Finalizer
 	const PtrType *ot;
 };
 
-typedef struct FinBlock FinBlock;
-struct FinBlock
-{
-	FinBlock *alllink;
-	FinBlock *next;
-	int32 cnt;
-	int32 cap;
-	Finalizer fin[1];
-};
+typedef struct finblock FinBlock;
 
-static Lock	finlock;	// protects the following variables
-static FinBlock	*finq;		// list of finalizers that are to be executed
-static FinBlock	*finc;		// cache of free blocks
-static FinBlock	*allfin;	// list of all blocks
-bool	runtime_fingwait;
-bool	runtime_fingwake;
+extern FinBlock *runtime_getallfin()
+  __asm__(GOSYM_PREFIX "runtime.getallfin");
 
 static Lock	gclock;
-static G*	fing;
 
-static void	runfinq(void*);
 static void	bgsweep(void*);
 static Workbuf* getempty(Workbuf*);
 static Workbuf* getfull(Workbuf*);
@@ -1284,7 +1269,7 @@ markroot(ParFor *desc, uint32 i)
 		break;
 
 	case RootFinalizers:
-		for(fb=allfin; fb; fb=fb->alllink)
+		for(fb=runtime_getallfin(); fb; fb=fb->alllink)
 			enqueue1(&wbuf, (Obj){(byte*)fb->fin, fb->cnt*sizeof(fb->fin[0]), 0});
 		break;
 
@@ -1533,50 +1518,6 @@ addstackroots(G *gp, Workbuf **wbufp)
 	else
 		enqueue1(wbufp, (Obj){top, bottom - top, 0});
 #endif
-}
-
-void
-runtime_queuefinalizer(void *p, FuncVal *fn, const FuncType *ft, const PtrType *ot)
-{
-	FinBlock *block;
-	Finalizer *f;
-
-	runtime_lock(&finlock);
-	if(finq == nil || finq->cnt == finq->cap) {
-		if(finc == nil) {
-			finc = runtime_persistentalloc(FinBlockSize, 0, &mstats()->gc_sys);
-			finc->cap = (FinBlockSize - sizeof(FinBlock)) / sizeof(Finalizer) + 1;
-			finc->alllink = allfin;
-			allfin = finc;
-		}
-		block = finc;
-		finc = block->next;
-		block->next = finq;
-		finq = block;
-	}
-	f = &finq->fin[finq->cnt];
-	finq->cnt++;
-	f->fn = fn;
-	f->ft = ft;
-	f->ot = ot;
-	f->arg = p;
-	runtime_fingwake = true;
-	runtime_unlock(&finlock);
-}
-
-void
-runtime_iterate_finq(void (*callback)(FuncVal*, void*, const FuncType*, const PtrType*))
-{
-	FinBlock *fb;
-	Finalizer *f;
-	int32 i;
-
-	for(fb = allfin; fb; fb = fb->alllink) {
-		for(i = 0; i < fb->cnt; i++) {
-			f = &fb->fin[i];
-			callback(f->fn, f->arg, f->ft, f->ot);
-		}
-	}
 }
 
 void
@@ -2434,140 +2375,6 @@ gchelperstart(void)
 		runtime_throw("gchelperstart: already busy");
 	if(runtime_g() != m->g0)
 		runtime_throw("gchelper not running on g0 stack");
-}
-
-static void
-runfinq(void* dummy __attribute__ ((unused)))
-{
-	Finalizer *f;
-	FinBlock *fb, *next;
-	uint32 i;
-	Eface ef;
-	Iface iface;
-
-	// This function blocks for long periods of time, and because it is written in C
-	// we have no liveness information. Zero everything so that uninitialized pointers
-	// do not cause memory leaks.
-	f = nil;
-	fb = nil;
-	next = nil;
-	i = 0;
-	ef._type = nil;
-	ef.data = nil;
-	
-	// force flush to memory
-	USED(&f);
-	USED(&fb);
-	USED(&next);
-	USED(&i);
-	USED(&ef);
-
-	for(;;) {
-		runtime_lock(&finlock);
-		fb = finq;
-		finq = nil;
-		if(fb == nil) {
-			runtime_fingwait = true;
-			runtime_g()->isbackground = true;
-			runtime_goparkunlock(&finlock, runtime_gostringnocopy((const byte*)"finalizer wait"), traceEvGoBlock, 1);
-			runtime_g()->isbackground = false;
-			continue;
-		}
-		runtime_unlock(&finlock);
-		for(; fb; fb=next) {
-			next = fb->next;
-			for(i=0; i<(uint32)fb->cnt; i++) {
-				const Type *fint;
-				void *param;
-
-				f = &fb->fin[i];
-				fint = ((const Type**)f->ft->__in.array)[0];
-				if((fint->__code & kindMask) == kindPtr) {
-					// direct use of pointer
-					param = &f->arg;
-				} else if(((const InterfaceType*)fint)->__methods.__count == 0) {
-					// convert to empty interface
-					// using memcpy as const_cast.
-					memcpy(&ef._type, &f->ot,
-					       sizeof ef._type);
-					ef.data = f->arg;
-					param = &ef;
-				} else {
-					// convert to interface with methods
-					iface.tab = getitab(fint,
-							    (const Type*)f->ot,
-							    true);
-					iface.data = f->arg;
-					if(iface.data == nil)
-						runtime_throw("invalid type conversion in runfinq");
-					param = &iface;
-				}
-				reflect_call(f->ft, f->fn, 0, 0, &param, nil);
-				f->fn = nil;
-				f->arg = nil;
-				f->ot = nil;
-			}
-			fb->cnt = 0;
-			runtime_lock(&finlock);
-			fb->next = finc;
-			finc = fb;
-			runtime_unlock(&finlock);
-		}
-
-		// Zero everything that's dead, to avoid memory leaks.
-		// See comment at top of function.
-		f = nil;
-		fb = nil;
-		next = nil;
-		i = 0;
-		ef._type = nil;
-		ef.data = nil;
-		runtime_gc(1);	// trigger another gc to clean up the finalized objects, if possible
-	}
-}
-
-void
-runtime_createfing(void)
-{
-	if(fing != nil)
-		return;
-	// Here we use gclock instead of finlock,
-	// because newproc1 can allocate, which can cause on-demand span sweep,
-	// which can queue finalizers, which would deadlock.
-	runtime_lock(&gclock);
-	if(fing == nil)
-		fing = __go_go(runfinq, nil);
-	runtime_unlock(&gclock);
-}
-
-bool getfingwait() __asm__(GOSYM_PREFIX "runtime.getfingwait");
-bool
-getfingwait()
-{
-	return runtime_fingwait;
-}
-
-bool getfingwake() __asm__(GOSYM_PREFIX "runtime.getfingwake");
-bool
-getfingwake()
-{
-	return runtime_fingwake;
-}
-
-G*
-runtime_wakefing(void)
-{
-	G *res;
-
-	res = nil;
-	runtime_lock(&finlock);
-	if(runtime_fingwait && runtime_fingwake) {
-		runtime_fingwait = false;
-		runtime_fingwake = false;
-		res = fing;
-	}
-	runtime_unlock(&finlock);
-	return res;
 }
 
 void

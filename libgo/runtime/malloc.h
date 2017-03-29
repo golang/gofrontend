@@ -468,20 +468,18 @@ void	runtime_helpgc(int32 nproc)
   __asm__ (GOSYM_PREFIX "runtime.helpgc");
 void	runtime_gchelper(void)
   __asm__ (GOSYM_PREFIX "runtime.gchelper");
-void	runtime_createfing(void);
-G*	runtime_wakefing(void)
-  __asm__ (GOSYM_PREFIX "runtime.wakefing");
-extern bool	runtime_fingwait;
-extern bool	runtime_fingwake;
 
 void	runtime_setprofilebucket(void *p, Bucket *b)
   __asm__ (GOSYM_PREFIX "runtime.setprofilebucket");
 
 struct __go_func_type;
 struct __go_ptr_type;
-bool	runtime_addfinalizer(void *p, FuncVal *fn, const struct __go_func_type*, const struct __go_ptr_type*);
-void	runtime_removefinalizer(void*);
-void	runtime_queuefinalizer(void *p, FuncVal *fn, const struct __go_func_type *ft, const struct __go_ptr_type *ot);
+bool	runtime_addfinalizer(void *p, FuncVal *fn, const struct __go_func_type*, const struct __go_ptr_type*)
+  __asm__ (GOSYM_PREFIX "runtime.addfinalizer");
+void	runtime_removefinalizer(void*)
+  __asm__ (GOSYM_PREFIX "runtime.removefinalizer");
+void	runtime_queuefinalizer(void *p, FuncVal *fn, const struct __go_func_type *ft, const struct __go_ptr_type *ot)
+  __asm__ (GOSYM_PREFIX "runtime.queuefinalizer");
 
 void	runtime_freeallspecials(MSpan *span, void *p, uintptr size);
 bool	runtime_freespecial(Special *s, void *p, uintptr size, bool freed);

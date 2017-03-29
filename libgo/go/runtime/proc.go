@@ -44,9 +44,6 @@ import (
 
 // Functions temporarily in C that have not yet been ported.
 func gchelper()
-func getfingwait() bool
-func getfingwake() bool
-func wakefing() *g
 func mallocinit()
 
 // C functions for thread and context management.
@@ -1711,7 +1708,7 @@ top:
 	if _p_.runSafePointFn != 0 {
 		runSafePointFn()
 	}
-	if getfingwait() && getfingwake() {
+	if fingwait && fingwake {
 		if gp := wakefing(); gp != nil {
 			ready(gp, 0, true)
 		}

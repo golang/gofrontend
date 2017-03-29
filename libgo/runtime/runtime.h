@@ -379,7 +379,8 @@ void	runtime_parsedebugvars(void)
   __asm__(GOSYM_PREFIX "runtime.parsedebugvars");
 void	_rt0_go(void);
 G*	runtime_timejump(void);
-void	runtime_iterate_finq(void (*callback)(FuncVal*, void*, const FuncType*, const PtrType*));
+void	runtime_iterate_finq(void (*callback)(FuncVal*, void*, const FuncType*, const PtrType*))
+  __asm__(GOSYM_PREFIX "runtime.iterate_finq");
 
 void	runtime_stopTheWorldWithSema(void)
   __asm__(GOSYM_PREFIX "runtime.stopTheWorldWithSema");

@@ -132,16 +132,8 @@ func breakpoint()
 
 func asminit() {}
 
-// reflectcall calls fn with a copy of the n argument bytes pointed at by arg.
-// After fn returns, reflectcall copies n-retoffset result bytes
-// back into arg+retoffset before returning. If copying result bytes back,
-// the caller should pass the argument frame type as argtype, so that
-// call can execute appropriate write barriers during the copy.
-// Package reflect passes a frame type. In package runtime, there is only
-// one call that copies results back, in cgocallbackg1, and it does NOT pass a
-// frame type, meaning there are no write barriers invoked. See that call
-// site for justification.
-func reflectcall(argtype *_type, fn, arg unsafe.Pointer, argsize uint32, retoffset uint32)
+//go:linkname reflectcall reflect.call
+func reflectcall(fntype *functype, fn *funcval, isInterface, isMethod bool, params, results *unsafe.Pointer)
 
 func procyield(cycles uint32)
 
@@ -641,7 +633,7 @@ const (
 	gcForceBlockMode               // stop-the-world GC now and STW sweep (forced by user)
 )
 
-// Temporary for gccgo until we port mgc.g0.
+// Temporary for gccgo until we port mgc.go.
 func gc(int32)
 func gcStart(mode gcMode, forceTrigger bool) {
 	var force int32
@@ -650,3 +642,15 @@ func gcStart(mode gcMode, forceTrigger bool) {
 	}
 	gc(force)
 }
+
+// Temporary for gccgo until we port mgc.go.
+const _FinBlockSize = 4 * 1024
+
+// Temporary for gccgo until we port mgc.go.
+//go:linkname getallfin runtime.getallfin
+func getallfin() *finblock {
+	return allfin
+}
+
+// Temporary for gccgo until we port malloc.go.
+const maxTinySize = 16
