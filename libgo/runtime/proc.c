@@ -149,6 +149,22 @@ fixcontext(ucontext_t *c)
 		asm ("st %%g7, %0" : "=m"(c->uc_mcontext.gregs[REG_G7]));
 }
 
+# elif defined(_AIX)
+
+// TODO: configure detects TLS clobbering, so initcontext and fixcontext are
+// required to complete the build, but more investigation is necessary to
+// understand the clobbering issue and fix it.
+
+static inline void
+initcontext(void)
+{
+}
+
+static inline void
+fixcontext(ucontext_t* c __attribute__ ((unused)))
+{
+}
+
 # else
 
 #  error unknown case for SETCONTEXT_CLOBBERS_TLS
