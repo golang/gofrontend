@@ -3620,14 +3620,14 @@ class Order_eval : public Traverse
 // Implement the order of evaluation rules for a statement.
 
 int
-Order_eval::statement(Block* block, size_t* pindex, Statement* s)
+Order_eval::statement(Block* block, size_t* pindex, Statement* stmt)
 {
   // FIXME: This approach doesn't work for switch statements, because
   // we add the new statements before the whole switch when we need to
   // instead add them just before the switch expression.  The right
   // fix is probably to lower switch statements with nonconstant cases
   // to a series of conditionals.
-  if (s->switch_statement() != NULL)
+  if (stmt->switch_statement() != NULL)
     return TRAVERSE_CONTINUE;
 
   Find_eval_ordering find_eval_ordering;
@@ -3635,11 +3635,11 @@ Order_eval::statement(Block* block, size_t* pindex, Statement* s)
   // If S is a variable declaration, then ordinary traversal won't do
   // anything.  We want to explicitly traverse the initialization
   // expression if there is one.
-  Variable_declaration_statement* vds = s->variable_declaration_statement();
+  Variable_declaration_statement* vds = stmt->variable_declaration_statement();
   Expression* init = NULL;
   Expression* orig_init = NULL;
   if (vds == NULL)
-    s->traverse_contents(&find_eval_ordering);
+    stmt->traverse_contents(&find_eval_ordering);
   else
     {
       init = vds->var()->var_value()->init();
@@ -3672,7 +3672,7 @@ Order_eval::statement(Block* block, size_t* pindex, Statement* s)
   // usually leave it in place.
   if (c == 1)
     {
-      switch (s->classification())
+      switch (stmt->classification())
 	{
 	case Statement::STATEMENT_ASSIGNMENT:
 	  // For an assignment statement, we need to evaluate an
@@ -3689,7 +3689,7 @@ Order_eval::statement(Block* block, size_t* pindex, Statement* s)
 	    // move.  We need to move any subexpressions in case they
 	    // are themselves call statements that require passing a
 	    // closure.
-	    Expression* expr = s->expression_statement()->expr();
+	    Expression* expr = stmt->expression_statement()->expr();
 	    if (expr->call_expression() != NULL
 		&& expr->call_expression()->result_count() == 0)
 	      break;
@@ -3702,7 +3702,8 @@ Order_eval::statement(Block* block, size_t* pindex, Statement* s)
 	}
     }
 
-  bool is_thunk = s->thunk_statement() != NULL;
+  bool is_thunk = stmt->thunk_statement() != NULL;
+  Expression_statement* es = stmt->expression_statement();
   for (Find_eval_ordering::const_iterator p = find_eval_ordering.begin();
        p != find_eval_ordering.end();
        ++p)
@@ -3733,8 +3734,13 @@ Order_eval::statement(Block* block, size_t* pindex, Statement* s)
           //
           // Since a given call expression can be shared by multiple
           // Call_result_expressions, avoid hoisting the call the
-          // second time we see it here.
+          // second time we see it here. In addition, don't try to
+          // hoist the top-level multi-return call in the statement,
+          // since doing this would result a tree with more than one copy
+          // of the call.
           if (this->remember_expression(*pexpr))
+            s = NULL;
+          else if (es != NULL && *pexpr == es->expr())
             s = NULL;
           else
             s = Statement::make_statement(*pexpr, true);
