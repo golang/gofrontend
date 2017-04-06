@@ -1774,6 +1774,10 @@ class Unary_expression : public Expression
     this->is_slice_init_ = true;
   }
 
+  // Call the address_taken method on the operand if necessary.
+  void
+  check_operand_address_taken(Gogo*);
+
   // Apply unary opcode OP to UNC, setting NC.  Return true if this
   // could be done, false if not.  On overflow, issues an error and
   // sets *ISSUED_ERROR.

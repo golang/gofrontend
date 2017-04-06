@@ -3691,6 +3691,48 @@ Expression::make_unsafe_cast(Type* type, Expression* expr,
 
 // Class Unary_expression.
 
+// Call the address_taken method of the operand if needed.  This is
+// called after escape analysis but before inserting write barriers.
+
+void
+Unary_expression::check_operand_address_taken(Gogo* gogo)
+{
+  if (this->op_ != OPERATOR_AND)
+    return;
+
+  // If this->escapes_ is false at this point, then it was set to
+  // false by an explicit call to set_does_not_escape, and the value
+  // does not escape.  If this->escapes_ is true, we may be able to
+  // set it to false if taking the address of a variable that does not
+  // escape.
+  Node* n = Node::make_node(this);
+  if ((n->encoding() & ESCAPE_MASK) == int(Node::ESCAPE_NONE))
+    this->escapes_ = false;
+
+  // When compiling the runtime, the address operator does not cause
+  // local variables to escape.  When escape analysis becomes the
+  // default, this should be changed to make it an error if we have an
+  // address operator that escapes.
+  if (gogo->compiling_runtime() && gogo->package_name() == "runtime")
+    this->escapes_ = false;
+
+  Named_object* var = NULL;
+  if (this->expr_->var_expression() != NULL)
+    var = this->expr_->var_expression()->named_object();
+  else if (this->expr_->enclosed_var_expression() != NULL)
+    var = this->expr_->enclosed_var_expression()->variable();
+
+  if (this->escapes_ && var != NULL)
+    {
+      if (var->is_variable())
+	this->escapes_ = var->var_value()->escapes();
+      if (var->is_result_variable())
+	this->escapes_ = var->result_var_value()->escapes();
+    }
+
+  this->expr_->address_taken(this->escapes_);
+}
+
 // If we are taking the address of a composite literal, and the
 // contents are not constant, then we want to make a heap expression
 // instead.
@@ -3815,40 +3857,6 @@ Unary_expression::do_flatten(Gogo* gogo, Named_object*,
                   Expression::make_temporary_reference(temp, location);
             }
         }
-    }
-
-  if (this->op_ == OPERATOR_AND)
-    {
-      // If this->escapes_ is false at this point, then it was set to
-      // false by an explicit call to set_does_not_escape, and the
-      // value does not escape.  If this->escapes_ is true, we may be
-      // able to set it to false if taking the address of a variable
-      // that does not escape.
-      Node* n = Node::make_node(this);
-      if ((n->encoding() & ESCAPE_MASK) == int(Node::ESCAPE_NONE))
-	this->escapes_ = false;
-
-      // When compiling the runtime, the address operator does not
-      // cause local variables to escape.  When escape analysis
-      // becomes the default, this should be changed to make it an
-      // error if we have an address operator that escapes.
-      if (gogo->compiling_runtime() && gogo->package_name() == "runtime")
-	this->escapes_ = false;
-
-      Named_object* var = NULL;
-      if (this->expr_->var_expression() != NULL)
-	var = this->expr_->var_expression()->named_object();
-      else if (this->expr_->enclosed_var_expression() != NULL)
-	var = this->expr_->enclosed_var_expression()->variable();
-
-      if (this->escapes_ && var != NULL)
-	{
-	  if (var->is_variable())
-	    this->escapes_ = var->var_value()->escapes();
-	  if (var->is_result_variable())
-	    this->escapes_ = var->result_var_value()->escapes();
-	}
-      this->expr_->address_taken(this->escapes_);
     }
 
   if (this->create_temp_ && !this->expr_->is_variable())
@@ -7781,7 +7789,16 @@ Builtin_call_expression::flatten_append(Gogo* gogo, Named_object* function,
 	  lhs = Expression::make_index(ref, ref2, NULL, NULL, loc);
 	  gogo->lower_expression(function, inserter, &lhs);
 	  gogo->flatten_expression(function, inserter, &lhs);
-	  assign = Statement::make_assignment(lhs, *pa, loc);
+	  // The flatten pass runs after the write barrier pass, so we
+	  // need to insert a write barrier here if necessary.
+	  if (!gogo->assign_needs_write_barrier(lhs))
+	    assign = Statement::make_assignment(lhs, *pa, loc);
+	  else
+	    {
+	      Function* f = function == NULL ? NULL : function->func_value();
+	      assign = gogo->assign_with_write_barrier(f, NULL, inserter,
+						       lhs, *pa, loc);
+	    }
 	  inserter->insert(assign);
 	}
     }
@@ -14266,14 +14283,15 @@ Heap_expression::do_type()
 Bexpression*
 Heap_expression::do_get_backend(Translate_context* context)
 {
-  if (this->expr_->is_error_expression() || this->expr_->type()->is_error())
+  Type* etype = this->expr_->type();
+  if (this->expr_->is_error_expression() || etype->is_error())
     return context->backend()->error_expression();
 
   Location loc = this->location();
   Gogo* gogo = context->gogo();
   Btype* btype = this->type()->get_backend(gogo);
 
-  Expression* alloc = Expression::make_allocation(this->expr_->type(), loc);
+  Expression* alloc = Expression::make_allocation(etype, loc);
   Node* n = Node::make_node(this);
   if ((n->encoding() & ESCAPE_MASK) == int(Node::ESCAPE_NONE))
     alloc->allocation_expression()->set_allocate_on_stack();
@@ -14287,13 +14305,41 @@ Heap_expression::do_get_backend(Translate_context* context)
     gogo->backend()->temporary_variable(fndecl, context->bblock(), btype,
 					space, true, loc, &decl);
   space = gogo->backend()->var_expression(space_temp, VE_lvalue, loc);
-  Btype* expr_btype = this->expr_->type()->get_backend(gogo);
-  Bexpression* ref =
-    gogo->backend()->indirect_expression(expr_btype, space, true, loc);
+  Btype* expr_btype = etype->get_backend(gogo);
 
   Bexpression* bexpr = this->expr_->get_backend(context);
-  Bstatement* assn = gogo->backend()->assignment_statement(fndecl, ref,
-                                                           bexpr, loc);
+
+  // If this assignment needs a write barrier, call typedmemmove.  We
+  // don't do this in the write barrier pass because in some cases
+  // backend conversion can introduce new Heap_expression values.
+  Bstatement* assn;
+  if (!etype->has_pointer())
+    {
+      Bexpression* ref =
+	gogo->backend()->indirect_expression(expr_btype, space, true, loc);
+      assn = gogo->backend()->assignment_statement(fndecl, ref, bexpr, loc);
+    }
+  else
+    {
+      Bstatement* edecl;
+      Bvariable* btemp =
+	gogo->backend()->temporary_variable(fndecl, context->bblock(),
+					    expr_btype, bexpr, true, loc,
+					    &edecl);
+      Bexpression* btempref = gogo->backend()->var_expression(btemp,
+							      VE_lvalue, loc);
+      Bexpression* addr = gogo->backend()->address_expression(btempref, loc);
+
+      Expression* td = Expression::make_type_descriptor(etype, loc);
+      Type* etype_ptr = Type::make_pointer_type(etype);
+      Expression* elhs = Expression::make_backend(space, etype_ptr, loc);
+      Expression* erhs = Expression::make_backend(addr, etype_ptr, loc);
+      Expression* call = Runtime::make_call(Runtime::TYPEDMEMMOVE, loc, 3,
+					    td, elhs, erhs);
+      Bexpression* bcall = call->get_backend(context);
+      Bstatement* s = gogo->backend()->expression_statement(fndecl, bcall);
+      assn = gogo->backend()->compound_statement(edecl, s);
+    }
   decl = gogo->backend()->compound_statement(decl, assn);
   space = gogo->backend()->var_expression(space_temp, VE_rvalue, loc);
   return gogo->backend()->compound_expression(decl, space, loc);

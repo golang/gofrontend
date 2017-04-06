@@ -340,10 +340,11 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 
 // Here for gccgo until we port mgc.go.
 var writeBarrier struct {
-	enabled bool   // compiler emits a check of this before calling write barrier
-	needed  bool   // whether we need a write barrier for current GC phase
-	cgo     bool   // whether we need a write barrier for a cgo check
-	alignme uint64 // guarantee alignment so that compiler can use a 32 or 64-bit load
+	enabled bool    // compiler emits a check of this before calling write barrier
+	pad     [3]byte // compiler uses 32-bit load for "enabled" field
+	needed  bool    // whether we need a write barrier for current GC phase
+	cgo     bool    // whether we need a write barrier for a cgo check
+	alignme uint64  // guarantee alignment so that compiler can use a 32 or 64-bit load
 }
 
 func queueRescan(gp *g) {
@@ -423,6 +424,7 @@ func atomicstorep(ptr unsafe.Pointer, new unsafe.Pointer) {
 }
 
 // Temporary for gccgo until we port mbarrier.go
+//go:linkname writebarrierptr runtime.writebarrierptr
 func writebarrierptr(dst *uintptr, src uintptr) {
 	*dst = src
 }

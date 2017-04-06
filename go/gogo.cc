@@ -1216,24 +1216,31 @@ sort_var_inits(Gogo* gogo, Var_inits* var_inits)
     }
 
   // VAR_INITS is in the correct order.  For each VAR in VAR_INITS,
-  // check for a loop of VAR on itself.  We only do this if
-  // INIT is not NULL and there is no dependency; when INIT is
-  // NULL, it means that PREINIT sets VAR, which we will
+  // check for a loop of VAR on itself.
   // interpret as a loop.
   for (Var_inits::const_iterator p = var_inits->begin();
        p != var_inits->end();
        ++p)
-    {
-      Named_object* var = p->var();
-      Expression* init = var->var_value()->init();
-      Block* preinit = var->var_value()->preinit();
-      Named_object* dep = gogo->var_depends_on(var->var_value());
-      if (init != NULL && dep == NULL
-	  && expression_requires(init, preinit, NULL, var))
-	go_error_at(var->location(),
-		    "initialization expression for %qs depends upon itself",
-		    var->message_name().c_str());
-    }
+    gogo->check_self_dep(p->var());
+}
+
+// Give an error if the initialization expression for VAR depends on
+// itself.  We only check if INIT is not NULL and there is no
+// dependency; when INIT is NULL, it means that PREINIT sets VAR,
+// which we will interpret as a loop.
+
+void
+Gogo::check_self_dep(Named_object* var)
+{
+  Expression* init = var->var_value()->init();
+  Block* preinit = var->var_value()->preinit();
+  Named_object* dep = this->var_depends_on(var->var_value());
+  if (init != NULL
+      && dep == NULL
+      && expression_requires(init, preinit, NULL, var))
+    go_error_at(var->location(),
+		"initialization expression for %qs depends upon itself",
+		var->message_name().c_str());
 }
 
 // Write out the global definitions.
@@ -6696,11 +6703,19 @@ Variable::get_backend_variable(Gogo* gogo, Named_object* function,
                   asm_name.append(n);
                 }
 	      asm_name = go_encode_id(asm_name);
+
+	      bool is_hidden = Gogo::is_hidden_name(name);
+	      // Hack to export runtime.writeBarrier.  FIXME.
+	      // This is because go:linkname doesn't work on variables.
+	      if (gogo->compiling_runtime()
+		  && var_name == "runtime.writeBarrier")
+		is_hidden = false;
+
 	      bvar = backend->global_variable(var_name,
 					      asm_name,
 					      btype,
 					      package != NULL,
-					      Gogo::is_hidden_name(name),
+					      is_hidden,
 					      this->in_unique_section_,
 					      this->location_);
 	    }

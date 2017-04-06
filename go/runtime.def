@@ -315,6 +315,15 @@ DEF_GO_RUNTIME(IFACEEFACEEQ, "runtime.ifaceefaceeq", P2(IFACE, EFACE),
 	       R1(BOOL))
 
 
+// Set *dst = src where dst is a pointer to a pointer and src is a pointer.
+DEF_GO_RUNTIME(WRITEBARRIERPTR, "runtime.writebarrierptr",
+	       P2(POINTER, POINTER), R0())
+
+// Set *dst = *src for an arbitrary type.
+DEF_GO_RUNTIME(TYPEDMEMMOVE, "runtime.typedmemmove",
+	       P3(TYPE, POINTER, POINTER), R0())
+
+
 // Lock the printer (for print/println).
 DEF_GO_RUNTIME(PRINTLOCK, "runtime.printlock", P0(), R0())
 
