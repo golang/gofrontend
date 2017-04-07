@@ -11085,15 +11085,27 @@ Array_index_expression::do_get_backend(Translate_context* context)
 						     bad_index, loc);
     }
 
-  Expression* valptr = array_type->get_value_pointer(gogo, this->array_);
-  Bexpression* val = valptr->get_backend(context);
-  val = gogo->backend()->pointer_offset_expression(val, start, loc);
-
   Bexpression* result_length =
     gogo->backend()->binary_expression(OPERATOR_MINUS, end, start, loc);
 
   Bexpression* result_capacity =
     gogo->backend()->binary_expression(OPERATOR_MINUS, cap_arg, start, loc);
+
+  // If the new capacity is zero, don't change val.  Otherwise we can
+  // get a pointer to the next object in memory, keeping it live
+  // unnecessarily.  When the capacity is zero, the actual pointer
+  // value doesn't matter.
+  Bexpression* zero =
+    Expression::make_integer_ul(0, int_type, loc)->get_backend(context);
+  Bexpression* cond =
+    gogo->backend()->binary_expression(OPERATOR_EQEQ, result_capacity, zero,
+				       loc);
+  Bexpression* offset = gogo->backend()->conditional_expression(bfn, int_btype,
+								cond, zero,
+								start, loc);
+  Expression* valptr = array_type->get_value_pointer(gogo, this->array_);
+  Bexpression* val = valptr->get_backend(context);
+  val = gogo->backend()->pointer_offset_expression(val, offset, loc);
 
   Btype* struct_btype = this->type()->get_backend(gogo);
   std::vector<Bexpression*> init;
