@@ -1219,6 +1219,11 @@ class Type
   bool
   type_descriptor_defined_elsewhere(Named_type* name, const Package** package);
 
+  // Make a composite literal for the garbage collection program for
+  // this type.
+  Expression*
+  gcprog_constructor(Gogo*, int64_t ptrsize, int64_t ptrdata);
+
   // Build the hash and equality type functions for a type which needs
   // specific functions.
   void

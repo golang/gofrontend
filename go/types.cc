@@ -2825,6 +2825,401 @@ Type::gc_ptrmask_var(Gogo* gogo, int64_t ptrsize, int64_t ptrdata)
   return ret;
 }
 
+// A GCProg is used to build a program for the garbage collector.
+// This is used for types with a lot of pointer data, to reduce the
+// size of the data in the compiled program.  The program is expanded
+// at runtime.  For the format, see runGCProg in libgo/go/runtime/mbitmap.go.
+
+class GCProg
+{
+ public:
+  GCProg()
+    : bytes_(), index_(0), nb_(0)
+  {}
+
+  // The number of bits described so far.
+  int64_t
+  bit_index() const
+  { return this->index_; }
+
+  void
+  set_from(Gogo*, Type*, int64_t ptrsize, int64_t offset);
+
+  void
+  end();
+
+  Expression*
+  constructor(Gogo* gogo) const;
+
+ private:
+  void
+  ptr(int64_t);
+
+  bool
+  should_repeat(int64_t, int64_t);
+
+  void
+  repeat(int64_t, int64_t);
+
+  void
+  zero_until(int64_t);
+
+  void
+  lit(unsigned char);
+
+  void
+  varint(int64_t);
+
+  void
+  flushlit();
+
+  // Add a byte to the program.
+  void
+  byte(unsigned char x)
+  { this->bytes_.push_back(x); }
+
+  // The maximum number of bytes of literal bits.
+  static const int max_literal = 127;
+
+  // The program.
+  std::vector<unsigned char> bytes_;
+  // The index of the last bit described.
+  int64_t index_;
+  // The current set of literal bits.
+  unsigned char b_[max_literal];
+  // The current number of literal bits.
+  int nb_;
+};
+
+// Set data in gcprog starting from OFFSET based on TYPE.  OFFSET
+// counts in bytes.  PTRSIZE is the size of a pointer on the target
+// system.
+
+void
+GCProg::set_from(Gogo* gogo, Type* type, int64_t ptrsize, int64_t offset)
+{
+  switch (type->base()->classification())
+    {
+    default:
+    case Type::TYPE_NIL:
+    case Type::TYPE_CALL_MULTIPLE_RESULT:
+    case Type::TYPE_NAMED:
+    case Type::TYPE_FORWARD:
+      go_unreachable();
+
+    case Type::TYPE_ERROR:
+    case Type::TYPE_VOID:
+    case Type::TYPE_BOOLEAN:
+    case Type::TYPE_INTEGER:
+    case Type::TYPE_FLOAT:
+    case Type::TYPE_COMPLEX:
+    case Type::TYPE_SINK:
+      break;
+
+    case Type::TYPE_FUNCTION:
+    case Type::TYPE_POINTER:
+    case Type::TYPE_MAP:
+    case Type::TYPE_CHANNEL:
+      // These types are all a single pointer.
+      go_assert((offset % ptrsize) == 0);
+      this->ptr(offset / ptrsize);
+      break;
+
+    case Type::TYPE_STRING:
+      // A string starts with a single pointer.
+      go_assert((offset % ptrsize) == 0);
+      this->ptr(offset / ptrsize);
+      break;
+
+    case Type::TYPE_INTERFACE:
+      // An interface is two pointers.
+      go_assert((offset % ptrsize) == 0);
+      this->ptr(offset / ptrsize);
+      this->ptr((offset / ptrsize) + 1);
+      break;
+
+    case Type::TYPE_STRUCT:
+      {
+	if (!type->has_pointer())
+	  return;
+
+	const Struct_field_list* fields = type->struct_type()->fields();
+	int64_t soffset = 0;
+	for (Struct_field_list::const_iterator pf = fields->begin();
+	     pf != fields->end();
+	     ++pf)
+	  {
+	    int64_t field_align;
+	    if (!pf->type()->backend_type_field_align(gogo, &field_align))
+	      {
+		go_assert(saw_errors());
+		return;
+	      }
+	    soffset = (soffset + (field_align - 1)) &~ (field_align - 1);
+
+	    this->set_from(gogo, pf->type(), ptrsize, offset + soffset);
+
+	    int64_t field_size;
+	    if (!pf->type()->backend_type_size(gogo, &field_size))
+	      {
+		go_assert(saw_errors());
+		return;
+	      }
+	    soffset += field_size;
+	  }
+      }
+      break;
+
+    case Type::TYPE_ARRAY:
+      if (type->is_slice_type())
+	{
+	  // A slice starts with a single pointer.
+	  go_assert((offset % ptrsize) == 0);
+	  this->ptr(offset / ptrsize);
+	  break;
+	}
+      else
+	{
+	  if (!type->has_pointer())
+	    return;
+
+	  int64_t len;
+	  if (!type->array_type()->int_length(&len))
+	    {
+	      go_assert(saw_errors());
+	      return;
+	    }
+
+	  Type* element_type = type->array_type()->element_type();
+
+	  // Flatten array of array to a big array by multiplying counts.
+	  while (element_type->array_type() != NULL
+		 && !element_type->is_slice_type())
+	    {
+	      int64_t ele_len;
+	      if (!element_type->array_type()->int_length(&ele_len))
+		{
+		  go_assert(saw_errors());
+		  return;
+		}
+
+	      len *= ele_len;
+	      element_type = element_type->array_type()->element_type();
+	    }
+
+	  int64_t ele_size;
+	  if (!element_type->backend_type_size(gogo, &ele_size))
+	    {
+	      go_assert(saw_errors());
+	      return;
+	    }
+
+	  go_assert(len > 0 && ele_size > 0);
+
+	  if (!this->should_repeat(ele_size / ptrsize, len))
+	    {
+	      // Cheaper to just emit the bits.
+	      int64_t eoffset = 0;
+	      for (int64_t i = 0; i < len; i++, eoffset += ele_size)
+		this->set_from(gogo, element_type, ptrsize, offset + eoffset);
+	    }
+	  else
+	    {
+	      go_assert((offset % ptrsize) == 0);
+	      go_assert((ele_size % ptrsize) == 0);
+	      this->set_from(gogo, element_type, ptrsize, offset);
+	      this->zero_until((offset + ele_size) / ptrsize);
+	      this->repeat(ele_size / ptrsize, len - 1);
+	    }
+
+	  break;
+	}
+    }
+}
+
+// Emit a 1 into the bit stream of a GC program at the given bit index.
+
+void
+GCProg::ptr(int64_t index)
+{
+  go_assert(index >= this->index_);
+  this->zero_until(index);
+  this->lit(1);
+}
+
+// Return whether it is worthwhile to use a repeat to describe c
+// elements of n bits each, compared to just emitting c copies of the
+// n-bit description.
+
+bool
+GCProg::should_repeat(int64_t n, int64_t c)
+{
+  // Repeat if there is more than 1 item and if the total data doesn't
+  // fit into four bytes.
+  return c > 1 && c * n > 4 * 8;
+}
+
+// Emit an instruction to repeat the description of the last n words c
+// times (including the initial description, so c + 1 times in total).
+
+void
+GCProg::repeat(int64_t n, int64_t c)
+{
+  if (n == 0 || c == 0)
+    return;
+  this->flushlit();
+  if (n < 128)
+    this->byte(0x80 | static_cast<unsigned char>(n & 0x7f));
+  else
+    {
+      this->byte(0x80);
+      this->varint(n);
+    }
+  this->varint(c);
+  this->index_ += n * c;
+}
+
+// Add zeros to the bit stream up to the given index.
+
+void
+GCProg::zero_until(int64_t index)
+{
+  go_assert(index >= this->index_);
+  int64_t skip = index - this->index_;
+  if (skip == 0)
+    return;
+  if (skip < 4 * 8)
+    {
+      for (int64_t i = 0; i < skip; ++i)
+	this->lit(0);
+      return;
+    }
+  this->lit(0);
+  this->flushlit();
+  this->repeat(1, skip - 1);
+}
+
+// Add a single literal bit to the program.
+
+void
+GCProg::lit(unsigned char x)
+{
+  if (this->nb_ == GCProg::max_literal)
+    this->flushlit();
+  this->b_[this->nb_] = x;
+  ++this->nb_;
+  ++this->index_;
+}
+
+// Emit the varint encoding of x.
+
+void
+GCProg::varint(int64_t x)
+{
+  go_assert(x >= 0);
+  while (x >= 0x80)
+    {
+      this->byte(0x80 | static_cast<unsigned char>(x & 0x7f));
+      x >>= 7;
+    }
+  this->byte(static_cast<unsigned char>(x & 0x7f));
+}
+
+// Flush any pending literal bits.
+
+void
+GCProg::flushlit()
+{
+  if (this->nb_ == 0)
+    return;
+  this->byte(static_cast<unsigned char>(this->nb_));
+  unsigned char bits = 0;
+  for (int i = 0; i < this->nb_; ++i)
+    {
+      bits |= this->b_[i] << (i % 8);
+      if ((i + 1) % 8 == 0)
+	{
+	  this->byte(bits);
+	  bits = 0;
+	}
+    }
+  if (this->nb_ % 8 != 0)
+    this->byte(bits);
+  this->nb_ = 0;
+}
+
+// Mark the end of a GC program.
+
+void
+GCProg::end()
+{
+  this->flushlit();
+  this->byte(0);
+}
+
+// Return an Expression for the bytes in a GC program.
+
+Expression*
+GCProg::constructor(Gogo* gogo) const
+{
+  Location bloc = Linemap::predeclared_location();
+
+  // The first four bytes are the length of the program in target byte
+  // order.  Build a struct whose first type is uint32 to make this
+  // work.
+
+  Type* uint32_type = Type::lookup_integer_type("uint32");
+
+  Type* byte_type = gogo->lookup_global("byte")->type_value();
+  Expression* len = Expression::make_integer_ul(this->bytes_.size(), NULL,
+						bloc);
+  Array_type* at = Type::make_array_type(byte_type, len);
+
+  Struct_type* st = Type::make_builtin_struct_type(2, "len", uint32_type,
+						   "bytes", at);
+
+  Expression_list* vals = new Expression_list();
+  vals->reserve(this->bytes_.size());
+  for (std::vector<unsigned char>::const_iterator p = this->bytes_.begin();
+       p != this->bytes_.end();
+       ++p)
+    vals->push_back(Expression::make_integer_ul(*p, byte_type, bloc));
+  Expression* bytes = Expression::make_array_composite_literal(at, vals, bloc);
+
+  vals = new Expression_list();
+  vals->push_back(Expression::make_integer_ul(this->bytes_.size(), uint32_type,
+					      bloc));
+  vals->push_back(bytes);
+
+  return Expression::make_struct_composite_literal(st, vals, bloc);
+}
+
+// Return a composite literal for the garbage collection program for
+// this type.  This is only used for types that are too large to use a
+// ptrmask.
+
+Expression*
+Type::gcprog_constructor(Gogo* gogo, int64_t ptrsize, int64_t ptrdata)
+{
+  Location bloc = Linemap::predeclared_location();
+
+  GCProg prog;
+  prog.set_from(gogo, this, ptrsize, 0);
+  int64_t offset = prog.bit_index() * ptrsize;
+  prog.end();
+
+  int64_t type_size;
+  if (!this->backend_type_size(gogo, &type_size))
+    {
+      go_assert(saw_errors());
+      return Expression::make_error(bloc);
+    }
+
+  go_assert(offset >= ptrdata && offset <= type_size);
+
+  return prog.constructor(gogo);
+}
+
 // Return a composite literal for the uncommon type information for
 // this type.  UNCOMMON_STRUCT_TYPE is the type of the uncommon type
 // struct.  If name is not NULL, it is the name of the type.  If
