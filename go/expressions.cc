@@ -3311,7 +3311,18 @@ Type_conversion_expression::do_is_static_initializer() const
   if (Type::are_identical(type, expr_type, false, NULL))
     return true;
 
-  return type->is_basic_type() && expr_type->is_basic_type();
+  if (type->is_string_type() && expr_type->is_string_type())
+    return true;
+
+  if ((type->is_numeric_type()
+       || type->is_boolean_type()
+       || type->points_to() != NULL)
+      && (expr_type->is_numeric_type()
+	  || expr_type->is_boolean_type()
+	  || expr_type->points_to() != NULL))
+    return true;
+
+  return false;
 }
 
 // Return the constant numeric value if there is one.
@@ -3570,7 +3581,18 @@ Unsafe_type_conversion_expression::do_is_static_initializer() const
   if (Type::are_convertible(type, expr_type, NULL))
     return true;
 
-  return type->is_basic_type() && expr_type->is_basic_type();
+  if (type->is_string_type() && expr_type->is_string_type())
+    return true;
+
+  if ((type->is_numeric_type()
+       || type->is_boolean_type()
+       || type->points_to() != NULL)
+      && (expr_type->is_numeric_type()
+	  || expr_type->is_boolean_type()
+	  || expr_type->points_to() != NULL))
+    return true;
+
+  return false;
 }
 
 // Convert to backend representation.
