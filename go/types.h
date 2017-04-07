@@ -944,6 +944,10 @@ class Type
   Bexpression*
   gc_symbol_pointer(Gogo* gogo);
 
+  // Return a ptrmask variable for this type.
+  Bvariable*
+  gc_ptrmask_var(Gogo*, int64_t ptrsize, int64_t ptrdata);
+
   // Return the type reflection string for this type.
   std::string
   reflection(Gogo*) const;
@@ -1193,6 +1197,11 @@ class Type
 			     Type_identical) GC_symbol_vars;
 
   static GC_symbol_vars gc_symbol_vars;
+
+  // Map ptrmask symbol names to the ptrmask variable.
+  typedef Unordered_map(std::string, Bvariable*) GC_gcbits_vars;
+
+  static GC_gcbits_vars gc_gcbits_vars;
 
   // Build the GC symbol for this type.
   void
@@ -2518,6 +2527,12 @@ class Array_type : public Type
   Expression*
   length() const
   { return this->length_; }
+
+  // Store the length as an int64_t into *PLEN.  Return false if the
+  // length can not be determined.  This will assert if called for a
+  // slice.
+  bool
+  int_length(int64_t* plen);
 
   // Whether this type is identical with T.
   bool

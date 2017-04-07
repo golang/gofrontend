@@ -16020,6 +16020,73 @@ Numeric_constant::mpfr_to_unsigned_long(const mpfr_t fval,
   return ret;
 }
 
+// Express value as memory size if possible.
+
+bool
+Numeric_constant::to_memory_size(int64_t* val) const
+{
+  switch (this->classification_)
+    {
+    case NC_INT:
+    case NC_RUNE:
+      return this->mpz_to_memory_size(this->u_.int_val, val);
+    case NC_FLOAT:
+      return this->mpfr_to_memory_size(this->u_.float_val, val);
+    case NC_COMPLEX:
+      if (!mpfr_zero_p(mpc_imagref(this->u_.complex_val)))
+	return false;
+      return this->mpfr_to_memory_size(mpc_realref(this->u_.complex_val), val);
+    default:
+      go_unreachable();
+    }
+}
+
+// Express integer as memory size if possible.
+
+bool
+Numeric_constant::mpz_to_memory_size(const mpz_t ival, int64_t* val) const
+{
+  if (mpz_sgn(ival) < 0)
+    return false;
+  if (mpz_fits_slong_p(ival))
+    {
+      *val = static_cast<int64_t>(mpz_get_si(ival));
+      return true;
+    }
+
+  // Test >= 64, not > 64, because an int64_t can hold 63 bits of a
+  // positive value.
+  if (mpz_sizeinbase(ival, 2) >= 64)
+    return false;
+
+  mpz_t q, r;
+  mpz_init(q);
+  mpz_init(r);
+  mpz_tdiv_q_2exp(q, ival, 32);
+  mpz_tdiv_r_2exp(r, ival, 32);
+  go_assert(mpz_fits_ulong_p(q) && mpz_fits_ulong_p(r));
+  *val = ((static_cast<int64_t>(mpz_get_ui(q)) << 32)
+	  + static_cast<int64_t>(mpz_get_ui(r)));
+  mpz_clear(r);
+  mpz_clear(q);
+  return true;
+}
+
+// Express floating point value as memory size if possible.
+
+bool
+Numeric_constant::mpfr_to_memory_size(const mpfr_t fval, int64_t* val) const
+{
+  if (!mpfr_integer_p(fval))
+    return false;
+  mpz_t ival;
+  mpz_init(ival);
+  mpfr_get_z(ival, fval, GMP_RNDN);
+  bool ret = this->mpz_to_memory_size(ival, val);
+  mpz_clear(ival);
+  return ret;
+}
+
 // Convert value to integer if possible.
 
 bool

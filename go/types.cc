@@ -2586,6 +2586,245 @@ Type::advance_gc_offset(Expression** offset)
   *offset = Expression::make_binary(OPERATOR_PLUS, *offset, width, bloc);
 }
 
+// A simple class used to build a GC ptrmask for a type.
+
+class Ptrmask
+{
+ public:
+  Ptrmask(size_t count)
+    : bits_((count + 7) / 8, 0)
+  {}
+
+  void
+  set_from(Gogo*, Type*, int64_t ptrsize, int64_t offset);
+
+  std::string
+  symname() const;
+
+  Expression*
+  constructor(Gogo* gogo) const;
+
+ private:
+  void
+  set(size_t index)
+  { this->bits_.at(index / 8) |= 1 << (index % 8); }
+
+  // The actual bits.
+  std::vector<unsigned char> bits_;
+};
+
+// Set bits in ptrmask starting from OFFSET based on TYPE.  OFFSET
+// counts in bytes.  PTRSIZE is the size of a pointer on the target
+// system.
+
+void
+Ptrmask::set_from(Gogo* gogo, Type* type, int64_t ptrsize, int64_t offset)
+{
+  switch (type->base()->classification())
+    {
+    default:
+    case Type::TYPE_NIL:
+    case Type::TYPE_CALL_MULTIPLE_RESULT:
+    case Type::TYPE_NAMED:
+    case Type::TYPE_FORWARD:
+      go_unreachable();
+
+    case Type::TYPE_ERROR:
+    case Type::TYPE_VOID:
+    case Type::TYPE_BOOLEAN:
+    case Type::TYPE_INTEGER:
+    case Type::TYPE_FLOAT:
+    case Type::TYPE_COMPLEX:
+    case Type::TYPE_SINK:
+      break;
+
+    case Type::TYPE_FUNCTION:
+    case Type::TYPE_POINTER:
+    case Type::TYPE_MAP:
+    case Type::TYPE_CHANNEL:
+      // These types are all a single pointer.
+      go_assert((offset % ptrsize) == 0);
+      this->set(offset / ptrsize);
+      break;
+
+    case Type::TYPE_STRING:
+      // A string starts with a single pointer.
+      go_assert((offset % ptrsize) == 0);
+      this->set(offset / ptrsize);
+      break;
+
+    case Type::TYPE_INTERFACE:
+      // An interface is two pointers.
+      go_assert((offset % ptrsize) == 0);
+      this->set(offset / ptrsize);
+      this->set((offset / ptrsize) + 1);
+      break;
+
+    case Type::TYPE_STRUCT:
+      {
+	if (!type->has_pointer())
+	  return;
+
+	const Struct_field_list* fields = type->struct_type()->fields();
+	int64_t soffset = 0;
+	for (Struct_field_list::const_iterator pf = fields->begin();
+	     pf != fields->end();
+	     ++pf)
+	  {
+	    int64_t field_align;
+	    if (!pf->type()->backend_type_field_align(gogo, &field_align))
+	      {
+		go_assert(saw_errors());
+		return;
+	      }
+	    soffset = (soffset + (field_align - 1)) &~ (field_align - 1);
+
+	    this->set_from(gogo, pf->type(), ptrsize, offset + soffset);
+
+	    int64_t field_size;
+	    if (!pf->type()->backend_type_size(gogo, &field_size))
+	      {
+		go_assert(saw_errors());
+		return;
+	      }
+	    soffset += field_size;
+	  }
+      }
+      break;
+
+    case Type::TYPE_ARRAY:
+      if (type->is_slice_type())
+	{
+	  // A slice starts with a single pointer.
+	  go_assert((offset % ptrsize) == 0);
+	  this->set(offset / ptrsize);
+	  break;
+	}
+      else
+	{
+	  if (!type->has_pointer())
+	    return;
+
+	  int64_t len;
+	  if (!type->array_type()->int_length(&len))
+	    {
+	      go_assert(saw_errors());
+	      return;
+	    }
+
+	  Type* element_type = type->array_type()->element_type();
+	  int64_t ele_size;
+	  if (!element_type->backend_type_size(gogo, &ele_size))
+	    {
+	      go_assert(saw_errors());
+	      return;
+	    }
+
+	  int64_t eoffset = 0;
+	  for (int64_t i = 0; i < len; i++, eoffset += ele_size)
+	    this->set_from(gogo, element_type, ptrsize, offset + eoffset);
+	  break;
+	}
+    }
+}
+
+// Return a symbol name for this ptrmask.  This is used to coalesce
+// identical ptrmasks, which are common.  The symbol name must use
+// only characters that are valid in symbols.  It's nice if it's
+// short.  We convert it to a base64 string.
+
+std::string
+Ptrmask::symname() const
+{
+  const char chars[65] =
+    "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_.";
+  go_assert(chars[64] == '\0');
+  std::string ret;
+  unsigned int b = 0;
+  int remaining = 0;
+  for (std::vector<unsigned char>::const_iterator p = this->bits_.begin();
+       p != this->bits_.end();
+       ++p)
+    {
+      b |= *p << remaining;
+      remaining += 8;
+      while (remaining >= 6)
+	{
+	  ret += chars[b & 0x3f];
+	  b >>= 6;
+	  remaining -= 6;
+	}
+    }
+  while (remaining > 0)
+    {
+      ret += chars[b & 0x3f];
+      b >>= 6;
+      remaining -= 6;
+    }
+  return ret;
+}
+
+// Return a constructor for this ptrmask.  This will be used to
+// initialize the runtime ptrmask value.
+
+Expression*
+Ptrmask::constructor(Gogo* gogo) const
+{
+  Location bloc = Linemap::predeclared_location();
+  Type* byte_type = gogo->lookup_global("byte")->type_value();
+  Expression* len = Expression::make_integer_ul(this->bits_.size(), NULL,
+						bloc);
+  Array_type* at = Type::make_array_type(byte_type, len);
+  Expression_list* vals = new Expression_list();
+  vals->reserve(this->bits_.size());
+  for (std::vector<unsigned char>::const_iterator p = this->bits_.begin();
+       p != this->bits_.end();
+       ++p)
+    vals->push_back(Expression::make_integer_ul(*p, byte_type, bloc));
+  return Expression::make_array_composite_literal(at, vals, bloc);
+}
+
+// The hash table mapping a ptrmask symbol name to the ptrmask variable.
+Type::GC_gcbits_vars Type::gc_gcbits_vars;
+
+// Return a ptrmask variable for a type.  For a type descriptor this
+// is only used for variables that are small enough to not need a
+// gcprog, but for a global variable this is used for a variable of
+// any size.  PTRDATA is the number of bytes of the type that contain
+// pointer data.  PTRSIZE is the size of a pointer on the target
+// system.
+
+Bvariable*
+Type::gc_ptrmask_var(Gogo* gogo, int64_t ptrsize, int64_t ptrdata)
+{
+  Ptrmask ptrmask(ptrdata / ptrsize);
+  ptrmask.set_from(gogo, this, ptrsize, 0);
+  std::string sym_name = "runtime.gcbits." + ptrmask.symname();
+  Bvariable* bvnull = NULL;
+  std::pair<GC_gcbits_vars::iterator, bool> ins =
+    Type::gc_gcbits_vars.insert(std::make_pair(sym_name, bvnull));
+  if (!ins.second)
+    {
+      // We've already built a GC symbol for this set of gcbits.
+      return ins.first->second;
+    }
+
+  Expression* val = ptrmask.constructor(gogo);
+  Translate_context context(gogo, NULL, NULL, NULL);
+  context.set_is_const();
+  Bexpression* bval = val->get_backend(&context);
+
+  std::string asm_name(go_selectively_encode_id(sym_name));
+  Btype *btype = val->type()->get_backend(gogo);
+  Bvariable* ret = gogo->backend()->implicit_variable(sym_name, asm_name,
+						      btype, false, true,
+						      true, 0);
+  gogo->backend()->implicit_variable_set_init(ret, sym_name, btype, false,
+					      true, true, bval);
+  ins.first->second = ret;
+  return ret;
+}
+
 // Return a composite literal for the uncommon type information for
 // this type.  UNCOMMON_STRUCT_TYPE is the type of the uncommon type
 // struct.  If name is not NULL, it is the name of the type.  If
@@ -6364,6 +6603,20 @@ Type::make_struct_type(Struct_field_list* fields,
 }
 
 // Class Array_type.
+
+// Store the length of an array as an int64_t into *PLEN.  Return
+// false if the length can not be determined.  This will assert if
+// called for a slice.
+
+bool
+Array_type::int_length(int64_t* plen)
+{
+  go_assert(this->length_ != NULL);
+  Numeric_constant nc;
+  if (!this->length_->numeric_constant_value(&nc))
+    return false;
+  return nc.to_memory_size(plen);
+}
 
 // Whether two array types are identical.
 
