@@ -1085,8 +1085,13 @@ BUILDPACKAGE = \
 
 
 # How to build a .gox file from a .lo file.
+# Matching .o file can either be in the same directory as the .lo (non-PIC
+# object) or in the .libs directory (PIC object).
 BUILDGOX = \
-	f=`echo $< | sed -e 's/.lo$$/.o/'`; \
+	f="$(basename $<).o"; \
+	if test ! -f $$f; then \
+	  f="$(basename $(<D)/.libs/$(<F)).o"; \
+	fi; \
 	$(OBJCOPY) -j .go_export $$f $@.tmp; \
 	$(SHELL) $(srcdir)/mvifdiff.sh $@.tmp `echo $@ | sed -e 's/s-gox/gox/'`
 
