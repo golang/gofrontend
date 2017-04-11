@@ -2,14 +2,13 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build aix linux netbsd openbsd dragonfly nacl
+// +build linux netbsd openbsd dragonfly nacl
 
 package os
 
 import (
 	"errors"
 	"runtime"
-	"syscall"
 )
 
 // We query the executable path at init time to avoid the problem of
@@ -28,8 +27,6 @@ var executablePath, executablePathErr = func() (string, error) {
 		procfn = "/proc/curproc/file"
 	case "dragonfly":
 		procfn = "/proc/curproc/file"
-	case "aix":
-		procfn = "/proc/" + itoa(syscall.Getpid()) + "/object/a.out"
 	}
 	return Readlink(procfn)
 }()
