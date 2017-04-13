@@ -413,7 +413,15 @@ class Expression
       TYPE_INFO_ALIGNMENT,
       // The required alignment of a value of the type when used as a
       // field in a struct.
-      TYPE_INFO_FIELD_ALIGNMENT
+      TYPE_INFO_FIELD_ALIGNMENT,
+      // The size of the prefix of a value of the type that contains
+      // all the pointers.  This is 0 for a type that contains no
+      // pointers.  It is always <= TYPE_INFO_SIZE.
+      TYPE_INFO_BACKEND_PTRDATA,
+      // Like TYPE_INFO_BACKEND_PTRDATA, but the ptrdata value that we
+      // want to store in a type descriptor.  They are the same for
+      // most types, but can differ for a type that uses a gcprog.
+      TYPE_INFO_DESCRIPTOR_PTRDATA
     };
 
   static Expression*

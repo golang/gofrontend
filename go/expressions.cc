@@ -14661,6 +14661,8 @@ Type_info_expression::do_type()
   switch (this->type_info_)
     {
     case TYPE_INFO_SIZE:
+    case TYPE_INFO_BACKEND_PTRDATA:
+    case TYPE_INFO_DESCRIPTOR_PTRDATA:
       return Type::lookup_integer_type("uintptr");
     case TYPE_INFO_ALIGNMENT:
     case TYPE_INFO_FIELD_ALIGNMENT:
@@ -14689,6 +14691,12 @@ Type_info_expression::do_get_backend(Translate_context* context)
     case TYPE_INFO_FIELD_ALIGNMENT:
       ok = this->type_->backend_type_field_align(gogo, &val);
       break;
+    case TYPE_INFO_BACKEND_PTRDATA:
+      ok = this->type_->backend_type_ptrdata(gogo, &val);
+      break;
+    case TYPE_INFO_DESCRIPTOR_PTRDATA:
+      ok = this->type_->descriptor_ptrdata(gogo, &val);
+      break;
     default:
       go_unreachable();
     }
@@ -14715,6 +14723,8 @@ Type_info_expression::do_dump_expression(
     (this->type_info_ == TYPE_INFO_ALIGNMENT ? "alignment" 
     : this->type_info_ == TYPE_INFO_FIELD_ALIGNMENT ? "field alignment"
     : this->type_info_ == TYPE_INFO_SIZE ? "size "
+    : this->type_info_ == TYPE_INFO_BACKEND_PTRDATA ? "backend_ptrdata"
+    : this->type_info_ == TYPE_INFO_DESCRIPTOR_PTRDATA ? "descriptor_ptrdata"
     : "unknown");
   ast_dump_context->ostream() << ")";
 }

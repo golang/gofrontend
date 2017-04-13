@@ -944,6 +944,11 @@ class Type
   Bexpression*
   gc_symbol_pointer(Gogo* gogo);
 
+  // Return whether this type needs a garbage collection program.
+  // Sets *PTRSIZE and *PTRDATA.
+  bool
+  needs_gcprog(Gogo*, int64_t* ptrsize, int64_t* ptrdata);
+
   // Return a ptrmask variable for this type.
   Bvariable*
   gc_ptrmask_var(Gogo*, int64_t ptrsize, int64_t ptrdata);
@@ -974,6 +979,20 @@ class Type
   // true.  Otherwise, return false.
   bool
   backend_type_field_align(Gogo*, int64_t* palign);
+
+  // Determine the ptrdata size for the backend version of this type:
+  // the length of the prefix of the type that can contain a pointer
+  // value.  If it can be determined, set *PPTRDATA to the value in
+  // bytes and return true.  Otherwise, return false.
+  bool
+  backend_type_ptrdata(Gogo*, int64_t* pptrdata);
+
+  // Determine the ptrdata size that we are going to set in the type
+  // descriptor.  This is normally the same as backend_type_ptrdata,
+  // but differs if we use a gcprog for an array.  The arguments and
+  // results are as for backend_type_ptrdata.
+  bool
+  descriptor_ptrdata(Gogo*, int64_t* pptrdata);
 
   // Whether the backend size is known.
   bool

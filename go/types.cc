@@ -2418,6 +2418,12 @@ Type::type_descriptor_constructor(Gogo* gogo, int runtime_type_kind,
   return Expression::make_struct_composite_literal(td_type, vals, bloc);
 }
 
+// The maximum length of a GC ptrmask bitmap.  This corresponds to the
+// length used by the gc toolchain, and also appears in
+// libgo/go/reflect/type.go.
+
+static const int64_t max_ptrmask_bytes = 2048;
+
 // Return a pointer to the Garbage Collection information for this type.
 
 Bexpression*
@@ -2584,6 +2590,26 @@ Type::advance_gc_offset(Expression** offset)
   Expression* width =
     Expression::make_type_info(this, Expression::TYPE_INFO_SIZE);
   *offset = Expression::make_binary(OPERATOR_PLUS, *offset, width, bloc);
+}
+
+// Return whether this type needs a GC program, and set *PTRDATA to
+// the size of the pointer data in bytes and *PTRSIZE to the size of a
+// pointer.
+
+bool
+Type::needs_gcprog(Gogo* gogo, int64_t* ptrsize, int64_t* ptrdata)
+{
+  if (!this->backend_type_ptrdata(gogo, ptrdata))
+    {
+      go_assert(saw_errors());
+      return false;
+    }
+
+  Type* voidptr = Type::make_pointer_type(Type::make_void_type());
+  if (!voidptr->backend_type_size(gogo, ptrsize))
+    go_unreachable();
+
+  return *ptrdata / *ptrsize > max_ptrmask_bytes;
 }
 
 // A simple class used to build a GC ptrmask for a type.
@@ -3582,6 +3608,164 @@ Type::backend_type_field_align(Gogo* gogo, int64_t *palign)
     return false;
   Btype* bt = this->get_backend_placeholder(gogo);
   *palign = gogo->backend()->type_field_alignment(bt);
+  return true;
+}
+
+// Get the ptrdata value for a type.  This is the size of the prefix
+// of the type that contains all pointers.  Store the ptrdata in
+// *PPTRDATA and return whether we found it.
+
+bool
+Type::backend_type_ptrdata(Gogo* gogo, int64_t* pptrdata)
+{
+  *pptrdata = 0;
+
+  if (!this->has_pointer())
+    return true;
+
+  if (!this->is_backend_type_size_known(gogo))
+    return false;
+
+  switch (this->classification_)
+    {
+    case TYPE_ERROR:
+      return true;
+
+    case TYPE_FUNCTION:
+    case TYPE_POINTER:
+    case TYPE_MAP:
+    case TYPE_CHANNEL:
+      // These types are nothing but a pointer.
+      return this->backend_type_size(gogo, pptrdata);
+
+    case TYPE_INTERFACE:
+      // An interface is a struct of two pointers.
+      return this->backend_type_size(gogo, pptrdata);
+
+    case TYPE_STRING:
+      {
+	// A string is a struct whose first field is a pointer, and
+	// whose second field is not.
+	Type* uint8_type = Type::lookup_integer_type("uint8");
+	Type* ptr = Type::make_pointer_type(uint8_type);
+	return ptr->backend_type_size(gogo, pptrdata);
+      }
+
+    case TYPE_NAMED:
+    case TYPE_FORWARD:
+      return this->base()->backend_type_ptrdata(gogo, pptrdata);
+
+    case TYPE_STRUCT:
+      {
+	const Struct_field_list* fields = this->struct_type()->fields();
+	int64_t offset = 0;
+	const Struct_field *ptr = NULL;
+	int64_t ptr_offset = 0;
+	for (Struct_field_list::const_iterator pf = fields->begin();
+	     pf != fields->end();
+	     ++pf)
+	  {
+	    int64_t field_align;
+	    if (!pf->type()->backend_type_field_align(gogo, &field_align))
+	      return false;
+	    offset = (offset + (field_align - 1)) &~ (field_align - 1);
+
+	    if (pf->type()->has_pointer())
+	      {
+		ptr = &*pf;
+		ptr_offset = offset;
+	      }
+
+	    int64_t field_size;
+	    if (!pf->type()->backend_type_size(gogo, &field_size))
+	      return false;
+	    offset += field_size;
+	  }
+
+	if (ptr != NULL)
+	  {
+	    int64_t ptr_ptrdata;
+	    if (!ptr->type()->backend_type_ptrdata(gogo, &ptr_ptrdata))
+	      return false;
+	    *pptrdata = ptr_offset + ptr_ptrdata;
+	  }
+	return true;
+      }
+
+    case TYPE_ARRAY:
+      if (this->is_slice_type())
+	{
+	  // A slice is a struct whose first field is a pointer, and
+	  // whose remaining fields are not.
+	  Type* element_type = this->array_type()->element_type();
+	  Type* ptr = Type::make_pointer_type(element_type);
+	  return ptr->backend_type_size(gogo, pptrdata);
+	}
+      else
+	{
+	  Numeric_constant nc;
+	  if (!this->array_type()->length()->numeric_constant_value(&nc))
+	    return false;
+	  int64_t len;
+	  if (!nc.to_memory_size(&len))
+	    return false;
+
+	  Type* element_type = this->array_type()->element_type();
+	  int64_t ele_size;
+	  int64_t ele_ptrdata;
+	  if (!element_type->backend_type_size(gogo, &ele_size)
+	      || !element_type->backend_type_ptrdata(gogo, &ele_ptrdata))
+	    return false;
+	  go_assert(ele_size > 0 && ele_ptrdata > 0);
+
+	  *pptrdata = (len - 1) * ele_size + ele_ptrdata;
+	  return true;
+	}
+
+    default:
+    case TYPE_VOID:
+    case TYPE_BOOLEAN:
+    case TYPE_INTEGER:
+    case TYPE_FLOAT:
+    case TYPE_COMPLEX:
+    case TYPE_SINK:
+    case TYPE_NIL:
+    case TYPE_CALL_MULTIPLE_RESULT:
+      go_unreachable();
+    }
+}
+
+// Get the ptrdata value to store in a type descriptor.  This is
+// normally the same as backend_type_ptrdata, but for a type that is
+// large enough to use a gcprog we may need to store a different value
+// if it ends with an array.  If the gcprog uses a repeat descriptor
+// for the array, and if the array element ends with non-pointer data,
+// then the gcprog will produce a value that describes the complete
+// array where the backend ptrdata will omit the non-pointer elements
+// of the final array element.  This is a subtle difference but the
+// run time code checks it to verify that it has expanded a gcprog as
+// expected.
+
+bool
+Type::descriptor_ptrdata(Gogo* gogo, int64_t* pptrdata)
+{
+  int64_t backend_ptrdata;
+  if (!this->backend_type_ptrdata(gogo, &backend_ptrdata))
+    return false;
+
+  int64_t ptrsize;
+  if (!this->needs_gcprog(gogo, &ptrsize, &backend_ptrdata))
+    {
+      *pptrdata = backend_ptrdata;
+      return true;
+    }
+
+  GCProg prog;
+  prog.set_from(gogo, this, ptrsize, 0);
+  int64_t offset = prog.bit_index() * ptrsize;
+
+  go_assert(offset >= backend_ptrdata);
+  *pptrdata = offset;
   return true;
 }
 
