@@ -131,7 +131,7 @@ func c128hash(p unsafe.Pointer, h uintptr) uintptr {
 	return f64hash(unsafe.Pointer(&x[1]), f64hash(unsafe.Pointer(&x[0]), h))
 }
 
-func interhash(p unsafe.Pointer, h uintptr, size uintptr) uintptr {
+func interhash(p unsafe.Pointer, h uintptr) uintptr {
 	a := (*iface)(p)
 	tab := a.tab
 	if tab == nil {
@@ -199,10 +199,10 @@ func c128equal(p, q unsafe.Pointer) bool {
 func strequal(p, q unsafe.Pointer) bool {
 	return *(*string)(p) == *(*string)(q)
 }
-func interequal(p, q unsafe.Pointer, size uintptr) bool {
+func interequal(p, q unsafe.Pointer) bool {
 	return ifaceeq(*(*iface)(p), *(*iface)(q))
 }
-func nilinterequal(p, q unsafe.Pointer, size uintptr) bool {
+func nilinterequal(p, q unsafe.Pointer) bool {
 	return efaceeq(*(*eface)(p), *(*eface)(q))
 }
 func efaceeq(x, y eface) bool {
