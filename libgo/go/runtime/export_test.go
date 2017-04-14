@@ -26,10 +26,9 @@ import (
 var Entersyscall = entersyscall
 var Exitsyscall = exitsyscall
 var LockedOSThread = lockedOSThread
+var Xadduintptr = atomic.Xadduintptr
 
-// var Xadduintptr = xadduintptr
-
-// var FuncPC = funcPC
+var FuncPC = funcPC
 
 var Fastlog2 = fastlog2
 
@@ -150,12 +149,12 @@ func RunSchedLocalQueueEmptyTest(iters int) {
 	}
 }
 
-//var StringHash = stringHash
-//var BytesHash = bytesHash
-//var Int32Hash = int32Hash
-//var Int64Hash = int64Hash
-//var EfaceHash = efaceHash
-//var IfaceHash = ifaceHash
+var StringHash = stringHash
+var BytesHash = bytesHash
+var Int32Hash = int32Hash
+var Int64Hash = int64Hash
+var EfaceHash = efaceHash
+var IfaceHash = ifaceHash
 
 func MemclrBytes(b []byte) {
 	s := (*slice)(unsafe.Pointer(&b))
@@ -225,10 +224,10 @@ func SetTracebackEnv(level string) {
 	traceback_env = traceback_cache
 }
 
-/*
 var ReadUnaligned32 = readUnaligned32
 var ReadUnaligned64 = readUnaligned64
 
+/*
 func CountPagesInUse() (pagesInUse, counted uintptr) {
 	stopTheWorld("CountPagesInUse")
 

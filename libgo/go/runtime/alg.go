@@ -361,6 +361,34 @@ var _ = nilinterequal
 var _ = pointerhash
 var _ = pointerequal
 
+// Testing adapters for hash quality tests (see hash_test.go)
+func stringHash(s string, seed uintptr) uintptr {
+	return strhash(noescape(unsafe.Pointer(&s)), seed)
+}
+
+func bytesHash(b []byte, seed uintptr) uintptr {
+	s := (*slice)(unsafe.Pointer(&b))
+	return memhash(s.array, seed, uintptr(s.len))
+}
+
+func int32Hash(i uint32, seed uintptr) uintptr {
+	return memhash32(noescape(unsafe.Pointer(&i)), seed)
+}
+
+func int64Hash(i uint64, seed uintptr) uintptr {
+	return memhash64(noescape(unsafe.Pointer(&i)), seed)
+}
+
+func efaceHash(i interface{}, seed uintptr) uintptr {
+	return nilinterhash(noescape(unsafe.Pointer(&i)), seed)
+}
+
+func ifaceHash(i interface {
+	F()
+}, seed uintptr) uintptr {
+	return interhash(noescape(unsafe.Pointer(&i)), seed)
+}
+
 const hashRandomBytes = sys.PtrSize / 4 * 64
 
 // used in asm_{386,amd64}.s to seed the hash function
