@@ -2622,10 +2622,7 @@ class Array_type : public Type
   do_verify();
 
   bool
-  do_has_pointer() const
-  {
-    return this->length_ == NULL || this->element_type_->has_pointer();
-  }
+  do_has_pointer() const;
 
   bool
   do_compare_is_identity(Gogo*);

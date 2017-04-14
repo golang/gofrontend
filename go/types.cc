@@ -7341,6 +7341,38 @@ Array_type::do_verify()
   return true;
 }
 
+// Whether the type contains pointers.  This is always true for a
+// slice.  For an array it is true if the element type has pointers
+// and the length is greater than zero.
+
+bool
+Array_type::do_has_pointer() const
+{
+  if (this->length_ == NULL)
+    return true;
+  if (!this->element_type_->has_pointer())
+    return false;
+
+  Numeric_constant nc;
+  if (!this->length_->numeric_constant_value(&nc))
+    {
+      // Error reported elsewhere.
+      return false;
+    }
+
+  unsigned long val;
+  switch (nc.to_unsigned_long(&val))
+    {
+    case Numeric_constant::NC_UL_VALID:
+      return val > 0;
+    case Numeric_constant::NC_UL_BIG:
+      return true;
+    default:
+      // Error reported elsewhere.
+      return false;
+    }
+}
+
 // Whether we can use memcmp to compare this array.
 
 bool
