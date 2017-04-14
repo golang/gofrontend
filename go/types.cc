@@ -6908,6 +6908,7 @@ Struct_type::can_write_to_c_header(
   const Struct_field_list* fields = this->fields_;
   if (fields == NULL || fields->empty())
     return false;
+  int sinks = 0;
   for (Struct_field_list::const_iterator p = fields->begin();
        p != fields->end();
        ++p)
@@ -6916,7 +6917,11 @@ Struct_type::can_write_to_c_header(
 	return false;
       if (!this->can_write_type_to_c_header(p->type(), requires, declare))
 	return false;
+      if (Gogo::message_name(p->field_name()) == "_")
+	sinks++;
     }
+  if (sinks > 1)
+    return false;
   return true;
 }
 
