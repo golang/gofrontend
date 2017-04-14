@@ -31,6 +31,8 @@ var LockedOSThread = lockedOSThread
 
 // var FuncPC = funcPC
 
+var Fastlog2 = fastlog2
+
 var Atoi = atoi
 var Atoi32 = atoi32
 
