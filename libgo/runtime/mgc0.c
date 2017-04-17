@@ -2023,6 +2023,7 @@ struct gc_args
 
 static void gc(struct gc_args *args);
 static void mgc(G *gp);
+static FuncVal mgcGo = { (void(*)(void))mgc };
 
 static int32
 readgogc(void)
@@ -2113,7 +2114,7 @@ runtime_gc(int32 force)
 		g->param = &a;
 		g->atomicstatus = _Gwaiting;
 		g->waitreason = runtime_gostringnocopy((const byte*)"garbage collection");
-		runtime_mcall(mgc);
+		runtime_mcall(&mgcGo);
 		m = runtime_m();
 	}
 

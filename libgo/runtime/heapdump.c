@@ -606,6 +606,8 @@ mdump(G *gp)
 	runtime_gogo(gp);
 }
 
+static FuncVal mdumpGo = { (void(*)(void))mdump };
+
 void runtime_debug_WriteHeapDump(uintptr)
   __asm__(GOSYM_PREFIX "runtime_debug.WriteHeapDump");
 
@@ -633,7 +635,7 @@ runtime_debug_WriteHeapDump(uintptr fd)
 	g = runtime_g();
 	g->atomicstatus = _Gwaiting;
 	g->waitreason = runtime_gostringnocopy((const byte*)"dumping heap");
-	runtime_mcall(mdump);
+	runtime_mcall(&mdumpGo);
 
 	// Reset dump file.
 	dumpfd = 0;

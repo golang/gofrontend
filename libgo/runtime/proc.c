@@ -55,7 +55,8 @@ extern void __splitstack_block_signals_context (void *context[10], int *,
 
 uintptr runtime_stacks_sys;
 
-static void gtraceback(G*);
+void gtraceback(G*)
+  __asm__(GOSYM_PREFIX "runtime.gtraceback");
 
 #ifdef __rtems__
 #define __thread
@@ -272,24 +273,6 @@ runtime_newosproc(M *mp)
 	}
 }
 
-// First function run by a new goroutine.  This replaces gogocall.
-static void
-kickoff(void)
-{
-	void (*fn)(void*);
-	void *param;
-
-	if(g->traceback != nil)
-		gtraceback(g);
-
-	fn = (void (*)(void*))(g->entry);
-	param = g->param;
-	g->entry = 0;
-	g->param = nil;
-	fn(param);
-	runtime_goexit1();
-}
-
 // Switch context to a different goroutine.  This is like longjmp.
 void runtime_gogo(G*) __attribute__ ((noinline));
 void
@@ -309,9 +292,9 @@ runtime_gogo(G* newg)
 // setjmp.  Because getcontext always returns 0, unlike setjmp, we use
 // g->fromgogo as a code.  It will be true if we got here via
 // setcontext.  g == nil the first time this is called in a new m.
-void runtime_mcall(void (*)(G*)) __attribute__ ((noinline));
+void runtime_mcall(FuncVal *) __attribute__ ((noinline));
 void
-runtime_mcall(void (*pfn)(G*))
+runtime_mcall(FuncVal *fv)
 {
 	M *mp;
 	G *gp;
@@ -357,7 +340,7 @@ runtime_mcall(void (*pfn)(G*))
 #ifdef USING_SPLIT_STACK
 		__splitstack_setcontext(&mp->g0->stackcontext[0]);
 #endif
-		mp->g0->entry = (uintptr)pfn;
+		mp->g0->entry = fv;
 		mp->g0->param = gp;
 
 		// It's OK to set g directly here because this case
@@ -369,16 +352,6 @@ runtime_mcall(void (*pfn)(G*))
 		setcontext(ucontext_arg(&mp->g0->context[0]));
 		runtime_throw("runtime: mcall function returned");
 	}
-}
-
-// mcall called from Go code.
-void gomcall(FuncVal *)
-  __asm__ (GOSYM_PREFIX "runtime.mcall");
-
-void
-gomcall(FuncVal *fv)
-{
-	runtime_mcall((void*)fv->fn);
 }
 
 // Goroutine scheduler
@@ -403,6 +376,8 @@ int32	runtime_ncpu;
 
 bool	runtime_isarchive;
 
+extern void kickoff(void)
+  __asm__(GOSYM_PREFIX "runtime.kickoff");
 extern void mstart1(void)
   __asm__(GOSYM_PREFIX "runtime.mstart1");
 extern void stopm(void)
@@ -468,7 +443,7 @@ void getTraceback(G* me, G* gp)
 // Do a stack trace of gp, and then restore the context to
 // gp->dotraceback.
 
-static void
+void
 gtraceback(G* gp)
 {
 	Traceback* traceback;
@@ -520,11 +495,12 @@ mstartInitContext(G *gp, void *stack __attribute__ ((unused)))
 
 	if(gp->entry != 0) {
 		// Got here from mcall.
-		void (*pfn)(G*) = (void (*)(G*))gp->entry;
+		FuncVal *fv = gp->entry;
+		void (*pfn)(G*) = (void (*)(G*))fv->fn;
 		G* gp1 = (G*)gp->param;
-		gp->entry = 0;
+		gp->entry = nil;
 		gp->param = nil;
-		pfn(gp1);
+		__builtin_call_with_static_chain(pfn(gp1), fv);
 		*(int*)0x21 = 0x21;
 	}
 
@@ -560,7 +536,7 @@ setGContext()
 
 	initcontext();
 	gp = g;
-	gp->entry = 0;
+	gp->entry = nil;
 	gp->param = nil;
 #ifdef USING_SPLIT_STACK
 	__splitstack_getcontext(&gp->stackcontext[0]);
@@ -576,11 +552,12 @@ setGContext()
 
 	if(gp->entry != 0) {
 		// Got here from mcall.
-		void (*pfn)(G*) = (void (*)(G*))gp->entry;
+		FuncVal *fv = gp->entry;
+		void (*pfn)(G*) = (void (*)(G*))fv->fn;
 		G* gp1 = (G*)gp->param;
-		gp->entry = 0;
+		gp->entry = nil;
 		gp->param = nil;
-		pfn(gp1);
+		__builtin_call_with_static_chain(pfn(gp1), fv);
 		*(int*)0x22 = 0x22;
 	}
 }

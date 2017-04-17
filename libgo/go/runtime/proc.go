@@ -34,6 +34,7 @@ import (
 //go:linkname helpgc runtime.helpgc
 //go:linkname stopTheWorldWithSema runtime.stopTheWorldWithSema
 //go:linkname startTheWorldWithSema runtime.startTheWorldWithSema
+//go:linkname kickoff runtime.kickoff
 //go:linkname mstart runtime.mstart
 //go:linkname mstart1 runtime.mstart1
 //go:linkname globrunqput runtime.globrunqput
@@ -55,6 +56,7 @@ func setGContext()
 func makeGContext(*g, unsafe.Pointer, uintptr)
 func mstartInitContext(*g, unsafe.Pointer)
 func getTraceback(me, gp *g)
+func gtraceback(*g)
 func _cgo_notify_runtime_init_done()
 func alreadyInCallers() bool
 
@@ -969,6 +971,23 @@ func startTheWorldWithSema() {
 	_g_.m.locks--
 }
 
+// First function run by a new goroutine.
+// This is passed to makecontext.
+func kickoff() {
+	gp := getg()
+
+	if gp.traceback != nil {
+		gtraceback(gp)
+	}
+
+	fv := gp.entry
+	param := gp.param
+	gp.entry = nil
+	gp.param = nil
+	fv(param)
+	goexit1()
+}
+
 // Called to start an M.
 // For gccgo this is called directly by pthread_create.
 //go:nosplit
@@ -978,7 +997,7 @@ func mstart(mpu unsafe.Pointer) unsafe.Pointer {
 	_g_.m = mp
 	setg(_g_)
 
-	_g_.entry = 0
+	_g_.entry = nil
 	_g_.param = nil
 
 	mstartInitContext(_g_, unsafe.Pointer(&mp))
@@ -2137,7 +2156,7 @@ func goexit0(gp *g) {
 	gp.m = nil
 	gp.lockedm = nil
 	_g_.m.lockedg = nil
-	gp.entry = 0
+	gp.entry = nil
 	gp.paniconfault = false
 	gp._defer = nil // should be true already but just in case.
 	gp._panic = nil // non-nil for Goexit during panic. points at stack-allocated data.
@@ -2560,7 +2579,14 @@ func newproc(fn uintptr, arg unsafe.Pointer) *g {
 		throw("newproc1: new g is not Gdead")
 	}
 
-	newg.entry = fn
+	// Store the C function pointer into entryfn, take the address
+	// of entryfn, convert it to a Go function value, and store
+	// that in entry.
+	newg.entryfn = fn
+	var entry func(unsafe.Pointer)
+	*(*unsafe.Pointer)(unsafe.Pointer(&entry)) = unsafe.Pointer(&newg.entryfn)
+	newg.entry = entry
+
 	newg.param = arg
 	newg.gopc = getcallerpc(unsafe.Pointer(&fn))
 	if isSystemGoroutine(newg) {

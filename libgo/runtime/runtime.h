@@ -309,7 +309,8 @@ void	runtime_mallocinit(void)
   __asm__ (GOSYM_PREFIX "runtime.mallocinit");
 void	runtime_mprofinit(void);
 #define runtime_getcallersp(p) __builtin_frame_address(0)
-void	runtime_mcall(void(*)(G*));
+void	runtime_mcall(FuncVal*)
+  __asm__ (GOSYM_PREFIX "runtime.mcall");
 uint32	runtime_fastrand(void) __asm__ (GOSYM_PREFIX "runtime.fastrand");
 int32	runtime_timediv(int64, int32, int32*)
   __asm__ (GOSYM_PREFIX "runtime.timediv");
