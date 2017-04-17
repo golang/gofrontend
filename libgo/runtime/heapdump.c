@@ -621,7 +621,7 @@ runtime_debug_WriteHeapDump(uintptr fd)
 	runtime_acquireWorldsema();
 	m = runtime_m();
 	m->preemptoff = runtime_gostringnocopy((const byte*)"write heap dump");
-	runtime_stopTheWorldWithSema();
+	runtime_callStopTheWorldWithSema();
 
 	// Update stats so we can dump them.
 	// As a side effect, flushes all the MCaches so the MSpan.freelist
@@ -641,7 +641,7 @@ runtime_debug_WriteHeapDump(uintptr fd)
 	dumpfd = 0;
 
 	// Start up the world again.
-	runtime_startTheWorldWithSema();
+	runtime_callStartTheWorldWithSema();
 	runtime_releaseWorldsema();
 	m->preemptoff = runtime_gostringnocopy(nil);
 }

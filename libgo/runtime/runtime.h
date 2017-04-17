@@ -382,10 +382,10 @@ G*	runtime_timejump(void);
 void	runtime_iterate_finq(void (*callback)(FuncVal*, void*, const FuncType*, const PtrType*))
   __asm__(GOSYM_PREFIX "runtime.iterate_finq");
 
-void	runtime_stopTheWorldWithSema(void)
-  __asm__(GOSYM_PREFIX "runtime.stopTheWorldWithSema");
-void	runtime_startTheWorldWithSema(void)
-  __asm__(GOSYM_PREFIX "runtime.startTheWorldWithSema");
+void	runtime_callStopTheWorldWithSema(void)
+  __asm__(GOSYM_PREFIX "runtime.callStopTheWorldWithSema");
+void	runtime_callStartTheWorldWithSema(void)
+  __asm__(GOSYM_PREFIX "runtime.callStartTheWorldWithSema");
 void	runtime_acquireWorldsema(void)
   __asm__(GOSYM_PREFIX "runtime.acquireWorldsema");
 void	runtime_releaseWorldsema(void)

@@ -32,8 +32,6 @@ import (
 //go:linkname exitsyscall runtime.exitsyscall
 //go:linkname gfget runtime.gfget
 //go:linkname helpgc runtime.helpgc
-//go:linkname stopTheWorldWithSema runtime.stopTheWorldWithSema
-//go:linkname startTheWorldWithSema runtime.startTheWorldWithSema
 //go:linkname kickoff runtime.kickoff
 //go:linkname mstart1 runtime.mstart1
 //go:linkname globrunqput runtime.globrunqput

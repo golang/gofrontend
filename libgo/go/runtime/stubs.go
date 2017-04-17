@@ -51,11 +51,22 @@ func mcall(fn func(*g))
 //
 // For the gc toolchain this permits running a function that requires
 // additional stack space in a context where the stack can not be
-// split.  For gccgo, however, stack splitting is not managed by the
-// Go runtime. In effect, all stacks are system stacks. So this gccgo
-// version just runs the function.
+// split. We don't really need additional stack space in gccgo, since
+// stack splitting is handled separately. But to keep things looking
+// the same, we do switch to the g0 stack here if necessary.
 func systemstack(fn func()) {
-	fn()
+	gp := getg()
+	mp := gp.m
+	if gp == mp.g0 || gp == mp.gsignal {
+		fn()
+	} else if gp == mp.curg {
+		mcall(func(origg *g) {
+			fn()
+			gogo(origg)
+		})
+	} else {
+		badsystemstack()
+	}
 }
 
 func badsystemstack() {
@@ -656,3 +667,15 @@ func getallfin() *finblock {
 
 // Temporary for gccgo until we port malloc.go.
 const maxTinySize = 16
+
+// Temporary for gccgo until we port heapdump.go and mgc.go.
+//go:linkname callStopTheWorldWithSema runtime.callStopTheWorldWithSema
+func callStopTheWorldWithSema() {
+	systemstack(stopTheWorldWithSema)
+}
+
+// Temporary for gccgo until we port heapdump.go and mgc.go.
+//go:linkname callStartTheWorldWithSema runtime.callStartTheWorldWithSema
+func callStartTheWorldWithSema() {
+	systemstack(startTheWorldWithSema)
+}

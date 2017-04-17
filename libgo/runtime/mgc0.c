@@ -2097,7 +2097,7 @@ runtime_gc(int32 force)
 	a.start_time = runtime_nanotime();
 	a.eagersweep = force >= 2;
 	m->gcing = 1;
-	runtime_stopTheWorldWithSema();
+	runtime_callStopTheWorldWithSema();
 	
 	clearpools();
 
@@ -2122,7 +2122,7 @@ runtime_gc(int32 force)
 	m->gcing = 0;
 	m->locks++;
 	runtime_releaseWorldsema();
-	runtime_startTheWorldWithSema();
+	runtime_callStartTheWorldWithSema();
 	m->locks--;
 
 	// now that gc is done, kick off finalizer thread if needed
