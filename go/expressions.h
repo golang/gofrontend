@@ -128,6 +128,7 @@ class Expression
     EXPRESSION_RECEIVE,
     EXPRESSION_TYPE_DESCRIPTOR,
     EXPRESSION_GC_SYMBOL,
+    EXPRESSION_PTRMASK_SYMBOL,
     EXPRESSION_TYPE_INFO,
     EXPRESSION_SLICE_INFO,
     EXPRESSION_SLICE_VALUE,
@@ -401,6 +402,13 @@ class Expression
   // symbol for TYPE.
   static Expression*
   make_gc_symbol(Type* type);
+
+  // Make an expression that evaluates to the address of a ptrmask
+  // symbol for TYPE.  For most types this will be the same as
+  // make_gc_symbol, but for larger types make_gc_symbol will return a
+  // gcprog while this will return a ptrmask.
+  static Expression*
+  make_ptrmask_symbol(Type* type);
 
   // Make an expression which evaluates to some characteristic of a
   // type.  These are only used for type descriptors, so there is no

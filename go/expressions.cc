@@ -14617,6 +14617,91 @@ Expression::make_gc_symbol(Type* type)
   return new GC_symbol_expression(type);
 }
 
+// An expression that evaluates to a pointer to a symbol holding the
+// ptrmask data of a type.
+
+class Ptrmask_symbol_expression : public Expression
+{
+ public:
+  Ptrmask_symbol_expression(Type* type)
+    : Expression(EXPRESSION_PTRMASK_SYMBOL, Linemap::predeclared_location()),
+      type_(type)
+  {}
+
+ protected:
+  Type*
+  do_type()
+  { return Type::make_pointer_type(Type::lookup_integer_type("uint8")); }
+
+  bool
+  do_is_static_initializer() const
+  { return true; }
+
+  void
+  do_determine_type(const Type_context*)
+  { }
+
+  Expression*
+  do_copy()
+  { return this; }
+
+  Bexpression*
+  do_get_backend(Translate_context*);
+
+  void
+  do_dump_expression(Ast_dump_context*) const;
+
+ private:
+  // The type that this ptrmask symbol describes.
+  Type* type_;
+};
+
+// Return the ptrmask variable.
+
+Bexpression*
+Ptrmask_symbol_expression::do_get_backend(Translate_context* context)
+{
+  Gogo* gogo = context->gogo();
+
+  // If this type does not need a gcprog, then we can use the standard
+  // GC symbol.
+  int64_t ptrsize, ptrdata;
+  if (!this->type_->needs_gcprog(gogo, &ptrsize, &ptrdata))
+    return this->type_->gc_symbol_pointer(gogo);
+
+  // Otherwise we have to build a ptrmask variable, and return a
+  // pointer to it.
+
+  Bvariable* bvar = this->type_->gc_ptrmask_var(gogo, ptrsize, ptrdata);
+  Location bloc = Linemap::predeclared_location();
+  Bexpression* bref = gogo->backend()->var_expression(bvar, VE_rvalue, bloc);
+  Bexpression* baddr = gogo->backend()->address_expression(bref, bloc);
+
+  Type* uint8_type = Type::lookup_integer_type("uint8");
+  Type* pointer_uint8_type = Type::make_pointer_type(uint8_type);
+  Btype* ubtype = pointer_uint8_type->get_backend(gogo);
+  return gogo->backend()->convert_expression(ubtype, baddr, bloc);
+}
+
+// Dump AST for a ptrmask symbol expression.
+
+void
+Ptrmask_symbol_expression::do_dump_expression(
+    Ast_dump_context* ast_dump_context) const
+{
+  ast_dump_context->ostream() << "ptrmask(";
+  ast_dump_context->dump_type(this->type_);
+  ast_dump_context->ostream() << ")";
+}
+
+// Make a ptrmask symbol expression.
+
+Expression*
+Expression::make_ptrmask_symbol(Type* type)
+{
+  return new Ptrmask_symbol_expression(type);
+}
+
 // An expression which evaluates to some characteristic of a type.
 // This is only used to initialize fields of a type descriptor.  Using
 // a new expression class is slightly inefficient but gives us a good
