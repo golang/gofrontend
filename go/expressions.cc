@@ -14572,7 +14572,7 @@ class GC_symbol_expression : public Expression
  protected:
   Type*
   do_type()
-  { return Type::lookup_integer_type("uintptr"); }
+  { return Type::make_pointer_type(Type::lookup_integer_type("uint8")); }
 
   bool
   do_is_static_initializer() const

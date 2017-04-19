@@ -259,20 +259,21 @@ const (
 // with a unique tag like `reflect:"array"` or `reflect:"ptr"`
 // so that code cannot convert from, say, *arrayType to *ptrType.
 type rtype struct {
-	kind       uint8 // enumeration for C
-	align      int8  // alignment of variable with this type
-	fieldAlign uint8 // alignment of struct field with this type
-	_          uint8 // unused/padding
 	size       uintptr
-	hash       uint32 // hash of type; avoids computation in hash tables
+	ptrdata    uintptr // size of memory prefix holding all pointers
+	hash       uint32  // hash of type; avoids computation in hash tables
+	kind       uint8   // enumeration for C
+	align      int8    // alignment of variable with this type
+	fieldAlign uint8   // alignment of struct field with this type
+	_          uint8   // unused/padding
 
 	hashfn  func(unsafe.Pointer, uintptr) uintptr     // hash function
 	equalfn func(unsafe.Pointer, unsafe.Pointer) bool // equality function
 
-	gc            unsafe.Pointer // garbage collection data
-	string        *string        // string form; unnecessary  but undeniably useful
-	*uncommonType                // (relatively) uncommon fields
-	ptrToThis     *rtype         // type for pointer to this type, if used in binary or has methods
+	gcdata        *byte   // garbage collection data
+	string        *string // string form; unnecessary  but undeniably useful
+	*uncommonType         // (relatively) uncommon fields
+	ptrToThis     *rtype  // type for pointer to this type, if used in binary or has methods
 }
 
 // Method on non-interface type
@@ -1190,15 +1191,15 @@ func (t *rtype) ptrTo() *rtype {
 	pp.elem = t
 
 	if t.kind&kindNoPointers != 0 {
-		pp.gc = unsafe.Pointer(&ptrDataGCProg)
+		pp.gcdata = (*byte)(unsafe.Pointer(&ptrDataGCProg))
 	} else {
-		pp.gc = unsafe.Pointer(&ptrGC{
+		pp.gcdata = (*byte)(unsafe.Pointer(&ptrGC{
 			width:  pp.size,
 			op:     _GC_PTR,
 			off:    0,
-			elemgc: t.gc,
+			elemgc: unsafe.Pointer(t.gcdata),
 			end:    _GC_END,
-		})
+		}))
 	}
 
 	q := canonicalize(&pp.rtype)
@@ -1584,16 +1585,16 @@ func ChanOf(dir ChanDir, t Type) Type {
 	ch.uncommonType = nil
 	ch.ptrToThis = nil
 
-	ch.gc = unsafe.Pointer(&chanGC{
+	ch.gcdata = (*byte)(unsafe.Pointer(&chanGC{
 		width: ch.size,
 		op:    _GC_CHAN_PTR,
 		off:   0,
 		typ:   &ch.rtype,
 		end:   _GC_END,
-	})
+	}))
 
-	// INCORRECT. Uncomment to check that TestChanOfGC fails when ch.gc is wrong.
-	// ch.gc = unsafe.Pointer(&badGC{width: ch.size, end: _GC_END})
+	// INCORRECT. Uncomment to check that TestChanOfGC fails when ch.gcdata is wrong.
+	// ch.gcdata = unsafe.Pointer(&badGC{width: ch.size, end: _GC_END})
 
 	return cachePut(ckey, &ch.rtype)
 }
@@ -1734,7 +1735,7 @@ func FuncOf(in, out []Type, variadic bool) Type {
 	ft.ptrToThis = nil
 
 	// TODO(cmang): Generate GC data for funcs.
-	ft.gc = unsafe.Pointer(&ptrDataGCProg)
+	ft.gcdata = (*byte)(unsafe.Pointer(&ptrDataGCProg))
 
 	funcLookupCache.m[hash] = append(funcLookupCache.m[hash], &ft.rtype)
 
@@ -1913,7 +1914,7 @@ func bucketOf(ktyp, etyp *rtype) *rtype {
 		fieldAlign: uint8(maxAlign),
 		size:       size,
 		kind:       kind,
-		gc:         gcPtr,
+		gcdata:     (*byte)(gcPtr),
 	}
 	s := "bucket(" + *ktyp.string + "," + *etyp.string + ")"
 	b.string = &s
@@ -1922,7 +1923,7 @@ func bucketOf(ktyp, etyp *rtype) *rtype {
 
 // Take the GC program for "t" and append it to the GC program "gc".
 func appendGCProgram(gc []uintptr, t *rtype, offset uintptr) []uintptr {
-	p := t.gc
+	p := unsafe.Pointer(t.gcdata)
 	p = unsafe.Pointer(uintptr(p) + unsafe.Sizeof(uintptr(0))) // skip size
 loop:
 	for {
@@ -1967,9 +1968,9 @@ func hMapOf(bucket *rtype) *rtype {
 	offset = (offset + 1) / 2 * 2
 	offset += unsafe.Sizeof(uint16(0)) // bucketsize
 	offset = (offset + ptrsize - 1) / ptrsize * ptrsize
-	// gc = append(gc, _GC_PTR, offset, uintptr(bucket.gc)) // buckets
+	// gc = append(gc, _GC_PTR, offset, uintptr(bucket.gcdata)) // buckets
 	offset += ptrsize
-	// gc = append(gc, _GC_PTR, offset, uintptr(bucket.gc)) // oldbuckets
+	// gc = append(gc, _GC_PTR, offset, uintptr(bucket.gcdata)) // oldbuckets
 	offset += ptrsize
 	offset += ptrsize // nevacuate
 	gc = append(gc, _GC_END)
@@ -1977,7 +1978,7 @@ func hMapOf(bucket *rtype) *rtype {
 
 	h := new(rtype)
 	h.size = offset
-	// h.gc = unsafe.Pointer(&gc[0])
+	// h.gcdata = unsafe.Pointer(&gc[0])
 	s := "hmap(" + *bucket.string + ")"
 	h.string = &s
 	return h
@@ -2038,19 +2039,19 @@ func SliceOf(t Type) Type {
 	slice.ptrToThis = nil
 
 	if typ.size == 0 {
-		slice.gc = unsafe.Pointer(&sliceEmptyGCProg)
+		slice.gcdata = (*byte)(unsafe.Pointer(&sliceEmptyGCProg))
 	} else {
-		slice.gc = unsafe.Pointer(&sliceGC{
+		slice.gcdata = (*byte)(unsafe.Pointer(&sliceGC{
 			width:  slice.size,
 			op:     _GC_SLICE,
 			off:    0,
-			elemgc: typ.gc,
+			elemgc: unsafe.Pointer(typ.gcdata),
 			end:    _GC_END,
-		})
+		}))
 	}
 
-	// INCORRECT. Uncomment to check that TestSliceOfOfGC fails when slice.gc is wrong.
-	// slice.gc = unsafe.Pointer(&badGC{width: slice.size, end: _GC_END})
+	// INCORRECT. Uncomment to check that TestSliceOfOfGC fails when slice.gcdata is wrong.
+	// slice.gcdata = unsafe.Pointer(&badGC{width: slice.size, end: _GC_END})
 
 	return cachePut(ckey, &slice.rtype)
 }
@@ -2229,7 +2230,7 @@ func StructOf(fields []StructField) Type {
 	if !hasPtr {
 		typ.kind |= kindNoPointers
 		gc := [...]uintptr{size, _GC_END}
-		typ.gc = unsafe.Pointer(&gc[0])
+		typ.gcdata = (*byte)(unsafe.Pointer(&gc[0]))
 	} else {
 		typ.kind &^= kindNoPointers
 		gc := []uintptr{size}
@@ -2237,7 +2238,7 @@ func StructOf(fields []StructField) Type {
 			gc = appendGCProgram(gc, ft.typ, ft.offset)
 		}
 		gc = append(gc, _GC_END)
-		typ.gc = unsafe.Pointer(&gc[0])
+		typ.gcdata = (*byte)(unsafe.Pointer(&gc[0]))
 	}
 
 	typ.hashfn = func(p unsafe.Pointer, seed uintptr) uintptr {
@@ -2365,18 +2366,18 @@ func ArrayOf(count int, elem Type) Type {
 		// No pointers.
 		array.kind |= kindNoPointers
 		gc := [...]uintptr{array.size, _GC_END}
-		array.gc = unsafe.Pointer(&gc[0])
+		array.gcdata = (*byte)(unsafe.Pointer(&gc[0]))
 
 	case count == 1:
 		// In memory, 1-element array looks just like the element.
 		array.kind |= typ.kind & kindGCProg
-		array.gc = typ.gc
+		array.gcdata = typ.gcdata
 
 	default:
 		gc := []uintptr{array.size, _GC_ARRAY_START, 0, uintptr(count), typ.size}
 		gc = appendGCProgram(gc, typ, 0)
 		gc = append(gc, _GC_ARRAY_NEXT, _GC_END)
-		array.gc = unsafe.Pointer(&gc[0])
+		array.gcdata = (*byte)(unsafe.Pointer(&gc[0]))
 	}
 
 	array.kind &^= kindDirectIface

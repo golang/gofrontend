@@ -1482,6 +1482,7 @@ Type::make_type_descriptor_type()
       Location bloc = Linemap::predeclared_location();
 
       Type* uint8_type = Type::lookup_integer_type("uint8");
+      Type* pointer_uint8_type = Type::make_pointer_type(uint8_type);
       Type* uint32_type = Type::lookup_integer_type("uint32");
       Type* uintptr_type = Type::lookup_integer_type("uintptr");
       Type* string_type = Type::lookup_string_type();
@@ -1548,15 +1549,16 @@ Type::make_type_descriptor_type()
       // The type descriptor type.
 
       Struct_type* type_descriptor_type =
-	Type::make_builtin_struct_type(11,
+	Type::make_builtin_struct_type(12,
+				       "size", uintptr_type,
+				       "ptrdata", uintptr_type,
+				       "hash", uint32_type,
 				       "kind", uint8_type,
 				       "align", uint8_type,
 				       "fieldAlign", uint8_type,
-				       "size", uintptr_type,
-				       "hash", uint32_type,
 				       "hashfn", hash_fntype,
 				       "equalfn", equal_fntype,
-				       "gc", uintptr_type,
+				       "gcdata", pointer_uint8_type,
 				       "string", pointer_string_type,
 				       "", pointer_uncommon_type,
 				       "ptrToThis",
@@ -2312,30 +2314,25 @@ Type::type_descriptor_constructor(Gogo* gogo, int runtime_type_kind,
   const Struct_field_list* fields = td_type->struct_type()->fields();
 
   Expression_list* vals = new Expression_list();
-  vals->reserve(9);
+  vals->reserve(12);
 
   if (!this->has_pointer())
     runtime_type_kind |= RUNTIME_TYPE_KIND_NO_POINTERS;
   if (this->points_to() != NULL)
     runtime_type_kind |= RUNTIME_TYPE_KIND_DIRECT_IFACE;
+  int64_t ptrsize;
+  int64_t ptrdata;
+  if (this->needs_gcprog(gogo, &ptrsize, &ptrdata))
+    runtime_type_kind |= RUNTIME_TYPE_KIND_GC_PROG;
+
   Struct_field_list::const_iterator p = fields->begin();
-  go_assert(p->is_field_name("kind"));
-  vals->push_back(Expression::make_integer_ul(runtime_type_kind, p->type(),
-					      bloc));
-
-  ++p;
-  go_assert(p->is_field_name("align"));
-  Expression::Type_info type_info = Expression::TYPE_INFO_ALIGNMENT;
-  vals->push_back(Expression::make_type_info(this, type_info));
-
-  ++p;
-  go_assert(p->is_field_name("fieldAlign"));
-  type_info = Expression::TYPE_INFO_FIELD_ALIGNMENT;
-  vals->push_back(Expression::make_type_info(this, type_info));
-
-  ++p;
   go_assert(p->is_field_name("size"));
-  type_info = Expression::TYPE_INFO_SIZE;
+  Expression::Type_info type_info = Expression::TYPE_INFO_SIZE;
+  vals->push_back(Expression::make_type_info(this, type_info));
+
+  ++p;
+  go_assert(p->is_field_name("ptrdata"));
+  type_info = Expression::TYPE_INFO_DESCRIPTOR_PTRDATA;
   vals->push_back(Expression::make_type_info(this, type_info));
 
   ++p;
@@ -2346,6 +2343,21 @@ Type::type_descriptor_constructor(Gogo* gogo, int runtime_type_kind,
   else
     h = this->hash_for_method(gogo);
   vals->push_back(Expression::make_integer_ul(h, p->type(), bloc));
+
+  ++p;
+  go_assert(p->is_field_name("kind"));
+  vals->push_back(Expression::make_integer_ul(runtime_type_kind, p->type(),
+					      bloc));
+
+  ++p;
+  go_assert(p->is_field_name("align"));
+  type_info = Expression::TYPE_INFO_ALIGNMENT;
+  vals->push_back(Expression::make_type_info(this, type_info));
+
+  ++p;
+  go_assert(p->is_field_name("fieldAlign"));
+  type_info = Expression::TYPE_INFO_FIELD_ALIGNMENT;
+  vals->push_back(Expression::make_type_info(this, type_info));
 
   ++p;
   go_assert(p->is_field_name("hashfn"));
@@ -2373,7 +2385,7 @@ Type::type_descriptor_constructor(Gogo* gogo, int runtime_type_kind,
     vals->push_back(Expression::make_func_reference(equal_fn, NULL, bloc));
 
   ++p;
-  go_assert(p->is_field_name("gc"));
+  go_assert(p->is_field_name("gcdata"));
   vals->push_back(Expression::make_gc_symbol(this));
 
   ++p;
@@ -2442,7 +2454,10 @@ Type::gc_symbol_pointer(Gogo* gogo)
       gogo->backend()->var_expression(t->gc_symbol_var_, VE_rvalue, bloc);
   Bexpression* addr_expr =
       gogo->backend()->address_expression(var_expr, bloc);
-  Btype* ubtype = Type::lookup_integer_type("uintptr")->get_backend(gogo);
+
+  Type* uint8_type = Type::lookup_integer_type("uint8");
+  Type* pointer_uint8_type = Type::make_pointer_type(uint8_type);
+  Btype* ubtype = pointer_uint8_type->get_backend(gogo);
   return gogo->backend()->convert_expression(ubtype, addr_expr, bloc);
 }
 
@@ -2576,6 +2591,22 @@ Type::gc_symbol_constructor(Gogo* gogo)
   Array_type* gc_symbol_type = Type::make_array_type(uintptr_t, len);
   gc_symbol_type->set_is_array_incomparable();
   return Expression::make_array_composite_literal(gc_symbol_type, vals, bloc);
+}
+
+// A temporary function to convert a GC_symbol_expression, with type
+// *byte, to type uintptr, so that it can be stored in a GC symbol.
+// This will be discarded when we move to the Go 1.8 garbage
+// collector.
+
+static Expression*
+to_uintptr(Expression* expr)
+{
+  go_assert(expr->type()->points_to() != NULL);
+  Location loc = expr->location();
+  expr = Expression::make_cast(Type::make_pointer_type(Type::make_void_type()),
+			       expr, loc);
+  return Expression::make_cast(Type::lookup_integer_type("uintptr"), expr,
+			       loc);
 }
 
 // Advance the OFFSET of the GC symbol by this type's width.
@@ -5555,7 +5586,7 @@ Pointer_type::do_gc_symbol(Gogo*, Expression_list** vals,
   (*vals)->push_back(*offset);
 
   if (this->to_type_->has_pointer())
-    (*vals)->push_back(Expression::make_gc_symbol(this->to_type_));
+    (*vals)->push_back(to_uintptr(Expression::make_gc_symbol(this->to_type_)));
   this->advance_gc_offset(offset);
 }
 
@@ -8002,7 +8033,7 @@ Array_type::slice_gc_symbol(Gogo* gogo, Expression_list** vals,
   (*vals)->push_back(*offset);
 
   if (element_size != 0 && ok)
-    (*vals)->push_back(Expression::make_gc_symbol(element_type));
+    (*vals)->push_back(to_uintptr(Expression::make_gc_symbol(element_type)));
   this->advance_gc_offset(offset);
 }
 
@@ -8075,7 +8106,7 @@ Array_type::array_gc_symbol(Gogo* gogo, Expression_list** vals,
 	  Expression* width =
 	    Expression::make_type_info(this, Expression::TYPE_INFO_SIZE);
   	  (*vals)->push_back(width);
-	  (*vals)->push_back(Expression::make_gc_symbol(this));
+	  (*vals)->push_back(to_uintptr(Expression::make_gc_symbol(this)));
   	}
       this->advance_gc_offset(offset);
     }

@@ -674,7 +674,7 @@ checkptr(void *obj, uintptr objti)
 		// Runtime and gc think differently about closures.
 		 runtime_strstr((const char *)t->string->str, (const char*)"struct { F uintptr") != (const char *)t->string->str)) {
 		pc1 = (uintptr*)objti;
-		pc2 = (const uintptr*)t->__gc;
+		pc2 = (const uintptr*)t->__gcdata;
 		// A simple best-effort check until first GC_END.
 		for(j = 1; pc1[j] != GC_END && pc2[j] != GC_END; j++) {
 			if(pc1[j] != pc2[j]) {
@@ -801,13 +801,13 @@ scanblock(Workbuf *wbuf, bool keepworking)
 				t = (Type*)(type & ~(uintptr)(PtrSize-1));
 				switch(type & (PtrSize-1)) {
 				case TypeInfo_SingleObject:
-					pc = (const uintptr*)t->__gc;
+					pc = (const uintptr*)t->__gcdata;
 					precise_type = true;  // type information about 'b' is precise
 					stack_top.count = 1;
 					stack_top.elemsize = pc[0];
 					break;
 				case TypeInfo_Array:
-					pc = (const uintptr*)t->__gc;
+					pc = (const uintptr*)t->__gcdata;
 					if(pc[0] == 0)
 						goto next_block;
 					precise_type = true;  // type information about 'b' is precise
@@ -926,11 +926,11 @@ scanblock(Workbuf *wbuf, bool keepworking)
 						// dgcsym1 in case TPTR32/case TPTR64. See rationale there.
 						et = ((const PtrType*)t)->elem;
 						if(!(et->__code & kindNoPointers))
-							objti = (uintptr)((const PtrType*)t)->elem->__gc;
+							objti = (uintptr)((const PtrType*)t)->elem->__gcdata;
 					}
 				} else {
 					obj = eface->data;
-					objti = (uintptr)t->__gc;
+					objti = (uintptr)t->__gcdata;
 				}
 			}
 			break;
@@ -964,11 +964,11 @@ scanblock(Workbuf *wbuf, bool keepworking)
 						// dgcsym1 in case TPTR32/case TPTR64. See rationale there.
 						et = ((const PtrType*)t)->elem;
 						if(!(et->__code & kindNoPointers))
-							objti = (uintptr)((const PtrType*)t)->elem->__gc;
+							objti = (uintptr)((const PtrType*)t)->elem->__gcdata;
 					}
 				} else {
 					obj = iface->data;
-					objti = (uintptr)t->__gc;
+					objti = (uintptr)t->__gcdata;
 				}
 			}
 			break;
@@ -1095,7 +1095,7 @@ scanblock(Workbuf *wbuf, bool keepworking)
 					// (Channel routines zero the unused part, so the current
 					// code does not lead to leaks, it's just a little inefficient.)
 					*sbuf.obj.pos++ = (Obj){chan->buf, chancap*chantype->elem->__size,
-						(uintptr)chantype->elem->__gc | PRECISE | LOOP};
+						(uintptr)chantype->elem->__gcdata | PRECISE | LOOP};
 					if(sbuf.obj.pos == sbuf.obj.end)
 						flushobjbuf(&sbuf);
 				}

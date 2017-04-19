@@ -46,22 +46,24 @@ extern const FuncVal runtime_pointerequal_descriptor
 
 const struct __go_type_descriptor unsafe_Pointer =
 {
+  /* __size */
+  sizeof (void *),
+  /* __ptrdata */
+  sizeof (void *),
+  /* __hash */
+  78501163U,
   /* __code */
   GO_UNSAFE_POINTER | GO_DIRECT_IFACE,
   /* __align */
   __alignof (void *),
   /* __field_align */
   offsetof (struct field_align, p) - 1,
-  /* __size */
-  sizeof (void *),
-  /* __hash */
-  78501163U,
   /* __hashfn */
   &runtime_pointerhash_descriptor,
   /* __equalfn */
   &runtime_pointerequal_descriptor,
-  /* __gc */
-  unsafe_Pointer_gc,
+  /* __gcdata */
+  (const byte*)(unsafe_Pointer_gc),
   /* __reflection */
   &reflection_string,
   /* __uncommon */
@@ -95,22 +97,24 @@ const struct __go_ptr_type pointer_unsafe_Pointer =
 {
   /* __common */
   {
+    /* __size */
+    sizeof (void *),
+    /* __ptrdata */
+    sizeof (void *),
+    /* __hash */
+    1256018616U,
     /* __code */
     GO_PTR | GO_DIRECT_IFACE,
     /* __align */
     __alignof (void *),
     /* __field_align */
     offsetof (struct field_align, p) - 1,
-    /* __size */
-    sizeof (void *),
-    /* __hash */
-    1256018616U,
     /* __hashfn */
     &runtime_pointerhash_descriptor,
     /* __equalfn */
     &runtime_pointerequal_descriptor,
-    /* __gc */
-    pointer_unsafe_Pointer_gc,
+    /* __gcdata */
+    (const byte*)(pointer_unsafe_Pointer_gc),
     /* __reflection */
     &preflection_string,
     /* __uncommon */
