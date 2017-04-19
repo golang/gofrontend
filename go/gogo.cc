@@ -720,15 +720,18 @@ Gogo::init_imports(std::vector<Bstatement*>& init_stmts, Bfunction *bfunction)
 // roots during the mark phase.  We build a struct that is easy to
 // hook into a list of roots.
 
-// struct __go_gc_root_list
-// {
-//   struct __go_gc_root_list* __next;
-//   struct __go_gc_root
-//   {
-//     void* __decl;
-//     size_t __size;
-//   } __roots[];
-// };
+// type gcRoot struct {
+// 	decl    unsafe.Pointer // Pointer to variable.
+//	size    uintptr        // Total size of variable.
+// 	ptrdata uintptr        // Length of variable's gcdata.
+// 	gcdata  *byte          // Pointer mask.
+// }
+//
+// type gcRootList struct {
+// 	next  *gcRootList
+// 	count int
+// 	roots [...]gcRoot
+// }
 
 // The last entry in the roots array has a NULL decl field.
 
@@ -737,28 +740,35 @@ Gogo::register_gc_vars(const std::vector<Named_object*>& var_gc,
 		       std::vector<Bstatement*>& init_stmts,
                        Bfunction* init_bfn)
 {
-  if (var_gc.empty())
+  if (var_gc.empty() && this->gc_roots_.empty())
     return;
 
   Type* pvt = Type::make_pointer_type(Type::make_void_type());
-  Type* uint_type = Type::lookup_integer_type("uint");
-  Struct_type* root_type = Type::make_builtin_struct_type(2,
-                                                          "__decl", pvt,
-                                                          "__size", uint_type);
+  Type* uintptr_type = Type::lookup_integer_type("uintptr");
+  Type* byte_type = this->lookup_global("byte")->type_value();
+  Type* pointer_byte_type = Type::make_pointer_type(byte_type);
+  Struct_type* root_type =
+    Type::make_builtin_struct_type(4,
+				   "decl", pvt,
+				   "size", uintptr_type,
+				   "ptrdata", uintptr_type,
+				   "gcdata", pointer_byte_type);
 
   Location builtin_loc = Linemap::predeclared_location();
-  unsigned roots_len = var_gc.size() + this->gc_roots_.size() + 1;
+  unsigned long roots_len = var_gc.size() + this->gc_roots_.size();
   Expression* length = Expression::make_integer_ul(roots_len, NULL,
                                                    builtin_loc);
   Array_type* root_array_type = Type::make_array_type(root_type, length);
   root_array_type->set_is_array_incomparable();
-  Type* ptdt = Type::make_type_descriptor_ptr_type();
-  Struct_type* root_list_type =
-      Type::make_builtin_struct_type(2,
-                                     "__next", ptdt,
-                                     "__roots", root_array_type);
 
-  // Build an initializer for the __roots array.
+  Type* int_type = Type::lookup_integer_type("int");
+  Struct_type* root_list_type =
+      Type::make_builtin_struct_type(3,
+                                     "next", pvt,
+				     "count", int_type,
+                                     "roots", root_array_type);
+
+  // Build an initializer for the roots array.
 
   Expression_list* roots_init = new Expression_list();
 
@@ -772,11 +782,22 @@ Gogo::register_gc_vars(const std::vector<Named_object*>& var_gc,
       Expression* decl = Expression::make_var_reference(*p, no_loc);
       Expression* decl_addr =
           Expression::make_unary(OPERATOR_AND, decl, no_loc);
+      decl_addr->unary_expression()->set_does_not_escape();
+      decl_addr = Expression::make_cast(pvt, decl_addr, no_loc);
       init->push_back(decl_addr);
 
-      Expression* decl_size =
-          Expression::make_type_info(decl->type(), Expression::TYPE_INFO_SIZE);
-      init->push_back(decl_size);
+      Expression* size =
+	Expression::make_type_info(decl->type(),
+				   Expression::TYPE_INFO_SIZE);
+      init->push_back(size);
+
+      Expression* ptrdata =
+	Expression::make_type_info(decl->type(),
+				   Expression::TYPE_INFO_BACKEND_PTRDATA);
+      init->push_back(ptrdata);
+
+      Expression* gcdata = Expression::make_ptrmask_symbol(decl->type());
+      init->push_back(gcdata);
 
       Expression* root_ctor =
           Expression::make_struct_composite_literal(root_type, init, no_loc);
@@ -791,37 +812,35 @@ Gogo::register_gc_vars(const std::vector<Named_object*>& var_gc,
 
       Expression* expr = *p;
       Location eloc = expr->location();
-      init->push_back(expr);
+      init->push_back(Expression::make_cast(pvt, expr, eloc));
 
       Type* type = expr->type()->points_to();
       go_assert(type != NULL);
+
       Expression* size =
-	Expression::make_type_info(type, Expression::TYPE_INFO_SIZE);
+	Expression::make_type_info(type,
+				   Expression::TYPE_INFO_SIZE);
       init->push_back(size);
+
+      Expression* ptrdata =
+	Expression::make_type_info(type,
+				   Expression::TYPE_INFO_BACKEND_PTRDATA);
+      init->push_back(ptrdata);
+
+      Expression* gcdata = Expression::make_ptrmask_symbol(type);
+      init->push_back(gcdata);
 
       Expression* root_ctor =
 	Expression::make_struct_composite_literal(root_type, init, eloc);
       roots_init->push_back(root_ctor);
     }
 
-  // The list ends with a NULL entry.
-
-  Expression_list* null_init = new Expression_list();
-  Expression* nil = Expression::make_nil(builtin_loc);
-  null_init->push_back(nil);
-
-  Expression *zero = Expression::make_integer_ul(0, NULL, builtin_loc);
-  null_init->push_back(zero);
-
-  Expression* null_root_ctor =
-      Expression::make_struct_composite_literal(root_type, null_init,
-                                                builtin_loc);
-  roots_init->push_back(null_root_ctor);
-
   // Build a constructor for the struct.
 
   Expression_list* root_list_init = new Expression_list();
-  root_list_init->push_back(nil);
+  root_list_init->push_back(Expression::make_nil(builtin_loc));
+  root_list_init->push_back(Expression::make_integer_ul(roots_len, int_type,
+							builtin_loc));
 
   Expression* roots_ctor =
       Expression::make_array_composite_literal(root_array_type, roots_init,
@@ -1432,8 +1451,18 @@ Gogo::write_globals()
 	      var_inits.push_back(Var_init(no, zero_stmt));
 	    }
 
+	  // Collect a list of all global variables with pointers,
+	  // to register them for the garbage collector.
 	  if (!is_sink && var->type()->has_pointer())
-	    var_gc.push_back(no);
+	    {
+	      // Avoid putting runtime.gcRoots itself on the list.
+	      if (this->compiling_runtime()
+		  && this->package_name() == "runtime"
+		  && Gogo::unpack_hidden_name(no->name()) == "gcRoots")
+		;
+	      else
+		var_gc.push_back(no);
+	    }
 	}
     }
 

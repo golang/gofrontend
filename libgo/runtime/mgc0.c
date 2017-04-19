@@ -1150,10 +1150,10 @@ scanblock(Workbuf *wbuf, bool keepworking)
 	}
 }
 
-static struct root_list* roots;
+static struct gcRootList* roots;
 
 void
-__go_register_gc_roots (struct root_list* r)
+__go_register_gc_roots (struct gcRootList* r)
 {
 	// FIXME: This needs locking if multiple goroutines can call
 	// dlopen simultaneously.
@@ -1245,15 +1245,16 @@ markroot(ParFor *desc, uint32 i)
 	case RootData:
 		// For gccgo this is both data and bss.
 		{
-			struct root_list *pl;
+			struct gcRootList *pl;
 
 			for(pl = roots; pl != nil; pl = pl->next) {
-				struct root *pr = &pl->roots[0];
-				while(1) {
+				struct gcRoot *pr = &pl->roots[0];
+				intgo count = pl->count;
+				intgo i;
+
+				for (i = 0; i < count; i++) {
 					void *decl = pr->decl;
-					if(decl == nil)
-						break;
-					enqueue1(&wbuf, (Obj){decl, pr->size, 0});
+					enqueue1(&wbuf, (Obj){decl, pr->ptrdata, 0});
 					pr++;
 				}
 			}

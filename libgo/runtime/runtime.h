@@ -516,15 +516,20 @@ void	runtime_check(void)
   __asm__ (GOSYM_PREFIX "runtime.check");
 
 // A list of global variables that the garbage collector must scan.
-struct root_list {
-	struct root_list *next;
-	struct root {
-		void *decl;
-		size_t size;
-	} roots[];
+struct gcRoot {
+	void*   decl;
+	uintptr size;
+	uintptr ptrdata;
+	void*   gcdata; // Not yet used.
 };
 
-void	__go_register_gc_roots(struct root_list*);
+struct gcRootList {
+	struct gcRootList* next;
+	intgo              count;
+	struct gcRoot      roots[];
+};
+
+void	__go_register_gc_roots(struct gcRootList*);
 
 // Size of stack space allocated using Go's allocator.
 // This will be 0 when using split stacks, as in that case
