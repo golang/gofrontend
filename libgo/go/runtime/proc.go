@@ -2566,6 +2566,7 @@ func newproc(fn uintptr, arg unsafe.Pointer) *g {
 
 	newg.param = arg
 	newg.gopc = getcallerpc(unsafe.Pointer(&fn))
+	newg.startpc = fn
 	if isSystemGoroutine(newg) {
 		atomic.Xadd(&sched.ngsys, +1)
 	}
