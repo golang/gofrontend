@@ -441,21 +441,23 @@ void getTraceback(G* me, G* gp)
 }
 
 // Do a stack trace of gp, and then restore the context to
-// gp->dotraceback.
+// gp->traceback->gp.
 
 void
 gtraceback(G* gp)
 {
 	Traceback* traceback;
+	M* holdm;
 
 	traceback = gp->traceback;
 	gp->traceback = nil;
-	if(gp->m != nil && gp->m != g->m)
+	holdm = gp->m;
+	if(holdm != nil && holdm != g->m)
 		runtime_throw("gtraceback: m is not nil");
 	gp->m = traceback->gp->m;
 	traceback->c = runtime_callers(1, traceback->locbuf,
 		sizeof traceback->locbuf / sizeof traceback->locbuf[0], false);
-	gp->m = nil;
+	gp->m = holdm;
 	runtime_gogo(traceback->gp);
 }
 
