@@ -459,14 +459,22 @@ gtraceback(G* gp)
 	runtime_gogo(traceback->gp);
 }
 
-// Called to set up the context information for a new M.
-
-void mstartInitContext(G*, void*)
-	__asm__(GOSYM_PREFIX "runtime.mstartInitContext");
-
-void
-mstartInitContext(G *gp, void *stack __attribute__ ((unused)))
+// Called by pthread_create to start an M.
+void*
+runtime_mstart(void *arg)
 {
+	M* mp;
+	G* gp;
+
+	mp = (M*)(arg);
+	gp = mp->g0;
+	gp->m = mp;
+
+	g = gp;
+
+	gp->entry = nil;
+	gp->param = nil;
+
 	initcontext();
 
 	// Record top of stack for use by mcall.
@@ -475,11 +483,11 @@ mstartInitContext(G *gp, void *stack __attribute__ ((unused)))
 #ifdef USING_SPLIT_STACK
 	__splitstack_getcontext(&gp->stackcontext[0]);
 #else
-	gp->gcinitialsp = stack;
+	gp->gcinitialsp = &arg;
 	// Setting gcstacksize to 0 is a marker meaning that gcinitialsp
 	// is the top of the stack, not the bottom.
 	gp->gcstacksize = 0;
-	gp->gcnextsp = stack;
+	gp->gcnextsp = &arg;
 #endif
 
 	// Save the currently active context.  This will return
@@ -493,7 +501,7 @@ mstartInitContext(G *gp, void *stack __attribute__ ((unused)))
 		gtraceback(gp);
 	}
 
-	if(gp->entry != 0) {
+	if(gp->entry != nil) {
 		// Got here from mcall.
 		FuncVal *fv = gp->entry;
 		void (*pfn)(G*) = (void (*)(G*))fv->fn;
@@ -514,6 +522,10 @@ mstartInitContext(G *gp, void *stack __attribute__ ((unused)))
 #endif
 
 	mstart1();
+
+	// mstart1 does not return, but we need a return statement
+	// here to avoid a compiler warning.
+	return nil;
 }
 
 typedef struct CgoThreadStart CgoThreadStart;
@@ -550,7 +562,7 @@ setGContext()
 #endif
 	getcontext(ucontext_arg(&gp->context[0]));
 
-	if(gp->entry != 0) {
+	if(gp->entry != nil) {
 		// Got here from mcall.
 		FuncVal *fv = gp->entry;
 		void (*pfn)(G*) = (void (*)(G*))fv->fn;

@@ -35,7 +35,6 @@ import (
 //go:linkname stopTheWorldWithSema runtime.stopTheWorldWithSema
 //go:linkname startTheWorldWithSema runtime.startTheWorldWithSema
 //go:linkname kickoff runtime.kickoff
-//go:linkname mstart runtime.mstart
 //go:linkname mstart1 runtime.mstart1
 //go:linkname globrunqput runtime.globrunqput
 //go:linkname pidleget runtime.pidleget
@@ -54,7 +53,6 @@ func resetNewG(*g, *unsafe.Pointer, *uintptr)
 func gogo(*g)
 func setGContext()
 func makeGContext(*g, unsafe.Pointer, uintptr)
-func mstartInitContext(*g, unsafe.Pointer)
 func getTraceback(me, gp *g)
 func gtraceback(*g)
 func _cgo_notify_runtime_init_done()
@@ -988,26 +986,7 @@ func kickoff() {
 	goexit1()
 }
 
-// Called to start an M.
-// For gccgo this is called directly by pthread_create.
-//go:nosplit
-func mstart(mpu unsafe.Pointer) unsafe.Pointer {
-	mp := (*m)(mpu)
-	_g_ := mp.g0
-	_g_.m = mp
-	setg(_g_)
-
-	_g_.entry = nil
-	_g_.param = nil
-
-	mstartInitContext(_g_, unsafe.Pointer(&mp))
-
-	// This is never reached, but is required because pthread_create
-	// expects a function that returns a pointer.
-	return nil
-}
-
-// This is called from mstartInitContext.
+// This is called from mstart.
 func mstart1() {
 	_g_ := getg()
 

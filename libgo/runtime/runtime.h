@@ -293,8 +293,7 @@ void	runtime_ready(G*, intgo, bool)
   __asm__ (GOSYM_PREFIX "runtime.ready");
 String	runtime_getenv(const char*);
 int32	runtime_atoi(const byte*, intgo);
-void*	runtime_mstart(void*)
-	__asm__(GOSYM_PREFIX "runtime.mstart");
+void*	runtime_mstart(void*);
 G*	runtime_malg(bool, bool, byte**, uintptr*)
 	__asm__(GOSYM_PREFIX "runtime.malg");
 void	runtime_minit(void)
