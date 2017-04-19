@@ -2074,9 +2074,11 @@ var structLookupCache struct {
 // This limitation may be lifted in a future version.
 func StructOf(fields []StructField) Type {
 	var (
-		hash     = uint32(0)
-		size     uintptr
-		typalign int8
+		hash       = uint32(0)
+		size       uintptr
+		typalign   int8
+		comparable = true
+		hashable   = true
 
 		fs   = make([]structField, len(fields))
 		repr = make([]byte, 0, 64)
@@ -2156,6 +2158,9 @@ func StructOf(fields []StructField) Type {
 		if i < len(fields)-1 {
 			repr = append(repr, ';')
 		}
+
+		comparable = comparable && (ft.equalfn != nil)
+		hashable = hashable && (ft.hashfn != nil)
 
 		f.offset = align(size, uintptr(ft.fieldAlign))
 		if int8(ft.fieldAlign) > typalign {
@@ -2241,24 +2246,32 @@ func StructOf(fields []StructField) Type {
 		typ.gcdata = (*byte)(unsafe.Pointer(&gc[0]))
 	}
 
-	typ.hashfn = func(p unsafe.Pointer, seed uintptr) uintptr {
-		ret := seed
-		for _, ft := range typ.fields {
-			o := unsafe.Pointer(uintptr(p) + ft.offset)
-			ret = ft.typ.hashfn(o, ret)
+	if hashable {
+		typ.hashfn = func(p unsafe.Pointer, seed uintptr) uintptr {
+			o := seed
+			for _, ft := range typ.fields {
+				pi := unsafe.Pointer(uintptr(p) + ft.offset)
+				o = ft.typ.hashfn(pi, o)
+			}
+			return o
 		}
-		return ret
+	} else {
+		typ.hashfn = nil
 	}
 
-	typ.equalfn = func(p, q unsafe.Pointer) bool {
-		for _, ft := range typ.fields {
-			pi := unsafe.Pointer(uintptr(p) + ft.offset)
-			qi := unsafe.Pointer(uintptr(q) + ft.offset)
-			if !ft.typ.equalfn(pi, qi) {
-				return false
+	if comparable {
+		typ.equalfn = func(p, q unsafe.Pointer) bool {
+			for _, ft := range typ.fields {
+				pi := unsafe.Pointer(uintptr(p) + ft.offset)
+				qi := unsafe.Pointer(uintptr(q) + ft.offset)
+				if !ft.typ.equalfn(pi, qi) {
+					return false
+				}
 			}
+			return true
 		}
-		return true
+	} else {
+		typ.equalfn = nil
 	}
 
 	typ.kind &^= kindDirectIface
@@ -2382,24 +2395,35 @@ func ArrayOf(count int, elem Type) Type {
 
 	array.kind &^= kindDirectIface
 
-	array.hashfn = func(p unsafe.Pointer, seed uintptr) uintptr {
-		ret := seed
-		for i := 0; i < count; i++ {
-			ret = typ.hashfn(p, ret)
-			p = unsafe.Pointer(uintptr(p) + typ.size)
+	esize := typ.size
+
+	if typ.equalfn == nil {
+		array.equalfn = nil
+	} else {
+		eequal := typ.equalfn
+		array.equalfn = func(p, q unsafe.Pointer) bool {
+			for i := 0; i < count; i++ {
+				pi := arrayAt(p, i, esize)
+				qi := arrayAt(q, i, esize)
+				if !eequal(pi, qi) {
+					return false
+				}
+			}
+			return true
 		}
-		return ret
 	}
 
-	array.equalfn = func(p1, p2 unsafe.Pointer) bool {
-		for i := 0; i < count; i++ {
-			if !typ.equalfn(p1, p2) {
-				return false
+	if typ.hashfn == nil {
+		array.hashfn = nil
+	} else {
+		ehash := typ.hashfn
+		array.hashfn = func(ptr unsafe.Pointer, seed uintptr) uintptr {
+			o := seed
+			for i := 0; i < count; i++ {
+				o = ehash(arrayAt(ptr, i, esize), o)
 			}
-			p1 = unsafe.Pointer(uintptr(p1) + typ.size)
-			p2 = unsafe.Pointer(uintptr(p2) + typ.size)
+			return o
 		}
-		return true
 	}
 
 	return cachePut(ckey, &array.rtype)
