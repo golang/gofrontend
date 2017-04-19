@@ -10,9 +10,9 @@
 #include "go-type.h"
 
 void *
-__go_new (const struct __go_type_descriptor *td, uintptr_t size)
+__go_new (const struct __go_type_descriptor *td)
 {
-  return runtime_mallocgc (size,
+  return runtime_mallocgc (td->__size,
 			   (uintptr) td | TypeInfo_SingleObject,
 			   td->__code & GO_NO_POINTERS ? FlagNoScan : 0);
 }

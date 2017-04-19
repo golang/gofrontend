@@ -4484,9 +4484,7 @@ Expression*
 Gogo::allocate_memory(Type* type, Location location)
 {
   Expression* td = Expression::make_type_descriptor(type, location);
-  Expression* size =
-    Expression::make_type_info(type, Expression::TYPE_INFO_SIZE);
-  return Runtime::make_call(Runtime::NEW, location, 2, td, size);
+  return Runtime::make_call(Runtime::NEW, location, 1, td);
 }
 
 // Traversal class used to check for return statements.

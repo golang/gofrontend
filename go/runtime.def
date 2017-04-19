@@ -224,7 +224,7 @@ DEF_GO_RUNTIME(REGISTER_GC_ROOTS, "__go_register_gc_roots", P1(POINTER), R0())
 
 
 // Allocate memory.
-DEF_GO_RUNTIME(NEW, "__go_new", P2(TYPE, UINTPTR), R1(POINTER))
+DEF_GO_RUNTIME(NEW, "__go_new", P1(TYPE), R1(POINTER))
 
 // Start a new goroutine.
 DEF_GO_RUNTIME(GO, "__go_go", P2(FUNC_PTR, POINTER), R0())
