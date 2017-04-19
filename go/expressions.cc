@@ -9578,6 +9578,12 @@ Call_expression::lower_varargs(Gogo* gogo, Named_object* function,
 			       Type* varargs_type, size_t param_count,
                                Slice_storage_escape_disp escape_disp)
 {
+  // When compiling the runtime, varargs slices do not escape.  When
+  // escape analysis becomes the default, this should be changed to
+  // make it an error if we have a varargs slice that escapes.
+  if (gogo->compiling_runtime() && gogo->package_name() == "runtime")
+    escape_disp = SLICE_STORAGE_DOES_NOT_ESCAPE;
+
   if (this->varargs_are_lowered_)
     return;
 
@@ -10915,7 +10921,7 @@ Array_index_expression::do_flatten(Gogo*, Named_object*,
       inserter->insert(temp);
       this->end_ = Expression::make_temporary_reference(temp, loc);
     }
-  if (cap!= NULL && !cap->is_variable())
+  if (cap != NULL && !cap->is_variable())
     {
       temp = Statement::make_temporary(NULL, cap, loc);
       inserter->insert(temp);
@@ -13132,10 +13138,12 @@ Slice_construction_expression::do_flatten(Gogo* gogo, Named_object* no,
   this->Array_construction_expression::do_flatten(gogo, no, inserter);
 
   // Create a stack-allocated storage temp if storage won't escape
-  if (!this->storage_escapes_ && this->slice_storage_ == NULL)
+  if (!this->storage_escapes_
+      && this->slice_storage_ == NULL
+      && this->element_count() > 0)
     {
       Location loc = this->location();
-      this->array_val_ = create_array_val();
+      this->array_val_ = this->create_array_val();
       go_assert(this->array_val_);
       Temporary_statement* temp =
           Statement::make_temporary(this->valtype_, this->array_val_, loc);
@@ -13165,7 +13173,7 @@ Bexpression*
 Slice_construction_expression::do_get_backend(Translate_context* context)
 {
   if (this->array_val_ == NULL)
-    this->array_val_ = create_array_val();
+    this->array_val_ = this->create_array_val();
   if (this->array_val_ == NULL)
     {
       go_assert(this->type()->is_error());
@@ -14722,7 +14730,7 @@ Type_info_expression::do_dump_expression(
   ast_dump_context->ostream() << 
     (this->type_info_ == TYPE_INFO_ALIGNMENT ? "alignment" 
     : this->type_info_ == TYPE_INFO_FIELD_ALIGNMENT ? "field alignment"
-    : this->type_info_ == TYPE_INFO_SIZE ? "size "
+    : this->type_info_ == TYPE_INFO_SIZE ? "size"
     : this->type_info_ == TYPE_INFO_BACKEND_PTRDATA ? "backend_ptrdata"
     : this->type_info_ == TYPE_INFO_DESCRIPTOR_PTRDATA ? "descriptor_ptrdata"
     : "unknown");
