@@ -1452,6 +1452,12 @@ addstackroots(G *gp, Workbuf **wbufp)
 		break;
 	}
 
+	// Explicitly scan the saved contexts.
+	// We have to pass defaultProg to prevent scanblock from looking
+	// up the pointer to get the type.
+	enqueue1(wbufp, (Obj){(byte*)(&gp->gcregs[0]), sizeof(gp->gcregs), (uintptr)(&defaultProg[0])});
+	enqueue1(wbufp, (Obj){(byte*)(&gp->context[0]), sizeof(gp->context), (uintptr)(&defaultProg[0])});
+
 #ifdef USING_SPLIT_STACK
 	M *mp;
 	void* sp;
@@ -1483,7 +1489,7 @@ addstackroots(G *gp, Workbuf **wbufp)
 			next_sp = gp->gcnextsp;
 			initial_sp = gp->gcinitialsp;
 		} else {
-			sp = __splitstack_find_context(&gp->stackcontext[0],
+			sp = __splitstack_find_context((void*)(&gp->stackcontext[0]),
 						       &spsize, &next_segment,
 						       &next_sp, &initial_sp);
 		}

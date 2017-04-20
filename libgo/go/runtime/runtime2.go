@@ -418,8 +418,8 @@ type g struct {
 
 	traceback *tracebackg // stack traceback buffer
 
-	context      g_ucontext_t       // saved context for setcontext
-	stackcontext [10]unsafe.Pointer // split-stack context
+	context      g_ucontext_t // saved context for setcontext
+	stackcontext [10]uintptr  // split-stack context
 }
 
 type m struct {
@@ -787,7 +787,7 @@ var (
 // aligned to a 16-byte boundary.  We implement this by increasing the
 // required size and picking an appropriate offset when we use the
 // array.
-type g_ucontext_t [(_sizeof_ucontext_t + 15) / unsafe.Sizeof(unsafe.Pointer(nil))]unsafe.Pointer
+type g_ucontext_t [(_sizeof_ucontext_t + 15) / unsafe.Sizeof(uintptr(0))]uintptr
 
 // sigset is the Go version of the C type sigset_t.
 // _sigset_t is defined by the Makefile from <signal.h>.

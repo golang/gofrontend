@@ -181,7 +181,7 @@ fixcontext(ucontext_t* c __attribute__ ((unused)))
 // So we make the field larger in runtime2.go and pick an appropriate
 // offset within the field here.
 static ucontext_t*
-ucontext_arg(void** go_ucontext)
+ucontext_arg(uintptr* go_ucontext)
 {
 	uintptr_t p = (uintptr_t)go_ucontext;
 	size_t align = __alignof__(ucontext_t);
@@ -279,7 +279,7 @@ void
 runtime_gogo(G* newg)
 {
 #ifdef USING_SPLIT_STACK
-	__splitstack_setcontext(&newg->stackcontext[0]);
+	__splitstack_setcontext((void*)(&newg->stackcontext[0]));
 #endif
 	g = newg;
 	newg->fromgogo = true;
@@ -314,7 +314,7 @@ runtime_mcall(FuncVal *fv)
 	if(gp != nil) {
 
 #ifdef USING_SPLIT_STACK
-		__splitstack_getcontext(&g->stackcontext[0]);
+		__splitstack_getcontext((void*)(&g->stackcontext[0]));
 #else
 		// We have to point to an address on the stack that is
 		// below the saved registers.
@@ -338,7 +338,7 @@ runtime_mcall(FuncVal *fv)
 	}
 	if (gp == nil || !gp->fromgogo) {
 #ifdef USING_SPLIT_STACK
-		__splitstack_setcontext(&mp->g0->stackcontext[0]);
+		__splitstack_setcontext((void*)(&mp->g0->stackcontext[0]));
 #endif
 		mp->g0->entry = fv;
 		mp->g0->param = gp;
@@ -431,7 +431,7 @@ void getTraceback(G*, G*) __asm__(GOSYM_PREFIX "runtime.getTraceback");
 void getTraceback(G* me, G* gp)
 {
 #ifdef USING_SPLIT_STACK
-	__splitstack_getcontext(&me->stackcontext[0]);
+	__splitstack_getcontext((void*)(&me->stackcontext[0]));
 #endif
 	getcontext(ucontext_arg(&me->context[0]));
 
@@ -483,7 +483,7 @@ runtime_mstart(void *arg)
 	// Once we call schedule we're never coming back,
 	// so other calls can reuse this stack space.
 #ifdef USING_SPLIT_STACK
-	__splitstack_getcontext(&gp->stackcontext[0]);
+	__splitstack_getcontext((void*)(&gp->stackcontext[0]));
 #else
 	gp->gcinitialsp = &arg;
 	// Setting gcstacksize to 0 is a marker meaning that gcinitialsp
@@ -553,7 +553,7 @@ setGContext()
 	gp->entry = nil;
 	gp->param = nil;
 #ifdef USING_SPLIT_STACK
-	__splitstack_getcontext(&gp->stackcontext[0]);
+	__splitstack_getcontext((void*)(&gp->stackcontext[0]));
 	val = 0;
 	__splitstack_block_signals(&val, nil);
 #else
@@ -715,10 +715,10 @@ runtime_malg(bool allocatestack, bool signalstack, byte** ret_stack, uintptr* re
 
 #if USING_SPLIT_STACK
 		*ret_stack = __splitstack_makecontext(stacksize,
-						      &newg->stackcontext[0],
+						      (void*)(&newg->stackcontext[0]),
 						      &ss_stacksize);
 		*ret_stacksize = (uintptr)ss_stacksize;
-		__splitstack_block_signals_context(&newg->stackcontext[0],
+		__splitstack_block_signals_context((void*)(&newg->stackcontext[0]),
 						   &dont_block_signals, nil);
 #else
                 // In 64-bit mode, the maximum Go allocation space is
@@ -756,9 +756,9 @@ resetNewG(G *newg, void **sp, uintptr *spsize)
   int dont_block_signals = 0;
   size_t ss_spsize;
 
-  *sp = __splitstack_resetcontext(&newg->stackcontext[0], &ss_spsize);
+  *sp = __splitstack_resetcontext((void*)(&newg->stackcontext[0]), &ss_spsize);
   *spsize = ss_spsize;
-  __splitstack_block_signals_context(&newg->stackcontext[0],
+  __splitstack_block_signals_context((void*)(&newg->stackcontext[0]),
 				     &dont_block_signals, nil);
 #else
   *sp = newg->gcinitialsp;
