@@ -562,7 +562,7 @@ s-version: Makefile
 
 runtime_sysinfo.go: s-runtime_sysinfo; @true
 s-runtime_sysinfo: $(srcdir)/mkrsysinfo.sh gen-sysinfo.go
-	$(SHELL) $(srcdir)/mkrsysinfo.sh
+	GOOS=$(GOOS) $(SHELL) $(srcdir)/mkrsysinfo.sh
 	$(SHELL) $(srcdir)/mvifdiff.sh tmp-runtime_sysinfo.go runtime_sysinfo.go
 	$(STAMP) $@
 
@@ -652,7 +652,7 @@ s-errno:
 
 sysinfo.go: s-sysinfo; @true
 s-sysinfo: $(srcdir)/mksysinfo.sh gen-sysinfo.go errno.i
-	$(SHELL) $(srcdir)/mksysinfo.sh
+	GOOS=$(GOOS) $(SHELL) $(srcdir)/mksysinfo.sh
 	$(SHELL) $(srcdir)/mvifdiff.sh tmp-sysinfo.go sysinfo.go
 	$(STAMP) $@
 

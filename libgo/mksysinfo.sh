@@ -67,6 +67,15 @@ if ! grep '^const F_DUPFD_CLOEXEC' ${OUT} >/dev/null 2>&1; then
   echo "const F_DUPFD_CLOEXEC = 0" >> ${OUT}
 fi
 
+# AIX 7.1 is a 64 bits value for _FCLOEXEC (referenced by O_CLOEXEC)
+# which leads to a constant overflow when using O_CLOEXEC in some
+# go code. Issue wan not present in 6.1 (no O_CLOEXEC) and is no
+# more present in 7.2 (_FCLOEXEC is a 32 bit value).
+if test "${GOOS}" = "aix" && `oslevel | grep -q "^7.1"`; then
+    sed -e 's/const __FCLOEXEC = .*/const __FCLOEXEC = 0/' ${OUT} > ${OUT}-2
+    mv ${OUT}-2 ${OUT}
+fi
+
 # These flags can be lost on i386 GNU/Linux when using
 # -D_FILE_OFFSET_BITS=64, because we see "#define F_SETLK F_SETLK64"
 # before we see the definition of F_SETLK64.

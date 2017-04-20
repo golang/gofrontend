@@ -103,6 +103,15 @@ if ! grep '^const _EPOLL_CLOEXEC' ${OUT} >/dev/null 2>&1; then
   echo "const _EPOLL_CLOEXEC = 02000000" >> ${OUT}
 fi
 
+# AIX 7.1 is a 64 bits value for _FCLOEXEC (referenced by O_CLOEXEC)
+# which leads to a constant overflow when using O_CLOEXEC in some
+# go code. Issue wan not present in 6.1 (no O_CLOEXEC) and is no
+# more present in 7.2 (_FCLOEXEC is a 32 bit value).
+if test "${GOOS}" = "aix" && `oslevel | grep -q "^7.1"`; then
+    sed -e 's/const __FCLOEXEC = .*/const __FCLOEXEC = 0/' ${OUT} > ${OUT}-2
+    mv ${OUT}-2 ${OUT}
+fi
+
 # The semt structure, for Solaris.
 grep '^type _sem_t ' gen-sysinfo.go | \
     sed -e 's/_sem_t/semt/' >> ${OUT}
