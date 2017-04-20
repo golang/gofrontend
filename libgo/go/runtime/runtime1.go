@@ -112,10 +112,10 @@ var test_z64, test_x64 uint64
 func testAtomic64() {
 	test_z64 = 42
 	test_x64 = 0
-	// prefetcht0(uintptr(unsafe.Pointer(&test_z64)))
-	// prefetcht1(uintptr(unsafe.Pointer(&test_z64)))
-	// prefetcht2(uintptr(unsafe.Pointer(&test_z64)))
-	// prefetchnta(uintptr(unsafe.Pointer(&test_z64)))
+	prefetcht0(uintptr(unsafe.Pointer(&test_z64)))
+	prefetcht1(uintptr(unsafe.Pointer(&test_z64)))
+	prefetcht2(uintptr(unsafe.Pointer(&test_z64)))
+	prefetchnta(uintptr(unsafe.Pointer(&test_z64)))
 	if atomic.Cas64(&test_z64, test_x64, 1) {
 		throw("cas64 failed")
 	}
@@ -151,14 +151,6 @@ func testAtomic64() {
 }
 
 func check() {
-
-	// This doesn't currently work for gccgo.  Because escape
-	// analysis is not turned on by default, the code below that
-	// takes the address of local variables causes memory
-	// allocation, but this function is called before the memory
-	// allocator has been initialized.
-	return
-
 	var (
 		a     int8
 		b     uint8

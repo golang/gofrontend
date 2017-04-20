@@ -222,6 +222,25 @@ const _NoArgs = ^uintptr(0)
 //go:linkname time_now time.now
 func time_now() (sec int64, nsec int32)
 
+//extern __builtin_prefetch
+func prefetch(addr unsafe.Pointer, rw int32, locality int32)
+
+func prefetcht0(addr uintptr) {
+	prefetch(unsafe.Pointer(addr), 0, 3)
+}
+
+func prefetcht1(addr uintptr) {
+	prefetch(unsafe.Pointer(addr), 0, 2)
+}
+
+func prefetcht2(addr uintptr) {
+	prefetch(unsafe.Pointer(addr), 0, 1)
+}
+
+func prefetchnta(addr uintptr) {
+	prefetch(unsafe.Pointer(addr), 0, 0)
+}
+
 // For gccgo, expose this for C callers.
 //go:linkname unixnanotime runtime.unixnanotime
 func unixnanotime() int64 {
