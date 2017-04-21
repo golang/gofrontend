@@ -512,6 +512,7 @@ s-version: Makefile
 	echo "package sys" > version.go.tmp
 	echo 'const DefaultGoroot = "$(prefix)"' >> version.go.tmp
 	echo 'const TheVersion = "'`cat $(srcdir)/VERSION | sed 1q`' '`$(GOC) --version | sed 1q`'"' >> version.go.tmp
+	echo 'const Goexperiment = ``' >> version.go.tmp
 	echo 'const GOARCH = "'$(GOARCH)'"' >> version.go.tmp
 	echo 'const GOOS = "'$(GOOS)'"' >> version.go.tmp
 	echo 'const GccgoToolDir = "$(libexecsubdir)"' >> version.go.tmp
