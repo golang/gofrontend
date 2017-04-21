@@ -176,6 +176,11 @@ func tracebackothers(me *g) {
 	var tb tracebackg
 	tb.gp = me
 
+	// The getTraceback function will modify me's stack context.
+	// Preserve it in case we have been called via systemstack.
+	context := me.context
+	stackcontext := me.stackcontext
+
 	level, _, _ := gotraceback()
 
 	// Show the current goroutine first, if we haven't already.
@@ -225,4 +230,7 @@ func tracebackothers(me *g) {
 		}
 	}
 	unlock(&allglock)
+
+	me.context = context
+	me.stackcontext = stackcontext
 }
