@@ -556,7 +556,7 @@ s-sigtab: $(srcdir)/mksigtab.sh gen-sysinfo.go
 # sigset conflicts with system type sigset on AIX, so we need to rename it
 runtime.inc: s-runtime-inc; @true
 s-runtime-inc: runtime.lo Makefile
-	rm -f runtime.inc.tmp2
+	rm -f runtime.inc.tmp2 runtime.inc.tmp3
 	grep -v "#define _" runtime.inc.tmp | grep -v "#define [cm][01234] " | grep -v "#define empty " > runtime.inc.tmp2
 	for pattern in '_[GP][a-z]' _Max _Lock _Sig _Trace _MHeap _Num; do \
 	  grep "#define $$pattern" runtime.inc.tmp >> runtime.inc.tmp2; \
@@ -567,6 +567,7 @@ s-runtime-inc: runtime.lo Makefile
 	done
 	sed -e 's/sigset/sigset_go/' runtime.inc.tmp2 > runtime.inc.tmp3
 	$(SHELL) $(srcdir)/mvifdiff.sh runtime.inc.tmp3 runtime.inc
+	rm -f runtime.inc.tmp2 runtime.inc.tmp3
 	$(STAMP) $@
 
 noinst_DATA = zstdpkglist.go
@@ -1414,7 +1415,12 @@ check-multi:
 bench:
 	-@$(MAKE) -k $(TEST_PACKAGES) GOBENCH=.
 
-MOSTLYCLEAN_FILES = libgo.head libgo.sum.sep libgo.log.sep
+MOSTLYCLEANFILES = \
+	s-runtime_sysinfo s-sigtab s-runtime-inc s-zstdpkglist \
+	s-libcalls s-libcalls-list s-syscall_arch s-gen-sysinfo s-sysinfo \
+	s-errno s-epoll \
+	libgo.head libgo.sum.sep libgo.log.sep libgo.var \
+	libcalls-list runtime.inc runtime.inc.tmp2 runtime.inc.tmp3
 
 mostlyclean-local:
 	find . -name '*.lo' -print | xargs $(LIBTOOL) --mode=clean rm -f
@@ -1422,8 +1428,13 @@ mostlyclean-local:
 	find . -name '*-testsum' -print | xargs rm -f
 	find . -name '*-testlog' -print | xargs rm -f
 
-CLEANFILES = *.go *.gox goc2c *.c s-version libgo.sum libgo.log
+CLEANFILES = *.go goc2c *.c s-version libgo.sum libgo.log runtime.inc
 
 clean-local:
 	find . -name '*.la' -print | xargs $(LIBTOOL) --mode=clean rm -f
 	find . -name '*.a' -print | xargs rm -f
+	find . -name '*.gox' -print | xargs rm -f
+	find . -name '*.s-gox' -print | xargs rm -f
+
+distclean-local:
+	find . -name '*.lo.dep' -print | xargs rm -f
