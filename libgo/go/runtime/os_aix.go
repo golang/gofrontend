@@ -62,7 +62,7 @@ func semasleep(ns int64) int32 {
 			throw("clock_gettime")
 		}
 		ts.tv_sec += timespec_sec_t(ns / 1000000000)
-		ts.tv_nsec += timespec_nsec_t((int64(ts.tv_nsec) + ns) % 1000000000)
+		ts.tv_nsec += timespec_nsec_t(ns % 1000000000)
 		if ts.tv_nsec >= 1000000000 {
 			ts.tv_sec += timespec_sec_t(1)
 			ts.tv_nsec -= timespec_nsec_t(1000000000)
