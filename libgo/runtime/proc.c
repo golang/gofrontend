@@ -152,18 +152,17 @@ fixcontext(ucontext_t *c)
 
 # elif defined(_AIX)
 
-// TODO: configure detects TLS clobbering, so initcontext and fixcontext are
-// required to complete the build, but more investigation is necessary to
-// understand the clobbering issue and fix it.
-
 static inline void
 initcontext(void)
 {
 }
 
 static inline void
-fixcontext(ucontext_t* c __attribute__ ((unused)))
+fixcontext(ucontext_t* c)
 {
+	// Thread pointer is in r13, per 64-bit ABI.
+	if (sizeof (c->uc_mcontext.jmp_context.gpr[13]) == 8)
+		asm ("std 13, %0" : "=m"(c->uc_mcontext.jmp_context.gpr[13]));
 }
 
 # else
