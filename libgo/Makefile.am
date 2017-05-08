@@ -474,16 +474,6 @@ runtime_files = \
 	$(rtems_task_variable_add_file) \
 	$(runtime_getncpu_file)
 
-goc2c.$(OBJEXT): runtime/goc2c.c
-	$(CC_FOR_BUILD) -c $(CFLAGS_FOR_BUILD) $<
-
-goc2c: goc2c.$(OBJEXT)
-	$(CC_FOR_BUILD) $(CFLAGS_FOR_BUILD) $(LDFLAGS_FOR_BUILD) -o $@ $<
-
-%.c: $(srcdir)/runtime/%.goc goc2c
-	./goc2c $< > $@.tmp
-	mv -f $@.tmp $@
-
 version.go: s-version; @true
 s-version: Makefile
 	rm -f version.go.tmp
@@ -1428,7 +1418,7 @@ mostlyclean-local:
 	find . -name '*-testsum' -print | xargs rm -f
 	find . -name '*-testlog' -print | xargs rm -f
 
-CLEANFILES = *.go goc2c *.c s-version libgo.sum libgo.log runtime.inc
+CLEANFILES = *.go *.c s-version libgo.sum libgo.log runtime.inc
 
 clean-local:
 	find . -name '*.la' -print | xargs $(LIBTOOL) --mode=clean rm -f
