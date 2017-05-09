@@ -14312,7 +14312,6 @@ Heap_expression::do_get_backend(Translate_context* context)
   Bvariable* space_temp =
     gogo->backend()->temporary_variable(fndecl, context->bblock(), btype,
 					space, true, loc, &decl);
-  space = gogo->backend()->var_expression(space_temp, VE_lvalue, loc);
   Btype* expr_btype = etype->get_backend(gogo);
 
   Bexpression* bexpr = this->expr_->get_backend(context);
@@ -14323,6 +14322,7 @@ Heap_expression::do_get_backend(Translate_context* context)
   Bstatement* assn;
   if (!etype->has_pointer())
     {
+      space = gogo->backend()->var_expression(space_temp, VE_lvalue, loc);
       Bexpression* ref =
 	gogo->backend()->indirect_expression(expr_btype, space, true, loc);
       assn = gogo->backend()->assignment_statement(fndecl, ref, bexpr, loc);
@@ -14340,6 +14340,7 @@ Heap_expression::do_get_backend(Translate_context* context)
 
       Expression* td = Expression::make_type_descriptor(etype, loc);
       Type* etype_ptr = Type::make_pointer_type(etype);
+      space = gogo->backend()->var_expression(space_temp, VE_rvalue, loc);
       Expression* elhs = Expression::make_backend(space, etype_ptr, loc);
       Expression* erhs = Expression::make_backend(addr, etype_ptr, loc);
       Expression* call = Runtime::make_call(Runtime::TYPEDMEMMOVE, loc, 3,
