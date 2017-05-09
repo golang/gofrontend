@@ -585,7 +585,10 @@ class Gogo
   // variable initializers that would otherwise not be seen.
   void
   add_gc_root(Expression* expr)
-  { this->gc_roots_.push_back(expr); }
+  {
+    this->set_need_init_fn();
+    this->gc_roots_.push_back(expr);
+  }
 
   // Traverse the tree.  See the Traverse class.
   void
