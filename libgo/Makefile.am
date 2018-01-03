@@ -591,25 +591,13 @@ s-zdefaultcc: Makefile
 	$(SHELL) $(srcdir)/../move-if-change zdefaultcc.go.tmp zdefaultcc.go
 	$(STAMP) $@ 
 
-# _Complex_lock and _Reader_lock are Go translations of some AIX system
-# types and should not be exported back to C
-# semt is a Go translation of the C type sem_t; it fails to convert on
-# some systems and need not be exported back to C.
-# sigset conflicts with system type sigset on AIX, so we need to rename it
+# Post-process runtime.inc.raw (raw output of -fgo-c-header option when
+# compiling runtime) to prune out certain types that should not be
+# exported back to C. See comments in mkruntimeinc.sh for more details.
 runtime.inc: s-runtime-inc; @true
 s-runtime-inc: runtime.lo Makefile
-	rm -f runtime.inc.tmp2 runtime.inc.tmp3
-	grep -v "#define _" runtime.inc.tmp | grep -v "#define [cm][01234] " | grep -v "#define empty " > runtime.inc.tmp2
-	for pattern in '_[GP][a-z]' _Max _Lock _Sig _Trace _MHeap _Num; do \
-	  grep "#define $$pattern" runtime.inc.tmp >> runtime.inc.tmp2; \
-	done
-	for TYPE in _Complex_lock _Reader_lock semt; do \
-	  sed -e '/struct '$${TYPE}' {/,/^}/s/^.*$$//' runtime.inc.tmp2 > runtime.inc.tmp3; \
-	  mv runtime.inc.tmp3 runtime.inc.tmp2; \
-	done
-	sed -e 's/sigset/sigset_go/' runtime.inc.tmp2 > runtime.inc.tmp3
-	$(SHELL) $(srcdir)/mvifdiff.sh runtime.inc.tmp3 runtime.inc
-	rm -f runtime.inc.tmp2 runtime.inc.tmp3
+	$(SHELL) $(srcdir)/mkruntimeinc.sh
+	$(SHELL) $(srcdir)/mvifdiff.sh tmp-runtime.inc runtime.inc
 	$(STAMP) $@
 
 noinst_DATA += zstdpkglist.go zdefaultcc.go
@@ -1152,7 +1140,7 @@ extra_go_files_syscall = \
 syscall.lo.dep: $(extra_go_files_syscall)
 
 # Pass -fgo-compiling-runtime when compiling the runtime package.
-runtime_lo_GOCFLAGS = -fgo-c-header=runtime.inc.tmp -fgo-compiling-runtime
+runtime_lo_GOCFLAGS = -fgo-c-header=runtime.inc.raw -fgo-compiling-runtime
 runtime_check_GOCFLAGS = -fgo-compiling-runtime
 runtime_internal_atomic_lo_GOCFLAGS = -fgo-compiling-runtime
 runtime_internal_atomic_lo_check_GOCFLAGS = -fgo-compiling-runtime
