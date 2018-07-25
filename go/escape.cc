@@ -2079,7 +2079,8 @@ Escape_analysis_assign::call(Call_expression* call)
       else
 	{
 	  if (!Type::are_identical(fntype->receiver()->type(),
-			       (*p)->expr()->type(), true, NULL))
+				   (*p)->expr()->type(), Type::COMPARE_TAGS,
+				   NULL))
 	    {
 	      // This will be converted later, preemptively track it instead
 	      // of its conversion expression which will show up in a later pass.
@@ -2098,7 +2099,7 @@ Escape_analysis_assign::call(Call_expression* call)
 	   ++pn, ++p)
 	{
 	  if (!Type::are_identical(pn->type(), (*p)->expr()->type(),
-				   true, NULL))
+				   Type::COMPARE_TAGS, NULL))
 	    {
 	      // This will be converted later, preemptively track it instead
 	      // of its conversion expression which will show up in a later pass.
