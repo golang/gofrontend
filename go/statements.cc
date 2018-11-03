@@ -6011,11 +6011,11 @@ For_range_statement::lower_range_channel(Gogo*,
 
   // The loop we generate:
   //   for {
-  //           index_temp, ok_temp = <-range
+  //           value_temp, ok_temp = <-range
   //           if !ok_temp {
   //                   break
   //           }
-  //           index = index_temp
+  //           value = value_temp
   //           original body
   //   }
 
