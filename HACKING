@@ -106,6 +106,6 @@ In summary, there are three steps to every change to the gofrontend:
 
 For the convenience of people who want to use gccgo without waiting
 for a release and without living on tip, I maintain a gccgo branch of
-GCC.  This lives at svn://svn/gcc/branches/gccgo.  I maintain it using
-the general GCC branch policies described at
+GCC.  This lives at svn://gcc.gnu.org/svn/gcc/branches/gccgo.  I maintain
+it using the general GCC branch policies described at
 http://gcc.gnu.org/wiki/SvnBranch .
