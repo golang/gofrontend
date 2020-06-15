@@ -23,9 +23,9 @@ git clone https://go.googlesource.com/gofrontend
 (or use the mirror on github: git clone http://github.com/golang/gofrontend)
 
 That gives you the frontend only.  Now you need a copy of the GCC
-source code.  See http://gcc.gnu.org/svn.html for details, or simply:
+source code.  See http://gcc.gnu.org/git.html for details, or simply:
 
-svn checkout svn://gcc.gnu.org/svn/gcc/trunk
+git clone git://gcc.gnu.org/git/gcc
 
 The GCC source code will have a copy of the Go frontend, but because
 you want to change the Go frontend, you will need to replace that copy
