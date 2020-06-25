@@ -20,10 +20,10 @@ source code:
 
 git clone https://go.googlesource.com/gofrontend
 
-(or use the mirror on github: git clone http://github.com/golang/gofrontend)
+(or use the mirror on github: git clone https://github.com/golang/gofrontend)
 
 That gives you the frontend only.  Now you need a copy of the GCC
-source code.  See http://gcc.gnu.org/git.html for details, or simply:
+source code.  See https://gcc.gnu.org/git.html for details, or simply:
 
 git clone git://gcc.gnu.org/git/gcc
 
@@ -47,7 +47,7 @@ build will use the Go frontend in your Git repository.
 This is all you need to build gccgo yourself and develop your own
 patches.  To get your patch committed, send them in using "git
 codereview mail" as described at
-http://golang.org/doc/gccgo_contribute.html ; it's the same process as
+https://golang.org/doc/gccgo_contribute.html ; it's the same process as
 changes for the regular Go repository.
 
 At present I am the only person who commits changes to the Go frontend
@@ -108,4 +108,4 @@ For the convenience of people who want to use gccgo without waiting
 for a release and without living on tip, I maintain a gccgo branch of
 GCC.  This lives at svn://gcc.gnu.org/svn/gcc/branches/gccgo.  I maintain
 it using the general GCC branch policies described at
-http://gcc.gnu.org/wiki/SvnBranch .
+https://gcc.gnu.org/wiki/SvnBranch .
