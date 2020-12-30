@@ -10,7 +10,7 @@ unsigned char direntType (struct dirent *)
   __asm__ (GOSYM_PREFIX "os.direntType");
 
 unsigned char
-direntType (struct dirent *p)
+direntType (struct dirent *p __attribute__((unused)))
 {
 #ifndef HAVE_STRUCT_DIRENT_D_TYPE
   return 'U';
