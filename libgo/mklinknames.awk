@@ -37,7 +37,7 @@ BEGIN {
     # The goal is to extract "__timegm50".
     if ((def | getline fndef) > 0 && match(fndef, "__asm__\\(\"\\*?")) {
 	asmname = substr(fndef, RSTART + RLENGTH)
-	asmname = substr(asmname, 0, length(asmname) - 2)
+	asmname = substr(asmname, 1, length(asmname) - 2)
 	printf("//go:linkname %s %s\n", gofnname, asmname)
     } else {
 	# Assume the asm name is the same as the declared C name.
