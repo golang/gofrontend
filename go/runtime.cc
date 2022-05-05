@@ -104,7 +104,7 @@ runtime_function_type(Runtime_function_type bft)
 	  go_unreachable();
 
 	case RFT_BOOL:
-	  t = Type::make_boolean_type();
+	  t = Type::lookup_bool_type();
 	  break;
 
 	case RFT_BOOLPTR:
