@@ -62,8 +62,7 @@ extern void go_assert_fail(const char *expr, const char *filename,
       : go_assert_fail (#expr, __FILE__, __LINE__, __PRETTY_FUNCTION__))
 
 // #include "llvm-includes.h"
-// todo: impl function
-#define go_unreachable() (throw exception("unreachable"))
+#define go_unreachable() (throw std::runtime_error("unreachable"))
 
 #define ARRAY_SIZE(A) (sizeof (A) / sizeof ((A)[0]))
 
