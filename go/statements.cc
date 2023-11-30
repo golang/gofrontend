@@ -1269,6 +1269,18 @@ Assignment_operation_statement::do_lower(Gogo*, Named_object*,
       go_unreachable();
     }
 
+  // While we encountering "lhs op= func", we need keep return value to
+  // temporary var to avoid func affecting lhs.
+  // var val_temp VAL_TYPE = RHS
+  if (this->rhs_->classification() ==
+      Expression::Expression_classification::EXPRESSION_CALL)
+  {
+    Temporary_statement *ts =
+        make_temporary(this->rhs_->type(), this->rhs_, loc);
+    b->add_statement(ts);
+    this->rhs_ = Expression::make_temporary_reference(ts, loc);
+  }
+
   Expression* binop = Expression::make_binary(op, lval, this->rhs_, loc);
   Statement* s = Statement::make_assignment(this->lhs_, binop, loc);
   if (b->statements()->empty())
