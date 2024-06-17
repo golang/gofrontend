@@ -20,5 +20,3 @@ The master copy of these files is hosted in [Gerrit](http://go.googlesource.com/
 If your organization is the copyright holder, the organization will need to agree to the [Google Software Grant and Corporate Contributor License Agreement](http://code.google.com/legal/corporate-cla-v1.0.html).
 
 If the copyright holder for your code has already completed the agreement in connection with another Google open source project, it does not need to be completed again.
-
-The authors of these files may be found in the [AUTHORS](./AUTHORS) and [CONTRIBUTORS](./CONTRIBUTORS) files.
