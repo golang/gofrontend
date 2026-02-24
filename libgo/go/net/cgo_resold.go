@@ -12,24 +12,11 @@ package net
 
 #include <netdb.h>
 */
+import "C"
 
-import (
-	"syscall"
-)
+import "unsafe"
 
-//extern getnameinfo
-func libc_getnameinfo(*syscall.RawSockaddr, syscall.Socklen_t, *byte, syscall.Size_t, *byte, syscall.Size_t, int) int
-
-func cgoNameinfoPTR(b []byte, sa *syscall.RawSockaddr, salen syscall.Socklen_t) (int, error) {
-	syscall.Entersyscall()
-	gerrno := libc_getnameinfo(sa, salen, &b[0], syscall.Size(len(b)), nil, 0, syscall.NI_NAMEREQD)
-	syscall.Exitsyscall()
-	var err error
-	if gerrno == syscall.EAI_SYSTEM {
-		errno := syscall.GetErrno()
-		if errno != 0 {
-			err = errno
-		}
-	}
-	return gerrno, err
+func cgoNameinfoPTR(b []byte, sa *C.struct_sockaddr, salen C.socklen_t) (int, error) {
+	gerrno, err := C.getnameinfo(sa, salen, (*C.char)(unsafe.Pointer(&b[0])), C.size_t(len(b)), nil, 0, C.NI_NAMEREQD)
+	return int(gerrno), err
 }

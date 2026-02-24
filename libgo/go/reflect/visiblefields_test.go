@@ -78,7 +78,7 @@ var fieldsTests = []struct {
 		index: []int{0, 1},
 	}},
 }, {
-	testName: "TwoEmbeddedStructsWithCancellingMembers",
+	testName: "TwoEmbeddedStructsWithCancelingMembers",
 	val: struct {
 		SFG
 		SF
@@ -292,7 +292,6 @@ type Rec2 struct {
 
 func TestFields(t *testing.T) {
 	for _, test := range fieldsTests {
-		test := test
 		t.Run(test.testName, func(t *testing.T) {
 			typ := TypeOf(test.val)
 			fields := VisibleFields(typ)

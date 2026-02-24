@@ -19,7 +19,7 @@ import (
 // unique type to prevent assignment.
 type clientEventContextKey struct{}
 
-// ContextClientTrace returns the ClientTrace associated with the
+// ContextClientTrace returns the [ClientTrace] associated with the
 // provided context. If none, it returns nil.
 func ContextClientTrace(ctx context.Context) *ClientTrace {
 	trace, _ := ctx.Value(clientEventContextKey{}).(*ClientTrace)
@@ -76,7 +76,7 @@ func WithClientTrace(ctx context.Context, trace *ClientTrace) context.Context {
 // during a single round trip and has no hooks that span a series
 // of redirected requests.
 //
-// See https://blog.golang.org/http-tracing for more.
+// See https://go.dev/blog/http-tracing for more.
 type ClientTrace struct {
 	// GetConn is called before a connection is created or
 	// retrieved from an idle pool. The hostPort is the
@@ -233,7 +233,7 @@ func (t *ClientTrace) hasNetHooks() bool {
 	return t.DNSStart != nil || t.DNSDone != nil || t.ConnectStart != nil || t.ConnectDone != nil
 }
 
-// GotConnInfo is the argument to the ClientTrace.GotConn function and
+// GotConnInfo is the argument to the [ClientTrace.GotConn] function and
 // contains information about the obtained connection.
 type GotConnInfo struct {
 	// Conn is the connection that was obtained. It is owned by

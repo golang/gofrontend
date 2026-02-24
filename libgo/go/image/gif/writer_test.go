@@ -52,7 +52,7 @@ func averageDelta(m0, m1 image.Image) int64 {
 	return averageDeltaBound(m0, m1, b, b)
 }
 
-// averageDeltaBounds returns the average delta in RGB space. The average delta is
+// averageDeltaBound returns the average delta in RGB space. The average delta is
 // calculated in the specified bounds.
 func averageDeltaBound(m0, m1 image.Image, b0, b1 image.Rectangle) int64 {
 	var sum, n int64
@@ -603,7 +603,7 @@ func TestEncodeWrappedImage(t *testing.T) {
 		t.Fatalf("readImg: %v", err)
 	}
 
-	// Case 1: Enocde a wrapped image.Image
+	// Case 1: Encode a wrapped image.Image
 	buf := new(bytes.Buffer)
 	w0 := offsetImage{m0, m0.Bounds()}
 	err = Encode(buf, w0, nil)
@@ -619,7 +619,7 @@ func TestEncodeWrappedImage(t *testing.T) {
 		t.Fatalf("Wrapped: average delta is too high. expected: 0, got %d", avgDelta)
 	}
 
-	// Case 2: Enocde a wrapped image.Image with offset
+	// Case 2: Encode a wrapped image.Image with offset
 	b0 := image.Rectangle{
 		Min: image.Point{
 			X: 128,

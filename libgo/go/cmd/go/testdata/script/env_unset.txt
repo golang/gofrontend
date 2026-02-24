@@ -1,8 +1,6 @@
 # Test that we can unset variables, even if initially invalid,
 # as long as resulting config is valid.
 
-[gccgo] skip
-
 env GOENV=badenv
 env GOOS=
 env GOARCH=

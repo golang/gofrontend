@@ -6,7 +6,7 @@
 
 // This is a test program that verifies that it can read from
 // descriptor 3 and that no other descriptors are open.
-// This is not done via TestHelperProcess and GO_WANT_HELPER_PROCESS
+// This is not done via TestHelperProcess and GO_EXEC_TEST_PID
 // because we want to ensure that this program does not use cgo,
 // because C libraries can open file descriptors behind our backs
 // and confuse the test. See issue 25628.
@@ -20,7 +20,6 @@ import (
 	"os/exec"
 	"os/exec/internal/fdtest"
 	"runtime"
-	"strings"
 )
 
 func main() {
@@ -81,7 +80,7 @@ func main() {
 		cmd := exec.Command(ofcmd, args...)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s failed: %v\n", strings.Join(cmd.Args, " "), err)
+			fmt.Fprintf(os.Stderr, "%#q failed: %v\n", cmd, err)
 		}
 		fmt.Printf("%s", out)
 		os.Exit(1)

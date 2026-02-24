@@ -2,159 +2,29 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build aix || darwin || hurd || netbsd || openbsd || plan9 || solaris || windows
+//go:build aix || darwin || netbsd || openbsd || plan9 || solaris || windows
 
 package runtime
 
 import (
-	"runtime/internal/atomic"
+	"internal/runtime/atomic"
 	"unsafe"
 )
 
-// For gccgo, while we still have C runtime code, use go:linkname to
-// export some functions.
-//
-//go:linkname lock
-//go:linkname unlock
-//go:linkname noteclear
-//go:linkname notewakeup
-//go:linkname notesleep
-//go:linkname notetsleep
-//go:linkname notetsleepg
-
-// This implementation depends on OS-specific implementations of
-//
-//	func semacreate(mp *m)
-//		Create a semaphore for mp, if it does not already have one.
-//
-//	func semasleep(ns int64) int32
-//		If ns < 0, acquire m's semaphore and return 0.
-//		If ns >= 0, try to acquire m's semaphore for at most ns nanoseconds.
-//		Return 0 if the semaphore was acquired, -1 if interrupted or timed out.
-//
-//	func semawakeup(mp *m)
-//		Wake up mp, which is or will soon be sleeping on its semaphore.
-//
 const (
-	mutex_locked uintptr = 1
-
-	active_spin     = 4
-	active_spin_cnt = 30
-	passive_spin    = 1
+	locked uintptr = 1
 )
-
-func lock(l *mutex) {
-	lockWithRank(l, getLockRank(l))
-}
-
-func lock2(l *mutex) {
-	gp := getg()
-	if gp.m.locks < 0 {
-		throw("runtime·lock: lock count")
-	}
-	gp.m.locks++
-
-	// Speculative grab for lock.
-	if atomic.Casuintptr(&l.key, 0, mutex_locked) {
-		return
-	}
-	semacreate(gp.m)
-
-	// On uniprocessor's, no point spinning.
-	// On multiprocessors, spin for ACTIVE_SPIN attempts.
-	spin := 0
-	if ncpu > 1 {
-		spin = active_spin
-	}
-Loop:
-	for i := 0; ; i++ {
-		v := atomic.Loaduintptr(&l.key)
-		if v&mutex_locked == 0 {
-			// Unlocked. Try to lock.
-			if atomic.Casuintptr(&l.key, v, v|mutex_locked) {
-				return
-			}
-			i = 0
-		}
-		if i < spin {
-			procyield(active_spin_cnt)
-		} else if i < spin+passive_spin {
-			osyield()
-		} else {
-			// Someone else has it.
-			// l->waitm points to a linked list of M's waiting
-			// for this lock, chained through m->nextwaitm.
-			// Queue this M.
-			for {
-				gp.m.nextwaitm = muintptr(v &^ mutex_locked)
-				if atomic.Casuintptr(&l.key, v, uintptr(unsafe.Pointer(gp.m))|mutex_locked) {
-					break
-				}
-				v = atomic.Loaduintptr(&l.key)
-				if v&mutex_locked == 0 {
-					continue Loop
-				}
-			}
-			if v&mutex_locked != 0 {
-				// Queued. Wait.
-				semasleep(-1)
-				i = 0
-			}
-		}
-	}
-}
-
-func unlock(l *mutex) {
-	unlockWithRank(l)
-}
-
-//go:nowritebarrier
-// We might not be holding a p in this code.
-func unlock2(l *mutex) {
-	gp := getg()
-	var mp *m
-	for {
-		v := atomic.Loaduintptr(&l.key)
-		if v == mutex_locked {
-			if atomic.Casuintptr(&l.key, mutex_locked, 0) {
-				break
-			}
-		} else {
-			// Other M's are waiting for the lock.
-			// Dequeue an M.
-			mp = muintptr(v &^ mutex_locked).ptr()
-			if atomic.Casuintptr(&l.key, v, uintptr(mp.nextwaitm)) {
-				// Dequeued an M.  Wake it.
-				semawakeup(mp)
-				break
-			}
-		}
-	}
-	gp.m.locks--
-	if gp.m.locks < 0 {
-		throw("runtime·unlock: lock count")
-	}
-	// if gp.m.locks == 0 && gp.preempt { // restore the preemption request in case we've cleared it in newstack
-	//	gp.stackguard0 = stackPreempt
-	// }
-}
 
 // One-time notifications.
 func noteclear(n *note) {
-	if GOOS == "aix" {
-		// On AIX, semaphores might not synchronize the memory in some
-		// rare cases. See issue #30189.
-		atomic.Storeuintptr(&n.key, 0)
-	} else {
-		n.key = 0
-	}
+	n.key = 0
 }
 
 func notewakeup(n *note) {
 	var v uintptr
 	for {
 		v = atomic.Loaduintptr(&n.key)
-		if atomic.Casuintptr(&n.key, v, mutex_locked) {
+		if atomic.Casuintptr(&n.key, v, locked) {
 			break
 		}
 	}
@@ -164,7 +34,7 @@ func notewakeup(n *note) {
 	switch {
 	case v == 0:
 		// Nothing was waiting. Done.
-	case v == mutex_locked:
+	case v == locked:
 		// Two notewakeups! Not allowed.
 		throw("notewakeup - double wakeup")
 	default:
@@ -181,7 +51,7 @@ func notesleep(n *note) {
 	semacreate(gp.m)
 	if !atomic.Casuintptr(&n.key, 0, uintptr(unsafe.Pointer(gp.m))) {
 		// Must be locked (got wakeup).
-		if n.key != mutex_locked {
+		if n.key != locked {
 			throw("notesleep - waitm out of sync")
 		}
 		return
@@ -212,7 +82,7 @@ func notetsleep_internal(n *note, ns int64, gp *g, deadline int64) bool {
 	// Register for wakeup on n->waitm.
 	if !atomic.Casuintptr(&n.key, 0, uintptr(unsafe.Pointer(gp.m))) {
 		// Must be locked (got wakeup).
-		if n.key != mutex_locked {
+		if n.key != locked {
 			throw("notetsleep - waitm out of sync")
 		}
 		return true
@@ -270,7 +140,7 @@ func notetsleep_internal(n *note, ns int64, gp *g, deadline int64) bool {
 			if atomic.Casuintptr(&n.key, v, 0) {
 				return false
 			}
-		case mutex_locked:
+		case locked:
 			// Wakeup happened so semaphore is available.
 			// Grab it to avoid getting out of sync.
 			gp.m.blocked = true
@@ -295,7 +165,7 @@ func notetsleep(n *note, ns int64) bool {
 }
 
 // same as runtime·notetsleep, but called on user g (not g0)
-// calls only nosplit functions between entersyscallblock/exitsyscall
+// calls only nosplit functions between entersyscallblock/exitsyscall.
 func notetsleepg(n *note, ns int64) bool {
 	gp := getg()
 	if gp == gp.m.g0 {

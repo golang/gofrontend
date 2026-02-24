@@ -2,9 +2,6 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build ignore
-// +build ignore
-
 package math
 
 import "internal/cpu"
@@ -132,7 +129,7 @@ func archExpm1(x float64) float64
 func expm1TrampolineSetup(x float64) float64
 func expm1Asm(x float64) float64
 
-const haveArchPow = true
+const haveArchPow = false
 
 func archPow(x, y float64) float64
 func powTrampolineSetup(x, y float64) float64

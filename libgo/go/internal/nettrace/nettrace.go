@@ -16,7 +16,8 @@ type TraceKey struct{}
 // specify an alternate resolver func.
 // It is not exposed to outsider users. (But see issue 12503)
 // The value should be the same type as lookupIP:
-//     func lookupIP(ctx context.Context, host string) ([]IPAddr, error)
+//
+//	func lookupIP(ctx context.Context, host string) ([]IPAddr, error)
 type LookupIPAltResolverKey struct{}
 
 // Trace contains a set of hooks for tracing events within
@@ -38,7 +39,7 @@ type Trace struct {
 	// goroutines.
 	ConnectStart func(network, addr string)
 
-	// ConnectStart is called after a Dial with the results, excluding
+	// ConnectDone is called after a Dial with the results, excluding
 	// Dials made during DNS lookups. It may also be called multiple
 	// times, like ConnectStart.
 	ConnectDone func(network, addr string, err error)

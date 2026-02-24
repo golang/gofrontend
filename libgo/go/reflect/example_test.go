@@ -96,8 +96,7 @@ func ExampleStructTag_Lookup() {
 
 	s := S{}
 	st := reflect.TypeOf(s)
-	for i := 0; i < st.NumField(); i++ {
-		field := st.Field(i)
+	for field := range st.Fields() {
 		if alias, ok := field.Tag.Lookup("alias"); ok {
 			if alias == "" {
 				fmt.Println("(blank)")
@@ -193,4 +192,17 @@ func ExampleValue_FieldByIndex() {
 
 	// Output:
 	// embedded last name: Embedded Doe
+}
+
+func ExampleValue_FieldByName() {
+	type user struct {
+		firstName string
+		lastName  string
+	}
+	u := user{firstName: "John", lastName: "Doe"}
+	s := reflect.ValueOf(u)
+
+	fmt.Println("Name:", s.FieldByName("firstName"))
+	// Output:
+	// Name: John
 }

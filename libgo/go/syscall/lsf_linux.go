@@ -48,7 +48,7 @@ type iflags struct {
 
 // Deprecated: Use golang.org/x/net/bpf instead.
 func SetLsfPromisc(name string, m bool) error {
-	s, e := cloexecSocket(AF_INET, SOCK_DGRAM, 0)
+	s, e := Socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC, 0)
 	if e != nil {
 		return e
 	}
@@ -76,11 +76,11 @@ func AttachLsf(fd int, i []SockFilter) error {
 	var p SockFprog
 	p.Len = uint16(len(i))
 	p.Filter = (*SockFilter)(unsafe.Pointer(&i[0]))
-	return setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, unsafe.Pointer(&p), Socklen_t(unsafe.Sizeof(p)))
+	return setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, unsafe.Pointer(&p), unsafe.Sizeof(p))
 }
 
 // Deprecated: Use golang.org/x/net/bpf instead.
 func DetachLsf(fd int) error {
 	var dummy int
-	return setsockopt(fd, SOL_SOCKET, SO_DETACH_FILTER, unsafe.Pointer(&dummy), Socklen_t(unsafe.Sizeof(dummy)))
+	return setsockopt(fd, SOL_SOCKET, SO_DETACH_FILTER, unsafe.Pointer(&dummy), unsafe.Sizeof(dummy))
 }

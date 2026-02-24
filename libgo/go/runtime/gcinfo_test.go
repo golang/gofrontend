@@ -2,9 +2,6 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build ignore
-// +build ignore
-
 package runtime_test
 
 import (
@@ -20,7 +17,23 @@ const (
 
 // TestGCInfo tests that various objects in heap, data and bss receive correct GC pointer type info.
 func TestGCInfo(t *testing.T) {
-	t.Skip("skipping on gccgo for now")
+	verifyGCInfo(t, "bss Ptr", &bssPtr, infoPtr)
+	verifyGCInfo(t, "bss ScalarPtr", &bssScalarPtr, infoScalarPtr)
+	verifyGCInfo(t, "bss PtrScalar", &bssPtrScalar, infoPtrScalar)
+	verifyGCInfo(t, "bss BigStruct", &bssBigStruct, infoBigStruct())
+	verifyGCInfo(t, "bss string", &bssString, infoString)
+	verifyGCInfo(t, "bss slice", &bssSlice, infoSlice)
+	verifyGCInfo(t, "bss eface", &bssEface, infoEface)
+	verifyGCInfo(t, "bss iface", &bssIface, infoIface)
+
+	verifyGCInfo(t, "data Ptr", &dataPtr, infoPtr)
+	verifyGCInfo(t, "data ScalarPtr", &dataScalarPtr, infoScalarPtr)
+	verifyGCInfo(t, "data PtrScalar", &dataPtrScalar, infoPtrScalar)
+	verifyGCInfo(t, "data BigStruct", &dataBigStruct, infoBigStruct())
+	verifyGCInfo(t, "data string", &dataString, infoString)
+	verifyGCInfo(t, "data slice", &dataSlice, infoSlice)
+	verifyGCInfo(t, "data eface", &dataEface, infoEface)
+	verifyGCInfo(t, "data iface", &dataIface, infoIface)
 
 	{
 		var x Ptr
@@ -64,24 +77,31 @@ func TestGCInfo(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		verifyGCInfo(t, "heap Ptr", escape(new(Ptr)), trimDead(infoPtr))
-		verifyGCInfo(t, "heap PtrSlice", escape(&make([]*byte, 10)[0]), trimDead(infoPtr10))
-		verifyGCInfo(t, "heap ScalarPtr", escape(new(ScalarPtr)), trimDead(infoScalarPtr))
-		verifyGCInfo(t, "heap ScalarPtrSlice", escape(&make([]ScalarPtr, 4)[0]), trimDead(infoScalarPtr4))
-		verifyGCInfo(t, "heap PtrScalar", escape(new(PtrScalar)), trimDead(infoPtrScalar))
-		verifyGCInfo(t, "heap BigStruct", escape(new(BigStruct)), trimDead(infoBigStruct()))
-		verifyGCInfo(t, "heap string", escape(new(string)), trimDead(infoString))
-		verifyGCInfo(t, "heap eface", escape(new(any)), trimDead(infoEface))
-		verifyGCInfo(t, "heap iface", escape(new(Iface)), trimDead(infoIface))
+		verifyGCInfo(t, "heap Ptr", runtime.Escape(new(Ptr)), trimDead(infoPtr))
+		verifyGCInfo(t, "heap PtrSlice", runtime.Escape(&make([]*byte, 10)[0]), trimDead(infoPtr10))
+		verifyGCInfo(t, "heap ScalarPtr", runtime.Escape(new(ScalarPtr)), trimDead(infoScalarPtr))
+		verifyGCInfo(t, "heap ScalarPtrSlice", runtime.Escape(&make([]ScalarPtr, 4)[0]), trimDead(infoScalarPtr4))
+		verifyGCInfo(t, "heap PtrScalar", runtime.Escape(new(PtrScalar)), trimDead(infoPtrScalar))
+		verifyGCInfo(t, "heap BigStruct", runtime.Escape(new(BigStruct)), trimDead(infoBigStruct()))
+		verifyGCInfo(t, "heap string", runtime.Escape(new(string)), trimDead(infoString))
+		verifyGCInfo(t, "heap eface", runtime.Escape(new(any)), trimDead(infoEface))
+		verifyGCInfo(t, "heap iface", runtime.Escape(new(Iface)), trimDead(infoIface))
 	}
 }
 
 func verifyGCInfo(t *testing.T, name string, p any, mask0 []byte) {
-	mask := runtime.GCMask(p)
-	if !bytes.Equal(mask, mask0) {
-		t.Errorf("bad GC program for %v:\nwant %+v\ngot  %+v", name, mask0, mask)
+	mask := runtime.PointerMask(p)
+	if bytes.HasPrefix(mask, mask0) {
+		// Just the prefix matching is OK.
+		//
+		// The Go runtime's pointer/scalar iterator generates pointers beyond
+		// the size of the type, up to the size of the size class. This space
+		// is safe for the GC to scan since it's zero, and GCBits checks to
+		// make sure that's true. But we need to handle the fact that the bitmap
+		// may be larger than we expect.
 		return
 	}
+	t.Errorf("bad GC program for %v:\nwant %+v\ngot  %+v", name, mask0, mask)
 }
 
 func trimDead(mask []byte) []byte {
@@ -89,13 +109,6 @@ func trimDead(mask []byte) []byte {
 		mask = mask[:len(mask)-1]
 	}
 	return mask
-}
-
-var gcinfoSink any
-
-func escape(p any) any {
-	gcinfoSink = p
-	return p
 }
 
 var infoPtr = []byte{typePointer}
@@ -143,7 +156,7 @@ type BigStruct struct {
 
 func infoBigStruct() []byte {
 	switch runtime.GOARCH {
-	case "386", "arm", "mips", "mipsle", "riscv":
+	case "386", "arm", "mips", "mipsle":
 		return []byte{
 			typePointer,                                                // q *int
 			typeScalar, typeScalar, typeScalar, typeScalar, typeScalar, // w byte; e [17]byte
@@ -151,7 +164,7 @@ func infoBigStruct() []byte {
 			typeScalar, typeScalar, typeScalar, typeScalar, // t int; y uint16; u uint64
 			typePointer, typeScalar, // i string
 		}
-	case "arm64", "amd64", "mips64", "mips64le", "ppc64", "ppc64le", "riscv64", "s390x", "wasm":
+	case "arm64", "amd64", "loong64", "mips64", "mips64le", "ppc64", "ppc64le", "riscv64", "s390x", "wasm":
 		return []byte{
 			typePointer,                        // q *int
 			typeScalar, typeScalar, typeScalar, // w byte; e [17]byte

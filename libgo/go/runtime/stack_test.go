@@ -5,8 +5,9 @@
 package runtime_test
 
 import (
-	"bytes"
 	"fmt"
+	"internal/asan"
+	"internal/testenv"
 	"reflect"
 	"regexp"
 	. "runtime"
@@ -81,8 +82,6 @@ func TestStackGrowth(t *testing.T) {
 		t.Skip("-quick")
 	}
 
-	t.Parallel()
-
 	var wg sync.WaitGroup
 
 	// in a normal goroutine
@@ -108,19 +107,15 @@ func TestStackGrowth(t *testing.T) {
 	wg.Wait()
 
 	// in finalizer
-	if Compiler == "gccgo" && !*Pusestackmaps {
-		// This test is flaky for gccgo's
-		// conservative stack scanning.
-		return
-	}
 	var finalizerStart time.Time
-	var started, progress uint32
+	var started atomic.Bool
+	var progress atomic.Uint32
 	wg.Add(1)
 	s := new(string) // Must be of a type that avoids the tiny allocator, or else the finalizer might not run.
 	SetFinalizer(s, func(ss *string) {
 		defer wg.Done()
 		finalizerStart = time.Now()
-		atomic.StoreUint32(&started, 1)
+		started.Store(true)
 		growStack(&progress)
 	})
 	setFinalizerTime := time.Now()
@@ -133,10 +128,10 @@ func TestStackGrowth(t *testing.T) {
 			// Panic — instead of calling t.Error and returning from the test — so
 			// that we get a useful goroutine dump if the test times out, especially
 			// if GOTRACEBACK=system or GOTRACEBACK=crash is set.
-			if atomic.LoadUint32(&started) == 0 {
+			if !started.Load() {
 				panic("finalizer did not start")
 			} else {
-				panic(fmt.Sprintf("finalizer started %s ago (%s after registration) and ran %d iterations, but did not return", time.Since(finalizerStart), finalizerStart.Sub(setFinalizerTime), atomic.LoadUint32(&progress)))
+				panic(fmt.Sprintf("finalizer started %s ago (%s after registration) and ran %d iterations, but did not return", time.Since(finalizerStart), finalizerStart.Sub(setFinalizerTime), progress.Load()))
 			}
 		})
 		defer timer.Stop()
@@ -144,7 +139,7 @@ func TestStackGrowth(t *testing.T) {
 
 	GC()
 	wg.Wait()
-	t.Logf("finalizer started after %s and ran %d iterations in %v", finalizerStart.Sub(setFinalizerTime), atomic.LoadUint32(&progress), time.Since(finalizerStart))
+	t.Logf("finalizer started after %s and ran %d iterations in %v", finalizerStart.Sub(setFinalizerTime), progress.Load(), time.Since(finalizerStart))
 }
 
 // ... and in init
@@ -152,7 +147,7 @@ func TestStackGrowth(t *testing.T) {
 //	growStack()
 //}
 
-func growStack(progress *uint32) {
+func growStack(progress *atomic.Uint32) {
 	n := 1 << 10
 	if testing.Short() {
 		n = 1 << 8
@@ -164,7 +159,7 @@ func growStack(progress *uint32) {
 			panic("stack is corrupted")
 		}
 		if progress != nil {
-			atomic.StoreUint32(progress, uint32(i))
+			progress.Store(uint32(i))
 		}
 	}
 	GC()
@@ -295,7 +290,7 @@ func setBig(p *int, x int, b bigBuf) {
 func TestDeferPtrsPanic(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		c := make(chan int, 1)
-		go testDeferPtrsGoexit(c, i)
+		go testDeferPtrsPanic(c, i)
 		if n := <-c; n != 42 {
 			t.Fatalf("defer's stack references were not adjusted appropriately (i=%d n=%d)", i, n)
 		}
@@ -341,7 +336,7 @@ func TestDeferLeafSigpanic(t *testing.T) {
 	}()
 	// Call a leaf function. We must set up the exact call stack:
 	//
-	//  defering function -> leaf function -> sigpanic
+	//  deferring function -> leaf function -> sigpanic
 	//
 	// On LR machines, the leaf function will have the same SP as
 	// the SP pushed for the defer frame.
@@ -602,6 +597,39 @@ func BenchmarkStackCopyWithStkobj(b *testing.B) {
 	}
 }
 
+func BenchmarkIssue18138(b *testing.B) {
+	// Channel with N "can run a goroutine" tokens
+	const N = 10
+	c := make(chan []byte, N)
+	for i := 0; i < N; i++ {
+		c <- make([]byte, 1)
+	}
+
+	for i := 0; i < b.N; i++ {
+		<-c // get token
+		go func() {
+			useStackPtrs(1000, false) // uses ~1MB max
+			m := make([]byte, 8192)   // make GC trigger occasionally
+			c <- m                    // return token
+		}()
+	}
+}
+
+func useStackPtrs(n int, b bool) {
+	if b {
+		// This code contributes to the stack frame size, and hence to the
+		// stack copying cost. But since b is always false, it costs no
+		// execution time (not even the zeroing of a).
+		var a [128]*int // 1KB of pointers
+		a[n] = &n
+		n = *a[0]
+	}
+	if n == 0 {
+		return
+	}
+	useStackPtrs(n-1, b)
+}
+
 type structWithMethod struct{}
 
 func (s structWithMethod) caller() string {
@@ -623,6 +651,8 @@ func (s structWithMethod) stack() string {
 }
 
 func (s structWithMethod) nop() {}
+
+func (s structWithMethod) inlinablePanic() { panic("panic") }
 
 func TestStackWrapperCaller(t *testing.T) {
 	var d structWithMethod
@@ -661,15 +691,38 @@ func TestStackWrapperStack(t *testing.T) {
 	}
 }
 
+func TestStackWrapperStackInlinePanic(t *testing.T) {
+	// Test that inline unwinding correctly tracks the callee by creating a
+	// stack of the form wrapper -> inlined function -> panic. If we mess up
+	// callee tracking, it will look like the wrapper called panic and we'll see
+	// the wrapper in the stack trace.
+	var d structWithMethod
+	wrapper := (*structWithMethod).inlinablePanic
+	defer func() {
+		err := recover()
+		if err == nil {
+			t.Fatalf("expected panic")
+		}
+		buf := make([]byte, 4<<10)
+		stk := string(buf[:Stack(buf, false)])
+		if strings.Contains(stk, "<autogenerated>") {
+			t.Fatalf("<autogenerated> appears in stack trace:\n%s", stk)
+		}
+		// Self-check: make sure inlinablePanic got inlined.
+		if !testenv.OptimizationOff() {
+			if !strings.Contains(stk, "inlinablePanic(...)") {
+				t.Fatalf("inlinablePanic not inlined")
+			}
+		}
+	}()
+	wrapper(&d)
+}
+
 type I interface {
 	M()
 }
 
 func TestStackWrapperStackPanic(t *testing.T) {
-	if Compiler == "gccgo" {
-		t.Skip("gccgo currently uses different, meaningless, wrapper names")
-	}
-
 	t.Run("sigpanic", func(t *testing.T) {
 		// nil calls to interface methods cause a sigpanic.
 		testStackWrapperPanic(t, func() { I.M(nil) }, "runtime_test.I.M")
@@ -724,9 +777,6 @@ func testStackWrapperPanic(t *testing.T, cb func(), expect string) {
 }
 
 func TestCallersFromWrapper(t *testing.T) {
-	if Compiler == "gccgo" {
-		t.Skip("gccgo currently uses different, meaningless, wrapper names")
-	}
 	// Test that invoking CallersFrames on a stack where the first
 	// PC is an autogenerated wrapper keeps the wrapper in the
 	// trace. Normally we elide these, assuming that the wrapper
@@ -744,9 +794,6 @@ func TestCallersFromWrapper(t *testing.T) {
 }
 
 func TestTracebackSystemstack(t *testing.T) {
-	if Compiler == "gccgo" {
-		t.Skip("test currently fails with gccgo")
-	}
 	if GOARCH == "ppc64" || GOARCH == "ppc64le" {
 		t.Skip("systemstack tail call not implemented on ppc64x")
 	}
@@ -759,7 +806,7 @@ func TestTracebackSystemstack(t *testing.T) {
 	// and that we see TestTracebackSystemstack.
 	countIn, countOut := 0, 0
 	frames := CallersFrames(pcs)
-	var tb bytes.Buffer
+	var tb strings.Builder
 	for {
 		frame, more := frames.Next()
 		fmt.Fprintf(&tb, "\n%s+0x%x %s:%d", frame.Function, frame.PC-frame.Entry, frame.File, frame.Line)
@@ -779,9 +826,6 @@ func TestTracebackSystemstack(t *testing.T) {
 }
 
 func TestTracebackAncestors(t *testing.T) {
-	if Compiler == "gccgo" {
-		t.Skip("gccgo currently doesn't generate full ancestor tracebacks")
-	}
 	goroutineRegex := regexp.MustCompile(`goroutine [0-9]+ \[`)
 	for _, tracebackDepth := range []int{0, 1, 5, 50} {
 		output := runTestProg(t, "testprog", "TracebackAncestors", fmt.Sprintf("GODEBUG=tracebackancestors=%d", tracebackDepth))
@@ -883,42 +927,36 @@ func deferHeapAndStack(n int) (r int) {
 // Pass a value to escapeMe to force it to escape.
 var escapeMe = func(x any) {}
 
-// Test that when F -> G is inlined and F is excluded from stack
-// traces, G still appears.
-func TestTracebackInlineExcluded(t *testing.T) {
-	defer func() {
-		recover()
-		buf := make([]byte, 4<<10)
-		stk := string(buf[:Stack(buf, false)])
-
-		t.Log(stk)
-
-		if not := "tracebackExcluded"; strings.Contains(stk, not) {
-			t.Errorf("found but did not expect %q", not)
-		}
-		if want := "tracebackNotExcluded"; !strings.Contains(stk, want) {
-			t.Errorf("expected %q in stack", want)
-		}
-	}()
-	tracebackExcluded()
+func TestFramePointerAdjust(t *testing.T) {
+	switch GOARCH {
+	case "amd64", "arm64":
+	default:
+		t.Skipf("frame pointer is not supported on %s", GOARCH)
+	}
+	if asan.Enabled {
+		t.Skip("skipping test: ASAN forces heap allocation")
+	}
+	output := runTestProg(t, "testprog", "FramePointerAdjust")
+	if output != "" {
+		t.Errorf("output:\n%s\n\nwant no output", output)
+	}
 }
 
-// tracebackExcluded should be excluded from tracebacks. There are
-// various ways this could come up. Linking it to a "runtime." name is
-// rather synthetic, but it's easy and reliable. See issue #42754 for
-// one way this happened in real code.
-//
-//go:linkname tracebackExcluded runtime.tracebackExcluded
-//go:noinline
-func tracebackExcluded() {
-	// Call an inlined function that should not itself be excluded
-	// from tracebacks.
-	tracebackNotExcluded()
+// TestSystemstackFramePointerAdjust is a regression test for issue 59692 that
+// ensures that the frame pointer of systemstack is correctly adjusted. See CL
+// 489015 for more details.
+func TestSystemstackFramePointerAdjust(t *testing.T) {
+	growAndShrinkStack(512, [1024]byte{})
 }
 
-// tracebackNotExcluded should be inlined into tracebackExcluded, but
-// should not itself be excluded from the traceback.
-func tracebackNotExcluded() {
-	var x *int
-	*x = 0
+// growAndShrinkStack grows the stack of the current goroutine in order to
+// shrink it again and verify that all frame pointers on the new stack have
+// been correctly adjusted. stackBallast is used to ensure we're not depending
+// on the current heuristics of stack shrinking too much.
+func growAndShrinkStack(n int, stackBallast [1024]byte) {
+	if n <= 0 {
+		return
+	}
+	growAndShrinkStack(n-1, stackBallast)
+	ShrinkStackAndVerifyFramePointers()
 }

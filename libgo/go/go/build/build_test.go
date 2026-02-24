@@ -5,22 +5,21 @@
 package build
 
 import (
-	"flag"
+	"fmt"
 	"internal/testenv"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
 
 func TestMain(m *testing.M) {
-	flag.Parse()
-	if goTool, err := testenv.GoTool(); err == nil {
-		os.Setenv("PATH", filepath.Dir(goTool)+string(os.PathListSeparator)+os.Getenv("PATH"))
-	}
+	Default.GOROOT = testenv.GOROOT(nil)
 	os.Exit(m.Run())
 }
 
@@ -33,7 +32,7 @@ func TestMatch(t *testing.T) {
 		if !ctxt.matchAuto(tag, m) {
 			t.Errorf("%s context should match %s, does not", what, tag)
 		}
-		if !reflect.DeepEqual(m, want) {
+		if !maps.Equal(m, want) {
 			t.Errorf("%s tags = %v, want %v", tag, m, want)
 		}
 	}
@@ -43,7 +42,7 @@ func TestMatch(t *testing.T) {
 		if ctxt.matchAuto(tag, m) {
 			t.Errorf("%s context should NOT match %s, does", what, tag)
 		}
-		if !reflect.DeepEqual(m, want) {
+		if !maps.Equal(m, want) {
 			t.Errorf("%s tags = %v, want %v", tag, m, want)
 		}
 	}
@@ -84,7 +83,7 @@ func TestDotSlashImport(t *testing.T) {
 }
 
 func TestEmptyImport(t *testing.T) {
-	p, err := Import("", Default.GOROOT, FindOnly)
+	p, err := Import("", testenv.GOROOT(t), FindOnly)
 	if err == nil {
 		t.Fatal(`Import("") returned nil error.`)
 	}
@@ -124,17 +123,16 @@ func TestMultiplePackageImport(t *testing.T) {
 		t.Errorf("pkg.Name = %q; want %q", pkg.Name, wantName)
 	}
 
-	if wantGoFiles := []string{"file.go", "file_appengine.go"}; !reflect.DeepEqual(pkg.GoFiles, wantGoFiles) {
+	if wantGoFiles := []string{"file.go", "file_appengine.go"}; !slices.Equal(pkg.GoFiles, wantGoFiles) {
 		t.Errorf("pkg.GoFiles = %q; want %q", pkg.GoFiles, wantGoFiles)
 	}
 
-	if wantInvalidFiles := []string{"file_appengine.go"}; !reflect.DeepEqual(pkg.InvalidGoFiles, wantInvalidFiles) {
+	if wantInvalidFiles := []string{"file_appengine.go"}; !slices.Equal(pkg.InvalidGoFiles, wantInvalidFiles) {
 		t.Errorf("pkg.InvalidGoFiles = %q; want %q", pkg.InvalidGoFiles, wantInvalidFiles)
 	}
 }
 
 func TestLocalDirectory(t *testing.T) {
-	t.Skip("does not work with gccgo")
 	if runtime.GOOS == "ios" {
 		t.Skipf("skipping on %s/%s, no valid GOROOT", runtime.GOOS, runtime.GOARCH)
 	}
@@ -349,7 +347,7 @@ func TestShouldBuild(t *testing.T) {
 			ctx := &Context{BuildTags: []string{"yes"}}
 			tags := map[string]bool{}
 			shouldBuild, binaryOnly, err := ctx.shouldBuild([]byte(tt.content), tags)
-			if shouldBuild != tt.shouldBuild || binaryOnly != tt.binaryOnly || !reflect.DeepEqual(tags, tt.tags) || err != tt.err {
+			if shouldBuild != tt.shouldBuild || binaryOnly != tt.binaryOnly || !maps.Equal(tags, tt.tags) || err != tt.err {
 				t.Errorf("mismatch:\n"+
 					"have shouldBuild=%v, binaryOnly=%v, tags=%v, err=%v\n"+
 					"want shouldBuild=%v, binaryOnly=%v, tags=%v, err=%v",
@@ -367,7 +365,7 @@ func TestGoodOSArchFile(t *testing.T) {
 	if !ctx.goodOSArchFile("hello_linux.go", m) {
 		t.Errorf("goodOSArchFile(hello_linux.go) = false, want true")
 	}
-	if !reflect.DeepEqual(m, want) {
+	if !maps.Equal(m, want) {
 		t.Errorf("goodOSArchFile(hello_linux.go) tags = %v, want %v", m, want)
 	}
 }
@@ -427,7 +425,6 @@ func TestMatchFile(t *testing.T) {
 }
 
 func TestImportCmd(t *testing.T) {
-	t.Skip("does not work with gccgo")
 	if runtime.GOOS == "ios" {
 		t.Skipf("skipping on %s/%s, no valid GOROOT", runtime.GOOS, runtime.GOARCH)
 	}
@@ -499,7 +496,7 @@ func TestShellSafety(t *testing.T) {
 // Want to get a "cannot find package" error when directory for package does not exist.
 // There should be valid partial information in the returned non-nil *Package.
 func TestImportDirNotExist(t *testing.T) {
-	testenv.MustHaveGoBuild(t) // really must just have source
+	testenv.MustHaveGoBuild(t) // Need 'go list' internally.
 	ctxt := Default
 
 	emptyDir := t.TempDir()
@@ -530,10 +527,10 @@ func TestImportDirNotExist(t *testing.T) {
 				errOk := (err != nil && strings.HasPrefix(err.Error(), "cannot find package"))
 				wantErr := `"cannot find package" error`
 				if test.srcDir == "" {
-					if err != nil && strings.Contains(err.Error(), "is not in GOROOT") {
+					if err != nil && strings.Contains(err.Error(), "is not in std") {
 						errOk = true
 					}
-					wantErr = `"cannot find package" or "is not in GOROOT" error`
+					wantErr = `"cannot find package" or "is not in std" error`
 				}
 				if !errOk {
 					t.Errorf("%s got error: %q, want %s", test.label, err, wantErr)
@@ -553,7 +550,7 @@ func TestImportDirNotExist(t *testing.T) {
 }
 
 func TestImportVendor(t *testing.T) {
-	testenv.MustHaveGoBuild(t) // really must just have source
+	testenv.MustHaveSource(t)
 
 	t.Setenv("GO111MODULE", "off")
 
@@ -573,8 +570,29 @@ func TestImportVendor(t *testing.T) {
 	}
 }
 
+func BenchmarkImportVendor(b *testing.B) {
+	testenv.MustHaveSource(b)
+
+	b.Setenv("GO111MODULE", "off")
+
+	ctxt := Default
+	wd, err := os.Getwd()
+	if err != nil {
+		b.Fatal(err)
+	}
+	ctxt.GOPATH = filepath.Join(wd, "testdata/withvendor")
+	dir := filepath.Join(ctxt.GOPATH, "src/a/b")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := ctxt.Import("c/d", dir, 0)
+		if err != nil {
+			b.Fatalf("cannot find vendored c/d from testdata src/a/b directory: %v", err)
+		}
+	}
+}
+
 func TestImportVendorFailure(t *testing.T) {
-	testenv.MustHaveGoBuild(t) // really must just have source
+	testenv.MustHaveSource(t)
 
 	t.Setenv("GO111MODULE", "off")
 
@@ -596,7 +614,7 @@ func TestImportVendorFailure(t *testing.T) {
 }
 
 func TestImportVendorParentFailure(t *testing.T) {
-	testenv.MustHaveGoBuild(t) // really must just have source
+	testenv.MustHaveSource(t)
 
 	t.Setenv("GO111MODULE", "off")
 
@@ -656,19 +674,6 @@ func TestImportPackageOutsideModule(t *testing.T) {
 	}
 }
 
-func TestImportDirTarget(t *testing.T) {
-	testenv.MustHaveGoBuild(t) // really must just have source
-	ctxt := Default
-	ctxt.GOPATH = ""
-	p, err := ctxt.ImportDir(filepath.Join(ctxt.GOROOT, "src/path"), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.PkgTargetRoot == "" || p.PkgObj == "" {
-		t.Errorf("p.PkgTargetRoot == %q, p.PkgObj == %q, want non-empty", p.PkgTargetRoot, p.PkgObj)
-	}
-}
-
 // TestIssue23594 prevents go/build from regressing and populating Package.Doc
 // from comments in test files.
 func TestIssue23594(t *testing.T) {
@@ -682,6 +687,22 @@ func TestIssue23594(t *testing.T) {
 
 	if p.Doc != "Correct" {
 		t.Fatalf("incorrectly set .Doc to %q", p.Doc)
+	}
+}
+
+// TestIssue56509 tests that go/build does not add non-go files to InvalidGoFiles
+// when they have unparsable comments.
+func TestIssue56509(t *testing.T) {
+	// The directory testdata/bads contains a .s file that has an unparsable
+	// comment. (go/build parses initial comments in non-go files looking for
+	// //go:build or //+go build comments).
+	p, err := ImportDir("testdata/bads", 0)
+	if err == nil {
+		t.Fatalf("could not import testdata/bads: %v", err)
+	}
+
+	if len(p.InvalidGoFiles) != 0 {
+		t.Fatalf("incorrectly added non-go file to InvalidGoFiles")
 	}
 }
 
@@ -736,4 +757,74 @@ func TestCgoImportsIgnored(t *testing.T) {
 			t.Errorf("found import %q in ignored cgo file", path)
 		}
 	}
+}
+
+// Issue #52053. Check that if there is a file x_GOOS_GOARCH.go that both
+// GOOS and GOARCH show up in the Package.AllTags field. We test both the
+// case where the file matches and where the file does not match.
+// The latter case used to fail, incorrectly omitting GOOS.
+func TestAllTags(t *testing.T) {
+	ctxt := Default
+	ctxt.GOARCH = "arm"
+	ctxt.GOOS = "netbsd"
+	p, err := ctxt.ImportDir("testdata/alltags", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"arm", "netbsd"}
+	if !slices.Equal(p.AllTags, want) {
+		t.Errorf("AllTags = %v, want %v", p.AllTags, want)
+	}
+	wantFiles := []string{"alltags.go", "x_netbsd_arm.go"}
+	if !slices.Equal(p.GoFiles, wantFiles) {
+		t.Errorf("GoFiles = %v, want %v", p.GoFiles, wantFiles)
+	}
+
+	ctxt.GOARCH = "amd64"
+	ctxt.GOOS = "linux"
+	p, err = ctxt.ImportDir("testdata/alltags", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(p.AllTags, want) {
+		t.Errorf("AllTags = %v, want %v", p.AllTags, want)
+	}
+	wantFiles = []string{"alltags.go"}
+	if !slices.Equal(p.GoFiles, wantFiles) {
+		t.Errorf("GoFiles = %v, want %v", p.GoFiles, wantFiles)
+	}
+}
+
+func TestAllTagsNonSourceFile(t *testing.T) {
+	p, err := Default.ImportDir("testdata/non_source_tags", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.AllTags) > 0 {
+		t.Errorf("AllTags = %v, want empty", p.AllTags)
+	}
+}
+
+func TestDirectives(t *testing.T) {
+	p, err := ImportDir("testdata/directives", 0)
+	if err != nil {
+		t.Fatalf("could not import testdata: %v", err)
+	}
+
+	check := func(name string, list []Directive, want string) {
+		if runtime.GOOS == "windows" {
+			want = strings.ReplaceAll(want, "testdata/directives/", `testdata\\directives\\`)
+		}
+		t.Helper()
+		s := fmt.Sprintf("%q", list)
+		if s != want {
+			t.Errorf("%s = %s, want %s", name, s, want)
+		}
+	}
+	check("Directives", p.Directives,
+		`[{"//go:main1" "testdata/directives/a.go:1:1"} {"//go:plant" "testdata/directives/eve.go:1:1"}]`)
+	check("TestDirectives", p.TestDirectives,
+		`[{"//go:test1" "testdata/directives/a_test.go:1:1"} {"//go:test2" "testdata/directives/b_test.go:1:1"}]`)
+	check("XTestDirectives", p.XTestDirectives,
+		`[{"//go:xtest1" "testdata/directives/c_test.go:1:1"} {"//go:xtest2" "testdata/directives/d_test.go:1:1"} {"//go:xtest3" "testdata/directives/d_test.go:2:1"}]`)
 }

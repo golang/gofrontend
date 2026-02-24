@@ -2,29 +2,21 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build (dragonfly || freebsd || hurd || (!android && linux) || netbsd || openbsd || (solaris && !illumos)) && cgo && !osusergo
+//go:build cgo && !osusergo && unix && !android && !aix && !darwin
 
 package user
 
-import (
-	"fmt"
-	"syscall"
-)
+/*
+#include <unistd.h>
+#include <sys/types.h>
+#include <grp.h>
 
-//extern-sysinfo getgrouplist
-func getGroupList(name *byte, userGID syscall.Gid_t, gids *syscall.Gid_t, n *int32) int32
+static int mygetgrouplist(const char* user, gid_t group, gid_t* groups, int* ngroups) {
+	return getgrouplist(user, group, groups, ngroups);
+}
+*/
+import "C"
 
-// groupRetry retries getGroupList with much larger size for n. The result is
-// stored in gids.
-func groupRetry(username string, name []byte, userGID syscall.Gid_t, gids *[]syscall.Gid_t, n *int32) error {
-	// More than initial buffer, but now n contains the correct size.
-	if *n > maxGroups {
-		return fmt.Errorf("user: %q is a member of more than %d groups", username, maxGroups)
-	}
-	*gids = make([]syscall.Gid_t, *n)
-	rv := getGroupList(&name[0], userGID, &(*gids)[0], n)
-	if rv == -1 {
-		return fmt.Errorf("user: list groups for %s failed", username)
-	}
-	return nil
+func getGroupList(name *_C_char, userGID _C_gid_t, gids *_C_gid_t, n *_C_int) _C_int {
+	return C.mygetgrouplist(name, userGID, gids, n)
 }

@@ -14,10 +14,10 @@ import (
 	"go/ast"
 	"go/printer"
 	"go/token"
-	exec "internal/execabs"
 	"internal/xcoff"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -43,37 +43,34 @@ func (p *Package) writeDefs() {
 	}
 	fm := creat(*objDir + "_cgo_main.c")
 
-	var gccgoInit bytes.Buffer
+	var gccgoInit strings.Builder
 
-	fflg := creat(*objDir + "_cgo_flags")
-	var flags []string
-	for k, v := range p.CgoFlags {
-		flags = append(flags, fmt.Sprintf("_CGO_%s=%s", k, strings.Join(v, " ")))
-		if k == "LDFLAGS" && !*gccgo {
-			for _, arg := range v {
-				fmt.Fprintf(fgo2, "//go:cgo_ldflag %q\n", arg)
-			}
+	if !*gccgo {
+		for _, arg := range p.LdFlags {
+			fmt.Fprintf(fgo2, "//go:cgo_ldflag %q\n", arg)
 		}
+	} else {
+		fflg := creat(*objDir + "_cgo_flags")
+		for _, arg := range p.LdFlags {
+			fmt.Fprintf(fflg, "_CGO_LDFLAGS=%s\n", arg)
+		}
+		fflg.Close()
 	}
-	sort.Strings(flags)
-	for _, flag := range flags {
-		fmt.Fprintln(fflg, flag)
-	}
-	fflg.Close()
 
 	// Write C main file for using gcc to resolve imports.
-	fmt.Fprintf(fm, "int main() { return 0; }\n")
+	fmt.Fprintf(fm, "#include <stddef.h>\n") // For size_t below.
+	fmt.Fprintf(fm, "int main(int argc __attribute__((unused)), char **argv __attribute__((unused))) { return 0; }\n")
 	if *importRuntimeCgo {
-		fmt.Fprintf(fm, "void crosscall2(void(*fn)(void*) __attribute__((unused)), void *a __attribute__((unused)), int c __attribute__((unused)), __SIZE_TYPE__ ctxt __attribute__((unused))) { }\n")
-		fmt.Fprintf(fm, "__SIZE_TYPE__ _cgo_wait_runtime_init_done(void) { return 0; }\n")
-		fmt.Fprintf(fm, "void _cgo_release_context(__SIZE_TYPE__ ctxt __attribute__((unused))) { }\n")
+		fmt.Fprintf(fm, "void crosscall2(void(*fn)(void*) __attribute__((unused)), void *a __attribute__((unused)), int c __attribute__((unused)), size_t ctxt __attribute__((unused))) { }\n")
+		fmt.Fprintf(fm, "size_t _cgo_wait_runtime_init_done(void) { return 0; }\n")
+		fmt.Fprintf(fm, "void _cgo_release_context(size_t ctxt __attribute__((unused))) { }\n")
 		fmt.Fprintf(fm, "char* _cgo_topofstack(void) { return (char*)0; }\n")
 	} else {
 		// If we're not importing runtime/cgo, we *are* runtime/cgo,
 		// which provides these functions. We just need a prototype.
-		fmt.Fprintf(fm, "void crosscall2(void(*fn)(void*), void *a, int c, __SIZE_TYPE__ ctxt);\n")
-		fmt.Fprintf(fm, "__SIZE_TYPE__ _cgo_wait_runtime_init_done(void);\n")
-		fmt.Fprintf(fm, "void _cgo_release_context(__SIZE_TYPE__);\n")
+		fmt.Fprintf(fm, "void crosscall2(void(*fn)(void*), void *a, int c, size_t ctxt);\n")
+		fmt.Fprintf(fm, "size_t _cgo_wait_runtime_init_done(void);\n")
+		fmt.Fprintf(fm, "void _cgo_release_context(size_t);\n")
 	}
 	fmt.Fprintf(fm, "void _cgo_allocate(void *a __attribute__((unused)), int c __attribute__((unused))) { }\n")
 	fmt.Fprintf(fm, "void _cgo_panic(void *a __attribute__((unused)), int c __attribute__((unused))) { }\n")
@@ -89,8 +86,13 @@ func (p *Package) writeDefs() {
 		fmt.Fprintf(fgo2, "import \"syscall\"\n\n")
 	}
 	if *importRuntimeCgo {
-		fmt.Fprintf(fgo2, "import _cgopackage \"runtime/cgo\"\n\n")
-		fmt.Fprintf(fgo2, "type _ _cgopackage.Incomplete\n") // prevent import-not-used error
+		if !*gccgoDefineCgoIncomplete {
+			fmt.Fprintf(fgo2, "import _cgopackage \"runtime/cgo\"\n\n")
+			fmt.Fprintf(fgo2, "type _ _cgopackage.Incomplete\n") // prevent import-not-used error
+		} else {
+			fmt.Fprintf(fgo2, "//go:notinheap\n")
+			fmt.Fprintf(fgo2, "type _cgopackage_Incomplete struct{ _ struct{ _ struct{} } }\n")
+		}
 	}
 	if *importSyscall {
 		fmt.Fprintf(fgo2, "var _ syscall.Errno\n")
@@ -102,7 +104,12 @@ func (p *Package) writeDefs() {
 		fmt.Fprintf(fgo2, "var _Cgo_always_false bool\n")
 		fmt.Fprintf(fgo2, "//go:linkname _Cgo_use runtime.cgoUse\n")
 		fmt.Fprintf(fgo2, "func _Cgo_use(interface{})\n")
+		fmt.Fprintf(fgo2, "//go:linkname _Cgo_keepalive runtime.cgoKeepAlive\n")
+		fmt.Fprintf(fgo2, "//go:noescape\n")
+		fmt.Fprintf(fgo2, "func _Cgo_keepalive(interface{})\n")
 	}
+	fmt.Fprintf(fgo2, "//go:linkname _Cgo_no_callback runtime.cgoNoCallback\n")
+	fmt.Fprintf(fgo2, "func _Cgo_no_callback(bool)\n")
 
 	typedefNames := make([]string, 0, len(typedef))
 	for name := range typedef {
@@ -177,7 +184,7 @@ func (p *Package) writeDefs() {
 				// the external linker will add DT_NEEDED
 				// entries as needed on ELF systems.
 				// Treat function variables differently
-				// to avoid type confict errors from LTO
+				// to avoid type conflict errors from LTO
 				// (Link Time Optimization).
 				if n.Kind == "fpvar" {
 					fmt.Fprintf(fm, "extern void %s();\n", n.C)
@@ -244,8 +251,8 @@ func (p *Package) writeDefs() {
 	}
 
 	if callsMalloc && !*gccgo {
-		fmt.Fprint(fgo2, strings.Replace(cMallocDefGo, "PREFIX", cPrefix, -1))
-		fmt.Fprint(fgcc, strings.Replace(strings.Replace(cMallocDefC, "PREFIX", cPrefix, -1), "PACKED", p.packedAttribute(), -1))
+		fmt.Fprint(fgo2, strings.ReplaceAll(cMallocDefGo, "PREFIX", cPrefix))
+		fmt.Fprint(fgcc, strings.ReplaceAll(strings.Replace(cMallocDefC, "PREFIX", cPrefix, -1), "PACKED", p.packedAttribute()))
 	}
 
 	if err := fgcc.Close(); err != nil {
@@ -331,12 +338,19 @@ func dynimport(obj string) {
 		if err != nil {
 			fatalf("%s", err)
 		}
+		defer func() {
+			if err = f.Close(); err != nil {
+				fatalf("error closing %s: %v", *dynout, err)
+			}
+		}()
+
 		stdout = f
 	}
 
 	fmt.Fprintf(stdout, "package %s\n", *dynpackage)
 
 	if f, err := elf.Open(obj); err == nil {
+		defer f.Close()
 		if *dynlinker {
 			// Emit the cgo_dynamic_linker line.
 			if sec := f.Section(".interp"); sec != nil {
@@ -364,11 +378,10 @@ func dynimport(obj string) {
 	}
 
 	if f, err := macho.Open(obj); err == nil {
+		defer f.Close()
 		sym, _ := f.ImportedSymbols()
 		for _, s := range sym {
-			if len(s) > 0 && s[0] == '_' {
-				s = s[1:]
-			}
+			s = strings.TrimPrefix(s, "_")
 			checkImportSymName(s)
 			fmt.Fprintf(stdout, "//go:cgo_import_dynamic %s %s %q\n", s, s, "")
 		}
@@ -380,6 +393,7 @@ func dynimport(obj string) {
 	}
 
 	if f, err := pe.Open(obj); err == nil {
+		defer f.Close()
 		sym, _ := f.ImportedSymbols()
 		for _, s := range sym {
 			ss := strings.Split(s, ":")
@@ -392,6 +406,7 @@ func dynimport(obj string) {
 	}
 
 	if f, err := xcoff.Open(obj); err == nil {
+		defer f.Close()
 		sym, err := f.ImportedSymbols()
 		if err != nil {
 			fatalf("cannot load imported symbols from XCOFF file %s: %v", obj, err)
@@ -431,8 +446,8 @@ func checkImportSymName(s string) {
 			fatalf("dynamic symbol %q contains unsupported character", s)
 		}
 	}
-	if strings.Index(s, "//") >= 0 || strings.Index(s, "/*") >= 0 {
-		fatalf("dynamic symbol %q contains Go comment")
+	if strings.Contains(s, "//") || strings.Contains(s, "/*") {
+		fatalf("dynamic symbol %q contains Go comment", s)
 	}
 }
 
@@ -442,7 +457,37 @@ func checkImportSymName(s string) {
 // Also assumes that gc convention is to word-align the
 // input and output parameters.
 func (p *Package) structType(n *Name) (string, int64) {
-	var buf bytes.Buffer
+	// It's possible for us to see a type with a top-level const here,
+	// which will give us an unusable struct type. See #75751.
+	// The top-level const will always appear as a final qualifier,
+	// constructed by typeConv.loadType in the dwarf.QualType case.
+	// The top-level const is meaningless here and can simply be removed.
+	stripConst := func(s string) string {
+		i := strings.LastIndex(s, "const")
+		if i == -1 {
+			return s
+		}
+
+		// A top-level const can only be followed by other qualifiers.
+		if r, ok := strings.CutSuffix(s, "const"); ok {
+			return strings.TrimSpace(r)
+		}
+
+		var nonConst []string
+		for _, f := range strings.Fields(s[i:]) {
+			switch f {
+			case "const":
+			case "restrict", "volatile":
+				nonConst = append(nonConst, f)
+			default:
+				return s
+			}
+		}
+
+		return strings.TrimSpace(s[:i]) + " " + strings.Join(nonConst, " ")
+	}
+
+	var buf strings.Builder
 	fmt.Fprint(&buf, "struct {\n")
 	off := int64(0)
 	for i, t := range n.FuncType.Params {
@@ -453,7 +498,7 @@ func (p *Package) structType(n *Name) (string, int64) {
 		}
 		c := t.Typedef
 		if c == "" {
-			c = t.C.String()
+			c = stripConst(t.C.String())
 		}
 		fmt.Fprintf(&buf, "\t\t%s p%d;\n", c, i)
 		off += t.Size
@@ -469,7 +514,7 @@ func (p *Package) structType(n *Name) (string, int64) {
 			fmt.Fprintf(&buf, "\t\tchar __pad%d[%d];\n", off, pad)
 			off += pad
 		}
-		fmt.Fprintf(&buf, "\t\t%s r;\n", t.C)
+		fmt.Fprintf(&buf, "\t\t%s r;\n", stripConst(t.C.String()))
 		off += t.Size
 	}
 	if off%p.PtrSize != 0 {
@@ -609,6 +654,12 @@ func (p *Package) writeDefsFunc(fgo2 io.Writer, n *Name, callsMalloc *bool) {
 		arg = "uintptr(unsafe.Pointer(&r1))"
 	}
 
+	noCallback := p.noCallbacks[n.C]
+	if noCallback {
+		// disable cgocallback, will check it in runtime.
+		fmt.Fprintf(fgo2, "\t_Cgo_no_callback(true)\n")
+	}
+
 	prefix := ""
 	if n.AddError {
 		prefix = "errno := "
@@ -617,13 +668,26 @@ func (p *Package) writeDefsFunc(fgo2 io.Writer, n *Name, callsMalloc *bool) {
 	if n.AddError {
 		fmt.Fprintf(fgo2, "\tif errno != 0 { r2 = syscall.Errno(errno) }\n")
 	}
-	fmt.Fprintf(fgo2, "\tif _Cgo_always_false {\n")
-	if d.Type.Params != nil {
-		for i := range d.Type.Params.List {
-			fmt.Fprintf(fgo2, "\t\t_Cgo_use(p%d)\n", i)
-		}
+	if noCallback {
+		fmt.Fprintf(fgo2, "\t_Cgo_no_callback(false)\n")
 	}
-	fmt.Fprintf(fgo2, "\t}\n")
+
+	// Use _Cgo_keepalive instead of _Cgo_use when noescape & nocallback exist,
+	// so that the compiler won't force to escape them to heap.
+	// Instead, make the compiler keep them alive by using _Cgo_keepalive.
+	touchFunc := "_Cgo_use"
+	if p.noEscapes[n.C] && p.noCallbacks[n.C] {
+		touchFunc = "_Cgo_keepalive"
+	}
+
+	if len(paramnames) > 0 {
+		fmt.Fprintf(fgo2, "\tif _Cgo_always_false {\n")
+		for _, name := range paramnames {
+			fmt.Fprintf(fgo2, "\t\t%s(%s)\n", touchFunc, name)
+		}
+		fmt.Fprintf(fgo2, "\t}\n")
+	}
+
 	fmt.Fprintf(fgo2, "\treturn\n")
 	fmt.Fprintf(fgo2, "}\n")
 }
@@ -631,9 +695,7 @@ func (p *Package) writeDefsFunc(fgo2 io.Writer, n *Name, callsMalloc *bool) {
 // writeOutput creates stubs for a specific source file to be compiled by gc
 func (p *Package) writeOutput(f *File, srcfile string) {
 	base := srcfile
-	if strings.HasSuffix(base, ".go") {
-		base = base[0 : len(base)-3]
-	}
+	base = strings.TrimSuffix(base, ".go")
 	base = filepath.Base(base)
 	fgo1 := creat(*objDir + base + ".cgo1.go")
 	fgcc := creat(*objDir + base + ".cgo2.c")
@@ -643,6 +705,11 @@ func (p *Package) writeOutput(f *File, srcfile string) {
 
 	// Write Go output: Go input with rewrites of C.xxx to _C_xxx.
 	fmt.Fprintf(fgo1, "// Code generated by cmd/cgo; DO NOT EDIT.\n\n")
+	if strings.ContainsAny(srcfile, "\r\n") {
+		// This should have been checked when the file path was first resolved,
+		// but we double check here just to be sure.
+		fatalf("internal error: writeOutput: srcfile contains unexpected newline character: %q", srcfile)
+	}
 	fmt.Fprintf(fgo1, "//line %s:1:1\n", srcfile)
 	fgo1.Write(f.Edit.Bytes())
 
@@ -716,13 +783,13 @@ func (p *Package) writeOutputFunc(fgcc *os.File, n *Name) {
 	// We're trying to write a gcc struct that matches gc's layout.
 	// Use packed attribute to force no padding in this struct in case
 	// gcc has different packing requirements.
-	fmt.Fprintf(fgcc, "\t%s %v *_cgo_a = v;\n", ctype, p.packedAttribute())
-	if n.FuncType.Result != nil {
+	tr := n.FuncType.Result
+	if (n.Kind != "macro" && len(n.FuncType.Params) > 0) || tr != nil {
+		fmt.Fprintf(fgcc, "\t%s %v *_cgo_a = v;\n", ctype, p.packedAttribute())
+	}
+	if tr != nil {
 		// Save the stack top for use below.
 		fmt.Fprintf(fgcc, "\tchar *_cgo_stktop = _cgo_topofstack();\n")
-	}
-	tr := n.FuncType.Result
-	if tr != nil {
 		fmt.Fprintf(fgcc, "\t__typeof__(_cgo_a->r) _cgo_r;\n")
 	}
 	fmt.Fprintf(fgcc, "\t_cgo_tsan_acquire();\n")
@@ -752,7 +819,7 @@ func (p *Package) writeOutputFunc(fgcc *os.File, n *Name) {
 		fmt.Fprintf(fgcc, "\t_cgo_errno = errno;\n")
 	}
 	fmt.Fprintf(fgcc, "\t_cgo_tsan_release();\n")
-	if n.FuncType.Result != nil {
+	if tr != nil {
 		// The cgo call may have caused a stack copy (via a callback).
 		// Adjust the return value pointer appropriately.
 		fmt.Fprintf(fgcc, "\t_cgo_a = (void*)((char*)_cgo_a + (_cgo_topofstack() - _cgo_stktop));\n")
@@ -889,10 +956,12 @@ func (p *Package) writeExports(fgo2, fm, fgcc, fgcch io.Writer) {
 	fmt.Fprintf(fgcc, "#pragma GCC diagnostic ignored \"-Wunknown-pragmas\"\n")
 	fmt.Fprintf(fgcc, "#pragma GCC diagnostic ignored \"-Wpragmas\"\n")
 	fmt.Fprintf(fgcc, "#pragma GCC diagnostic ignored \"-Waddress-of-packed-member\"\n")
+	fmt.Fprintf(fgcc, "#pragma GCC diagnostic ignored \"-Wunknown-warning-option\"\n")
+	fmt.Fprintf(fgcc, "#pragma GCC diagnostic ignored \"-Wunaligned-access\"\n")
 
-	fmt.Fprintf(fgcc, "extern void crosscall2(void (*fn)(void *), void *, int, __SIZE_TYPE__);\n")
-	fmt.Fprintf(fgcc, "extern __SIZE_TYPE__ _cgo_wait_runtime_init_done(void);\n")
-	fmt.Fprintf(fgcc, "extern void _cgo_release_context(__SIZE_TYPE__);\n\n")
+	fmt.Fprintf(fgcc, "extern void crosscall2(void (*fn)(void *), void *, int, size_t);\n")
+	fmt.Fprintf(fgcc, "extern size_t _cgo_wait_runtime_init_done(void);\n")
+	fmt.Fprintf(fgcc, "extern void _cgo_release_context(size_t);\n\n")
 	fmt.Fprintf(fgcc, "extern char* _cgo_topofstack(void);")
 	fmt.Fprintf(fgcc, "%s\n", tsanProlog)
 	fmt.Fprintf(fgcc, "%s\n", msanProlog)
@@ -905,25 +974,34 @@ func (p *Package) writeExports(fgo2, fm, fgcc, fgcch io.Writer) {
 		// just have to agree. The gcc struct will be compiled
 		// with __attribute__((packed)) so all padding must be
 		// accounted for explicitly.
-		ctype := "struct {\n"
+		var ctype strings.Builder
+		const start = "struct {\n"
+		ctype.WriteString(start)
 		gotype := new(bytes.Buffer)
 		fmt.Fprintf(gotype, "struct {\n")
 		off := int64(0)
 		npad := 0
-		argField := func(typ ast.Expr, namePat string, args ...interface{}) {
+		// the align is at least 1 (for char)
+		maxAlign := int64(1)
+		argField := func(typ ast.Expr, namePat string, args ...any) {
 			name := fmt.Sprintf(namePat, args...)
 			t := p.cgoType(typ)
 			if off%t.Align != 0 {
 				pad := t.Align - off%t.Align
-				ctype += fmt.Sprintf("\t\tchar __pad%d[%d];\n", npad, pad)
+				fmt.Fprintf(&ctype, "\t\tchar __pad%d[%d];\n", npad, pad)
 				off += pad
 				npad++
 			}
-			ctype += fmt.Sprintf("\t\t%s %s;\n", t.C, name)
+			fmt.Fprintf(&ctype, "\t\t%s %s;\n", t.C, name)
 			fmt.Fprintf(gotype, "\t\t%s ", name)
 			noSourceConf.Fprint(gotype, fset, typ)
 			fmt.Fprintf(gotype, "\n")
 			off += t.Size
+			// keep track of the maximum alignment among all fields
+			// so that we can align the struct correctly
+			if t.Align > maxAlign {
+				maxAlign = t.Align
+			}
 		}
 		if fn.Recv != nil {
 			argField(fn.Recv.List[0].Type, "recv")
@@ -937,10 +1015,10 @@ func (p *Package) writeExports(fgo2, fm, fgcc, fgcch io.Writer) {
 			func(i int, aname string, atype ast.Expr) {
 				argField(atype, "r%d", i)
 			})
-		if ctype == "struct {\n" {
-			ctype += "\t\tchar unused;\n" // avoid empty struct
+		if ctype.Len() == len(start) {
+			ctype.WriteString("\t\tchar unused;\n") // avoid empty struct
 		}
-		ctype += "\t}"
+		ctype.WriteString("\t}")
 		fmt.Fprintf(gotype, "\t}")
 
 		// Get the return type of the wrapper function
@@ -966,23 +1044,25 @@ func (p *Package) writeExports(fgo2, fm, fgcc, fgcch io.Writer) {
 		}
 
 		// Build the wrapper function compiled by gcc.
-		gccExport := ""
-		if goos == "windows" {
-			gccExport = "__declspec(dllexport) "
-		}
-		s := fmt.Sprintf("%s%s %s(", gccExport, gccResult, exp.ExpName)
+		var s strings.Builder
+		fmt.Fprintf(&s, "%s %s(", gccResult, exp.ExpName)
 		if fn.Recv != nil {
-			s += p.cgoType(fn.Recv.List[0].Type).C.String()
-			s += " recv"
+			s.WriteString(p.cgoType(fn.Recv.List[0].Type).C.String())
+			s.WriteString(" recv")
 		}
-		forFieldList(fntype.Params,
-			func(i int, aname string, atype ast.Expr) {
-				if i > 0 || fn.Recv != nil {
-					s += ", "
-				}
-				s += fmt.Sprintf("%s %s", p.cgoType(atype).C, exportParamName(aname, i))
-			})
-		s += ")"
+
+		if len(fntype.Params.List) > 0 {
+			forFieldList(fntype.Params,
+				func(i int, aname string, atype ast.Expr) {
+					if i > 0 || fn.Recv != nil {
+						s.WriteString(", ")
+					}
+					fmt.Fprintf(&s, "%s %s", p.cgoType(atype).C, exportParamName(aname, i))
+				})
+		} else {
+			s.WriteString("void")
+		}
+		s.WriteByte(')')
 
 		if len(exp.Doc) > 0 {
 			fmt.Fprintf(fgcch, "\n%s", exp.Doc)
@@ -990,13 +1070,13 @@ func (p *Package) writeExports(fgo2, fm, fgcc, fgcch io.Writer) {
 				fmt.Fprint(fgcch, "\n")
 			}
 		}
-		fmt.Fprintf(fgcch, "extern %s;\n", s)
+		fmt.Fprintf(fgcch, "extern %s;\n", s.String())
 
 		fmt.Fprintf(fgcc, "extern void _cgoexp%s_%s(void *);\n", cPrefix, exp.ExpName)
 		fmt.Fprintf(fgcc, "\nCGO_NO_SANITIZE_THREAD")
-		fmt.Fprintf(fgcc, "\n%s\n", s)
+		fmt.Fprintf(fgcc, "\n%s\n", s.String())
 		fmt.Fprintf(fgcc, "{\n")
-		fmt.Fprintf(fgcc, "\t__SIZE_TYPE__ _cgo_ctxt = _cgo_wait_runtime_init_done();\n")
+		fmt.Fprintf(fgcc, "\tsize_t _cgo_ctxt = _cgo_wait_runtime_init_done();\n")
 		// The results part of the argument structure must be
 		// initialized to 0 so the write barriers generated by
 		// the assignments to these fields in Go are safe.
@@ -1006,7 +1086,11 @@ func (p *Package) writeExports(fgo2, fm, fgcc, fgcch io.Writer) {
 		// string.h for memset, and is also robust to C++
 		// types with constructors. Both GCC and LLVM optimize
 		// this into just zeroing _cgo_a.
-		fmt.Fprintf(fgcc, "\ttypedef %s %v _cgo_argtype;\n", ctype, p.packedAttribute())
+		//
+		// The struct should be aligned to the maximum alignment
+		// of any of its fields. This to avoid alignment
+		// issues.
+		fmt.Fprintf(fgcc, "\ttypedef %s %v __attribute__((aligned(%d))) _cgo_argtype;\n", ctype.String(), p.packedAttribute(), maxAlign)
 		fmt.Fprintf(fgcc, "\tstatic _cgo_argtype _cgo_zero;\n")
 		fmt.Fprintf(fgcc, "\t_cgo_argtype _cgo_a = _cgo_zero;\n")
 		if gccResult != "void" && (len(fntype.Results.List) > 1 || len(fntype.Results.List[0].Names) > 1) {
@@ -1057,7 +1141,7 @@ func (p *Package) writeExports(fgo2, fm, fgcc, fgcch io.Writer) {
 		// This unpacks the argument struct above and calls the Go function.
 		fmt.Fprintf(fgo2, "func _cgoexp%s_%s(a *%s) {\n", cPrefix, exp.ExpName, gotype)
 
-		fmt.Fprintf(fm, "void _cgoexp%s_%s(void* p){}\n", cPrefix, exp.ExpName)
+		fmt.Fprintf(fm, "void _cgoexp%s_%s(void* p __attribute__((unused))){}\n", cPrefix, exp.ExpName)
 
 		fmt.Fprintf(fgo2, "\t")
 
@@ -1092,6 +1176,10 @@ func (p *Package) writeExports(fgo2, fm, fgcc, fgcch io.Writer) {
 					if !p.hasPointer(nil, atype, false) {
 						return
 					}
+
+					// Use the export'ed file/line in error messages.
+					pos := fset.Position(exp.Func.Pos())
+					fmt.Fprintf(fgo2, "//line %s:%d\n", pos.Filename, pos.Line)
 					fmt.Fprintf(fgo2, "\t_cgoCheckResult(a.r%d)\n", i)
 				})
 		}
@@ -1118,7 +1206,7 @@ func (p *Package) writeGccgoExports(fgo2, fm, fgcc, fgcch io.Writer) {
 		fn := exp.Func
 		fntype := fn.Type
 
-		cdeclBuf := new(bytes.Buffer)
+		cdeclBuf := new(strings.Builder)
 		resultCount := 0
 		forFieldList(fntype.Results,
 			func(i int, aname string, atype ast.Expr) { resultCount++ })
@@ -1150,7 +1238,7 @@ func (p *Package) writeGccgoExports(fgo2, fm, fgcc, fgcch io.Writer) {
 
 		cRet := cdeclBuf.String()
 
-		cdeclBuf = new(bytes.Buffer)
+		cdeclBuf = new(strings.Builder)
 		fmt.Fprintf(cdeclBuf, "(")
 		if fn.Recv != nil {
 			fmt.Fprintf(cdeclBuf, "%s recv", p.cgoType(fn.Recv.List[0].Type).C.String())
@@ -1286,7 +1374,7 @@ func (p *Package) writeExportHeader(fgcch io.Writer) {
 	// They aren't useful for people using the header file,
 	// and they mean that the header files change based on the
 	// exact location of GOPATH.
-	re := regexp.MustCompile(`(?m)^(#line\s+[0-9]+\s+")[^"]*[/\\]([^"]*")`)
+	re := regexp.MustCompile(`(?m)^(#line\s+\d+\s+")[^"]*[/\\]([^"]*")`)
 	preamble := re.ReplaceAllString(p.Preamble, "$1$2")
 
 	fmt.Fprintf(fgcch, "/* Start of preamble from import \"C\" comments.  */\n\n")
@@ -1354,7 +1442,7 @@ func forFieldList(fl *ast.FieldList, fn func(int, string, ast.Expr)) {
 	}
 }
 
-func c(repr string, args ...interface{}) *TypeRepr {
+func c(repr string, args ...any) *TypeRepr {
 	return &TypeRepr{repr, args}
 }
 
@@ -1381,9 +1469,18 @@ var goTypes = map[string]*Type{
 
 // Map an ast type to a Type.
 func (p *Package) cgoType(e ast.Expr) *Type {
+	return p.doCgoType(e, make(map[ast.Expr]bool))
+}
+
+// Map an ast type to a Type, avoiding cycles.
+func (p *Package) doCgoType(e ast.Expr, m map[ast.Expr]bool) *Type {
+	if m[e] {
+		fatalf("%s: invalid recursive type", fset.Position(e.Pos()))
+	}
+	m[e] = true
 	switch t := e.(type) {
 	case *ast.StarExpr:
-		x := p.cgoType(t.X)
+		x := p.doCgoType(t.X, m)
 		return &Type{Size: p.PtrSize, Align: p.PtrSize, C: c("%s*", x.C)}
 	case *ast.ArrayType:
 		if t.Len == nil {
@@ -1402,6 +1499,19 @@ func (p *Package) cgoType(e ast.Expr) *Type {
 	case *ast.ChanType:
 		return &Type{Size: p.PtrSize, Align: p.PtrSize, C: c("GoChan")}
 	case *ast.Ident:
+		goTypesFixup := func(r *Type) *Type {
+			if r.Size == 0 { // int or uint
+				rr := new(Type)
+				*rr = *r
+				rr.Size = p.IntSize
+				rr.Align = p.IntSize
+				r = rr
+			}
+			if r.Align > p.PtrSize {
+				r.Align = p.PtrSize
+			}
+			return r
+		}
 		// Look up the type in the top level declarations.
 		// TODO: Handle types defined within a function.
 		for _, d := range p.Decl {
@@ -1415,11 +1525,27 @@ func (p *Package) cgoType(e ast.Expr) *Type {
 					continue
 				}
 				if ts.Name.Name == t.Name {
-					return p.cgoType(ts.Type)
+					// Give a better error than the one
+					// above if we detect a recursive type.
+					if m[ts.Type] {
+						fatalf("%s: invalid recursive type: %s refers to itself", fset.Position(e.Pos()), t.Name)
+					}
+					return p.doCgoType(ts.Type, m)
 				}
 			}
 		}
 		if def := typedef[t.Name]; def != nil {
+			if defgo, ok := def.Go.(*ast.Ident); ok {
+				switch defgo.Name {
+				case "complex64", "complex128":
+					// MSVC does not support the _Complex keyword
+					// nor the complex macro.
+					// Use GoComplex64 and GoComplex128 instead,
+					// which are typedef-ed to a compatible type.
+					// See go.dev/issues/36233.
+					return goTypesFixup(goTypes[defgo.Name])
+				}
+			}
 			return def
 		}
 		if t.Name == "uintptr" {
@@ -1432,18 +1558,11 @@ func (p *Package) cgoType(e ast.Expr) *Type {
 		if t.Name == "error" {
 			return &Type{Size: 2 * p.PtrSize, Align: p.PtrSize, C: c("GoInterface")}
 		}
+		if t.Name == "any" {
+			return &Type{Size: 2 * p.PtrSize, Align: p.PtrSize, C: c("GoInterface")}
+		}
 		if r, ok := goTypes[t.Name]; ok {
-			if r.Size == 0 { // int or uint
-				rr := new(Type)
-				*rr = *r
-				rr.Size = p.IntSize
-				rr.Align = p.IntSize
-				r = rr
-			}
-			if r.Align > p.PtrSize {
-				r.Align = p.PtrSize
-			}
-			return r
+			return goTypesFixup(r)
 		}
 		error_(e.Pos(), "unrecognized Go type %s", t.Name)
 		return &Type{Size: 4, Align: 4, C: c("int")}
@@ -1487,6 +1606,8 @@ extern char* _cgo_topofstack(void);
 #pragma GCC diagnostic ignored "-Wunknown-pragmas"
 #pragma GCC diagnostic ignored "-Wpragmas"
 #pragma GCC diagnostic ignored "-Waddress-of-packed-member"
+#pragma GCC diagnostic ignored "-Wunknown-warning-option"
+#pragma GCC diagnostic ignored "-Wunaligned-access"
 
 #include <errno.h>
 #include <string.h>
@@ -1565,7 +1686,7 @@ var msanProlog = noMsanProlog
 
 const builtinProlog = `
 #line 1 "cgo-builtin-prolog"
-#include <stddef.h> /* for ptrdiff_t and size_t below */
+#include <stddef.h>
 
 /* Define intgo when compiling with GCC.  */
 typedef ptrdiff_t intgo;
@@ -1592,9 +1713,11 @@ const goProlog = `
 func _cgo_runtime_cgocall(unsafe.Pointer, uintptr) int32
 
 //go:linkname _cgoCheckPointer runtime.cgoCheckPointer
+//go:noescape
 func _cgoCheckPointer(interface{}, interface{})
 
 //go:linkname _cgoCheckResult runtime.cgoCheckResult
+//go:noescape
 func _cgoCheckResult(interface{})
 `
 
@@ -1608,6 +1731,7 @@ const goStringDef = `
 //go:linkname _cgo_runtime_gostring runtime.gostring
 func _cgo_runtime_gostring(*_Ctype_char) string
 
+// GoString converts the C string p into a Go string.
 func _Cfunc_GoString(p *_Ctype_char) string {
 	return _cgo_runtime_gostring(p)
 }
@@ -1617,6 +1741,7 @@ const goStringNDef = `
 //go:linkname _cgo_runtime_gostringn runtime.gostringn
 func _cgo_runtime_gostringn(*_Ctype_char, int) string
 
+// GoStringN converts the C data p with explicit length l to a Go string.
 func _Cfunc_GoStringN(p *_Ctype_char, l _Ctype_int) string {
 	return _cgo_runtime_gostringn(p, int(l))
 }
@@ -1626,26 +1751,52 @@ const goBytesDef = `
 //go:linkname _cgo_runtime_gobytes runtime.gobytes
 func _cgo_runtime_gobytes(unsafe.Pointer, int) []byte
 
+// GoBytes converts the C data p with explicit length l to a Go []byte.
 func _Cfunc_GoBytes(p unsafe.Pointer, l _Ctype_int) []byte {
 	return _cgo_runtime_gobytes(p, int(l))
 }
 `
 
 const cStringDef = `
+// CString converts the Go string s to a C string.
+//
+// The C string is allocated in the C heap using malloc.
+// It is the caller's responsibility to arrange for it to be
+// freed, such as by calling C.free (be sure to include stdlib.h
+// if C.free is needed).
 func _Cfunc_CString(s string) *_Ctype_char {
+	if len(s)+1 <= 0 {
+		panic("string too large")
+	}
 	p := _cgo_cmalloc(uint64(len(s)+1))
-	pp := (*[1<<30]byte)(p)
-	copy(pp[:], s)
-	pp[len(s)] = 0
+	sliceHeader := struct {
+		p   unsafe.Pointer
+		len int
+		cap int
+	}{p, len(s)+1, len(s)+1}
+	b := *(*[]byte)(unsafe.Pointer(&sliceHeader))
+	copy(b, s)
+	b[len(s)] = 0
 	return (*_Ctype_char)(p)
 }
 `
 
 const cBytesDef = `
+// CBytes converts the Go []byte slice b to a C array.
+//
+// The C array is allocated in the C heap using malloc.
+// It is the caller's responsibility to arrange for it to be
+// freed, such as by calling C.free (be sure to include stdlib.h
+// if C.free is needed).
 func _Cfunc_CBytes(b []byte) unsafe.Pointer {
 	p := _cgo_cmalloc(uint64(len(b)))
-	pp := (*[1<<30]byte)(p)
-	copy(pp[:], b)
+	sliceHeader := struct {
+		p   unsafe.Pointer
+		len int
+		cap int
+	}{p, len(b), len(b)}
+	s := *(*[]byte)(unsafe.Pointer(&sliceHeader))
+	copy(s, b)
 	return p
 }
 `
@@ -1707,7 +1858,7 @@ void _cgoPREFIX_Cfunc__Cmalloc(void *v) {
 	void *ret;
 	_cgo_tsan_acquire();
 	ret = malloc(a->p0);
-	if (ret == 0 && a->p0 == 0) {
+	if (ret == NULL && a->p0 == 0) {
 		ret = malloc(1);
 	}
 	a->r1 = ret;
@@ -1834,20 +1985,22 @@ void localCgoCheckResult(Eface val) {
 const builtinExportProlog = `
 #line 1 "cgo-builtin-export-prolog"
 
-#include <stddef.h> /* for ptrdiff_t below */
+#include <stddef.h>
 
 #ifndef GO_CGO_EXPORT_PROLOGUE_H
 #define GO_CGO_EXPORT_PROLOGUE_H
 
 #ifndef GO_CGO_GOSTRING_TYPEDEF
 typedef struct { const char *p; ptrdiff_t n; } _GoString_;
+extern size_t _GoStringLen(_GoString_ s);
+extern const char *_GoStringPtr(_GoString_ s);
 #endif
 
 #endif
 `
 
 func (p *Package) gccExportHeaderProlog() string {
-	return strings.Replace(gccExportHeaderProlog, "GOINTBITS", fmt.Sprint(8*p.IntSize), -1)
+	return strings.ReplaceAll(gccExportHeaderProlog, "GOINTBITS", fmt.Sprint(8*p.IntSize))
 }
 
 // gccExportHeaderProlog is written to the exported header, after the
@@ -1880,11 +2033,23 @@ typedef long long GoInt64;
 typedef unsigned long long GoUint64;
 typedef GoIntGOINTBITS GoInt;
 typedef GoUintGOINTBITS GoUint;
-typedef __SIZE_TYPE__ GoUintptr;
+typedef size_t GoUintptr;
 typedef float GoFloat32;
 typedef double GoFloat64;
+#ifdef _MSC_VER
+#if !defined(__cplusplus) || _MSVC_LANG <= 201402L
+#include <complex.h>
+typedef _Fcomplex GoComplex64;
+typedef _Dcomplex GoComplex128;
+#else
+#include <complex>
+typedef std::complex<float> GoComplex64;
+typedef std::complex<double> GoComplex128;
+#endif
+#else
 typedef float _Complex GoComplex64;
 typedef double _Complex GoComplex128;
+#endif
 
 /*
   static assertion to make sure the file is being used on architecture
@@ -1930,5 +2095,5 @@ static void GoInit(void) {
 		runtime_iscgo = 1;
 }
 
-extern __SIZE_TYPE__ _cgo_wait_runtime_init_done(void) __attribute__ ((weak));
+extern size_t _cgo_wait_runtime_init_done(void) __attribute__ ((weak));
 `

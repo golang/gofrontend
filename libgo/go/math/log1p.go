@@ -84,23 +84,20 @@ package math
 //       See HP-15C Advanced Functions Handbook, p.193.
 
 // Log1p returns the natural logarithm of 1 plus its argument x.
-// It is more accurate than Log(1 + x) when x is near zero.
+// It is more accurate than [Log](1 + x) when x is near zero.
 //
 // Special cases are:
+//
 //	Log1p(+Inf) = +Inf
 //	Log1p(±0) = ±0
 //	Log1p(-1) = -Inf
 //	Log1p(x < -1) = NaN
 //	Log1p(NaN) = NaN
-
-//extern log1p
-func libc_log1p(float64) float64
-
 func Log1p(x float64) float64 {
-	if x == 0 {
-		return x
+	if haveArchLog1p {
+		return archLog1p(x)
 	}
-	return libc_log1p(x)
+	return log1p(x)
 }
 
 func log1p(x float64) float64 {

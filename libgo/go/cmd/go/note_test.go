@@ -2,12 +2,10 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build gc
-
 package main_test
 
 import (
-	"go/build"
+	"internal/testenv"
 	"runtime"
 	"testing"
 
@@ -15,6 +13,8 @@ import (
 )
 
 func TestNoteReading(t *testing.T) {
+	tooSlow(t, "runs build")
+
 	// cmd/internal/buildid already has tests that the basic reading works.
 	// This test is essentially checking that -ldflags=-buildid=XXX works,
 	// both in internal and external linking mode.
@@ -34,7 +34,7 @@ func TestNoteReading(t *testing.T) {
 	}
 
 	switch {
-	case !build.Default.CgoEnabled:
+	case !testenv.HasCGO():
 		t.Skipf("skipping - no cgo, so assuming external linking not available")
 	case runtime.GOOS == "plan9":
 		t.Skipf("skipping - external linking not supported")

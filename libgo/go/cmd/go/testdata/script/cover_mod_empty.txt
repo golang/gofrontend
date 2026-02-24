@@ -1,5 +1,3 @@
-[gccgo] skip
-
 go tool cover -func=cover.out
 stdout total.*statements.*0.0%
 

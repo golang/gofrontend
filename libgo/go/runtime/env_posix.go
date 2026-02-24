@@ -2,9 +2,9 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build aix || darwin || dragonfly || freebsd || hurd || (js && wasm) || linux || netbsd || openbsd || solaris || windows || plan9
-
 package runtime
+
+import "unsafe"
 
 func gogetenv(key string) string {
 	env := environ()
@@ -40,4 +40,50 @@ func lowerASCII(c byte) byte {
 		return c + ('a' - 'A')
 	}
 	return c
+}
+
+// _cgo_setenv should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/ebitengine/purego
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname _cgo_setenv
+var _cgo_setenv unsafe.Pointer // pointer to C function
+
+// _cgo_unsetenv should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/ebitengine/purego
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname _cgo_unsetenv
+var _cgo_unsetenv unsafe.Pointer // pointer to C function
+
+// Update the C environment if cgo is loaded.
+func setenv_c(k string, v string) {
+	if _cgo_setenv == nil {
+		return
+	}
+	arg := [2]unsafe.Pointer{cstring(k), cstring(v)}
+	asmcgocall(_cgo_setenv, unsafe.Pointer(&arg))
+}
+
+// Update the C environment if cgo is loaded.
+func unsetenv_c(k string) {
+	if _cgo_unsetenv == nil {
+		return
+	}
+	arg := [1]unsafe.Pointer{cstring(k)}
+	asmcgocall(_cgo_unsetenv, unsafe.Pointer(&arg))
+}
+
+func cstring(s string) unsafe.Pointer {
+	p := make([]byte, len(s)+1)
+	copy(p, s)
+	return unsafe.Pointer(&p[0])
 }

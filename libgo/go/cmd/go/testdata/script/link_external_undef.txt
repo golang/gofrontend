@@ -7,8 +7,7 @@
 
 ! go build -ldflags='-linkmode=external' .
 ! stderr 'panic'
-[!gccgo] stderr '^.*unreachable sym in relocation.*'
-[gccgo] stderr '^.*undefined reference to.*'
+stderr '^.*undefined symbol in relocation.*'
 
 -- go.mod --
 

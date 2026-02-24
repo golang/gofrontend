@@ -23,10 +23,10 @@ type Image interface {
 	Set(x, y int, c color.Color)
 }
 
-// RGBA64Image extends both the Image and image.RGBA64Image interfaces with a
+// RGBA64Image extends both the [Image] and [image.RGBA64Image] interfaces with a
 // SetRGBA64 method to change a single pixel. SetRGBA64 is equivalent to
 // calling Set, but it can avoid allocations from converting concrete color
-// types to the color.Color interface type.
+// types to the [color.Color] interface type.
 type RGBA64Image interface {
 	image.RGBA64Image
 	Set(x, y int, c color.Color)
@@ -50,20 +50,20 @@ const (
 	Src
 )
 
-// Draw implements the Drawer interface by calling the Draw function with this
-// Op.
+// Draw implements the [Drawer] interface by calling the Draw function with this
+// [Op].
 func (op Op) Draw(dst Image, r image.Rectangle, src image.Image, sp image.Point) {
 	DrawMask(dst, r, src, sp, nil, image.Point{}, op)
 }
 
-// Drawer contains the Draw method.
+// Drawer contains the [Draw] method.
 type Drawer interface {
 	// Draw aligns r.Min in dst with sp in src and then replaces the
 	// rectangle r in dst with the result of drawing src on dst.
 	Draw(dst Image, r image.Rectangle, src image.Image, sp image.Point)
 }
 
-// FloydSteinberg is a Drawer that is the Src Op with Floyd-Steinberg error
+// FloydSteinberg is a [Drawer] that is the [Src] [Op] with Floyd-Steinberg error
 // diffusion.
 var FloydSteinberg Drawer = floydSteinberg{}
 
@@ -106,7 +106,7 @@ func processBackward(dst image.Image, r image.Rectangle, src image.Image, sp ima
 		(sp.Y < r.Min.Y || (sp.Y == r.Min.Y && sp.X < r.Min.X))
 }
 
-// Draw calls DrawMask with a nil mask.
+// Draw calls [DrawMask] with a nil mask.
 func Draw(dst Image, r image.Rectangle, src image.Image, sp image.Point, op Op) {
 	DrawMask(dst, r, src, sp, nil, image.Point{}, op)
 }
@@ -121,6 +121,11 @@ func DrawMask(dst Image, r image.Rectangle, src image.Image, sp image.Point, mas
 
 	// Fast paths for special cases. If none of them apply, then we fall back
 	// to general but slower implementations.
+	//
+	// For NRGBA and NRGBA64 image types, the code paths aren't just faster.
+	// They also avoid the information loss that would otherwise occur from
+	// converting non-alpha-premultiplied color to and from alpha-premultiplied
+	// color. See TestDrawSrcNonpremultiplied.
 	switch dst0 := dst.(type) {
 	case *image.RGBA:
 		if op == Over {
@@ -181,7 +186,10 @@ func DrawMask(dst Image, r image.Rectangle, src image.Image, sp image.Point, mas
 					drawFillSrc(dst0, r, sr, sg, sb, sa)
 					return
 				case *image.RGBA:
-					drawCopySrc(dst0, r, src0, sp)
+					d0 := dst0.PixOffset(r.Min.X, r.Min.Y)
+					s0 := src0.PixOffset(sp.X, sp.Y)
+					drawCopySrc(
+						dst0.Pix[d0:], dst0.Stride, r, src0.Pix[s0:], src0.Stride, sp, 4*r.Dx())
 					return
 				case *image.NRGBA:
 					drawNRGBASrc(dst0, r, src0, sp)
@@ -219,6 +227,26 @@ func DrawMask(dst Image, r image.Rectangle, src image.Image, sp image.Point, mas
 				return
 			} else if !processBackward(dst, r, src, sp) {
 				drawPaletted(dst0, r, src, sp, false)
+				return
+			}
+		}
+	case *image.NRGBA:
+		if op == Src && mask == nil {
+			if src0, ok := src.(*image.NRGBA); ok {
+				d0 := dst0.PixOffset(r.Min.X, r.Min.Y)
+				s0 := src0.PixOffset(sp.X, sp.Y)
+				drawCopySrc(
+					dst0.Pix[d0:], dst0.Stride, r, src0.Pix[s0:], src0.Stride, sp, 4*r.Dx())
+				return
+			}
+		}
+	case *image.NRGBA64:
+		if op == Src && mask == nil {
+			if src0, ok := src.(*image.NRGBA64); ok {
+				d0 := dst0.PixOffset(r.Min.X, r.Min.Y)
+				s0 := src0.PixOffset(sp.X, sp.Y)
+				drawCopySrc(
+					dst0.Pix[d0:], dst0.Stride, r, src0.Pix[s0:], src0.Stride, sp, 8*r.Dx())
 				return
 			}
 		}
@@ -449,27 +477,28 @@ func drawCopyOver(dst *image.RGBA, r image.Rectangle, src *image.RGBA, sp image.
 	}
 }
 
-func drawCopySrc(dst *image.RGBA, r image.Rectangle, src *image.RGBA, sp image.Point) {
-	n, dy := 4*r.Dx(), r.Dy()
-	d0 := dst.PixOffset(r.Min.X, r.Min.Y)
-	s0 := src.PixOffset(sp.X, sp.Y)
-	var ddelta, sdelta int
-	if r.Min.Y <= sp.Y {
-		ddelta = dst.Stride
-		sdelta = src.Stride
-	} else {
+// drawCopySrc copies bytes to dstPix from srcPix. These arguments roughly
+// correspond to the Pix fields of the image package's concrete image.Image
+// implementations, but are offset (dstPix is dst.Pix[dpOffset:] not dst.Pix).
+func drawCopySrc(
+	dstPix []byte, dstStride int, r image.Rectangle,
+	srcPix []byte, srcStride int, sp image.Point,
+	bytesPerRow int) {
+
+	d0, s0, ddelta, sdelta, dy := 0, 0, dstStride, srcStride, r.Dy()
+	if r.Min.Y > sp.Y {
 		// If the source start point is higher than the destination start
 		// point, then we compose the rows in bottom-up order instead of
 		// top-down. Unlike the drawCopyOver function, we don't have to check
 		// the x coordinates because the built-in copy function can handle
 		// overlapping slices.
-		d0 += (dy - 1) * dst.Stride
-		s0 += (dy - 1) * src.Stride
-		ddelta = -dst.Stride
-		sdelta = -src.Stride
+		d0 = (dy - 1) * dstStride
+		s0 = (dy - 1) * srcStride
+		ddelta = -dstStride
+		sdelta = -srcStride
 	}
 	for ; dy > 0; dy-- {
-		copy(dst.Pix[d0:d0+n], src.Pix[s0:s0+n])
+		copy(dstPix[d0:d0+bytesPerRow], srcPix[s0:s0+bytesPerRow])
 		d0 += ddelta
 		s0 += sdelta
 	}
@@ -1049,9 +1078,7 @@ func drawPaletted(dst Image, r image.Rectangle, src image.Image, sp image.Point,
 		// Recycle the quantization error buffers.
 		if floydSteinberg {
 			quantErrorCurr, quantErrorNext = quantErrorNext, quantErrorCurr
-			for i := range quantErrorNext {
-				quantErrorNext[i] = [4]int32{}
-			}
+			clear(quantErrorNext)
 		}
 	}
 }

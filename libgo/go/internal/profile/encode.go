@@ -175,7 +175,7 @@ var profileDecoder = []decoder{
 		if err != nil {
 			return err
 		}
-		if *&m.(*Profile).stringTable[0] != "" {
+		if m.(*Profile).stringTable[0] != "" {
 			return errors.New("string_table[0] must be ''")
 		}
 		return nil
@@ -291,7 +291,7 @@ func (p *Profile) postDecode() error {
 	p.commentX = nil
 	p.DefaultSampleType, err = getString(p.stringTable, &p.defaultSampleTypeX, err)
 	p.stringTable = nil
-	return nil
+	return err
 }
 
 func (p *ValueType) decoder() []decoder {

@@ -7,6 +7,7 @@ package regexp
 import (
 	"reflect"
 	"regexp/syntax"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -49,6 +50,7 @@ var badRe = []stringError{
 	{`a**`, "invalid nested repetition operator: `**`"},
 	{`a*+`, "invalid nested repetition operator: `*+`"},
 	{`\x`, "invalid escape sequence: `\\x`"},
+	{strings.Repeat(`\pL`, 27000), "expression too large"},
 }
 
 func compileTest(t *testing.T, expr string, error string) *Regexp {
@@ -518,13 +520,13 @@ func TestSplit(t *testing.T) {
 		}
 
 		split := re.Split(test.s, test.n)
-		if !reflect.DeepEqual(split, test.out) {
+		if !slices.Equal(split, test.out) {
 			t.Errorf("#%d: %q: got %q; want %q", i, test.r, split, test.out)
 		}
 
 		if QuoteMeta(test.r) == test.r {
 			strsplit := strings.SplitN(test.s, test.r, test.n)
-			if !reflect.DeepEqual(split, strsplit) {
+			if !slices.Equal(split, strsplit) {
 				t.Errorf("#%d: Split(%q, %q, %d): regexp vs strings mismatch\nregexp=%q\nstrings=%q", i, test.s, test.r, test.n, split, strsplit)
 			}
 		}
@@ -945,4 +947,45 @@ func TestMinInputLen(t *testing.T) {
 			t.Errorf("regexp %#q has minInputLen %d, should be %d", tt.Regexp, m, tt.min)
 		}
 	}
+}
+
+func TestUnmarshalText(t *testing.T) {
+	unmarshaled := new(Regexp)
+	for i := range goodRe {
+		re := compileTest(t, goodRe[i], "")
+		marshaled, err := re.MarshalText()
+		if err != nil {
+			t.Errorf("regexp %#q failed to marshal: %s", re, err)
+			continue
+		}
+		if err := unmarshaled.UnmarshalText(marshaled); err != nil {
+			t.Errorf("regexp %#q failed to unmarshal: %s", re, err)
+			continue
+		}
+		if unmarshaled.String() != goodRe[i] {
+			t.Errorf("UnmarshalText returned unexpected value: %s", unmarshaled.String())
+		}
+
+		buf := make([]byte, 4, 32)
+		marshalAppend, err := re.AppendText(buf)
+		if err != nil {
+			t.Errorf("regexp %#q failed to marshal: %s", re, err)
+			continue
+		}
+		marshalAppend = marshalAppend[4:]
+		if err := unmarshaled.UnmarshalText(marshalAppend); err != nil {
+			t.Errorf("regexp %#q failed to unmarshal: %s", re, err)
+			continue
+		}
+		if unmarshaled.String() != goodRe[i] {
+			t.Errorf("UnmarshalText returned unexpected value: %s", unmarshaled.String())
+		}
+	}
+	t.Run("invalid pattern", func(t *testing.T) {
+		re := new(Regexp)
+		err := re.UnmarshalText([]byte(`\`))
+		if err == nil {
+			t.Error("unexpected success")
+		}
+	})
 }

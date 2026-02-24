@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"sort"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -21,7 +21,6 @@ import (
 var (
 	DefaultUserAgent                  = defaultUserAgent
 	NewLoggingConn                    = newLoggingConn
-	ExportAppendTime                  = appendTime
 	ExportRefererForURL               = refererForURL
 	ExportServerNewConn               = (*Server).newConn
 	ExportCloseWriteAndWait           = (*conn).closeWriteAndWait
@@ -36,7 +35,7 @@ var (
 	Export_is408Message               = is408Message
 )
 
-const MaxWriteWaitBeforeConnReuse = maxWriteWaitBeforeConnReuse
+var MaxWriteWaitBeforeConnReuse = &maxWriteWaitBeforeConnReuse
 
 func init() {
 	// We only want to pay for this cost during testing.
@@ -60,7 +59,7 @@ func init() {
 	}
 }
 
-func CondSkipHTTP2(t *testing.T) {
+func CondSkipHTTP2(t testing.TB) {
 	if omitBundledHTTP2 {
 		t.Skip("skipping HTTP/2 test when nethttpomithttp2 build tag in use")
 	}
@@ -72,8 +71,6 @@ var (
 )
 
 func SetReadLoopBeforeNextReadHook(f func()) {
-	testHookMu.Lock()
-	defer testHookMu.Unlock()
 	unnilTestHook(&f)
 	testHookReadLoopBeforeNextRead = f
 }
@@ -87,6 +84,14 @@ func SetPendingDialHooks(before, after func()) {
 }
 
 func SetTestHookServerServe(fn func(*Server, net.Listener)) { testHookServerServe = fn }
+
+func SetTestHookProxyConnectTimeout(t *testing.T, f func(context.Context, time.Duration) (context.Context, context.CancelFunc)) {
+	orig := testHookProxyConnectTimeout
+	t.Cleanup(func() {
+		testHookProxyConnectTimeout = orig
+	})
+	testHookProxyConnectTimeout = f
+}
 
 func NewTestTimeoutHandler(handler Handler, ctx context.Context) Handler {
 	return &timeoutHandler{
@@ -113,7 +118,7 @@ func (t *Transport) IdleConnKeysForTesting() (keys []string) {
 	for key := range t.idleConn {
 		keys = append(keys, key.String())
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	return
 }
 
@@ -132,7 +137,7 @@ func (t *Transport) IdleConnStrsForTesting() []string {
 			ret = append(ret, pc.conn.LocalAddr().String()+"/"+pc.conn.RemoteAddr().String())
 		}
 	}
-	sort.Strings(ret)
+	slices.Sort(ret)
 	return ret
 }
 
@@ -144,13 +149,15 @@ func (t *Transport) IdleConnStrsForTesting_h2() []string {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
 
-	for k, cc := range pool.conns {
-		for range cc {
-			ret = append(ret, k)
+	for k, ccs := range pool.conns {
+		for _, cc := range ccs {
+			if cc.idleState().canTakeNewRequest {
+				ret = append(ret, k)
+			}
 		}
 	}
 
-	sort.Strings(ret)
+	slices.Sort(ret)
 	return ret
 }
 
@@ -305,4 +312,31 @@ func ExportCloseTransportConnsAbruptly(tr *Transport) {
 		}
 	}
 	tr.idleMu.Unlock()
+}
+
+// ResponseWriterConnForTesting returns w's underlying connection, if w
+// is a regular *response ResponseWriter.
+func ResponseWriterConnForTesting(w ResponseWriter) (c net.Conn, ok bool) {
+	if r, ok := w.(*response); ok {
+		return r.conn.rwc, true
+	}
+	return nil, false
+}
+
+func init() {
+	// Set the default rstAvoidanceDelay to the minimum possible value to shake
+	// out tests that unexpectedly depend on it. Such tests should use
+	// runTimeSensitiveTest and SetRSTAvoidanceDelay to explicitly raise the delay
+	// if needed.
+	rstAvoidanceDelay = 1 * time.Nanosecond
+}
+
+// SetRSTAvoidanceDelay sets how long we are willing to wait between calling
+// CloseWrite on a connection and fully closing the connection.
+func SetRSTAvoidanceDelay(t *testing.T, d time.Duration) {
+	prevDelay := rstAvoidanceDelay
+	t.Cleanup(func() {
+		rstAvoidanceDelay = prevDelay
+	})
+	rstAvoidanceDelay = d
 }

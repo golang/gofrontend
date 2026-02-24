@@ -5,17 +5,13 @@
 // Hashing algorithm inspired by
 // wyhash: https://github.com/wangyi-fudan/wyhash/blob/ceb019b530e2c1c14d70b79bfa2bc49de7d95bc1/Modern%20Non-Cryptographic%20Hash%20Function%20and%20Pseudorandom%20Number%20Generator.pdf
 
-//go:build 386 || arm || mips || mipsle || amd64p32 || armbe || m68k || mips64p32 || mips64p32le || nios2 || ppc || riscv || s390 || sh || shbe || sparc
+//go:build 386 || arm || mips || mipsle || wasm || (gccgo && (ppc || s390))
 
 package runtime
 
 import "unsafe"
 
-// For gccgo, use go:linkname to export compiler-called functions.
-//
-//go:linkname memhash
-
-func memhash32(p unsafe.Pointer, seed uintptr) uintptr {
+func memhash32Fallback(p unsafe.Pointer, seed uintptr) uintptr {
 	a, b := mix32(uint32(seed), uint32(4^hashkey[0]))
 	t := readUnaligned32(p)
 	a ^= t
@@ -25,7 +21,7 @@ func memhash32(p unsafe.Pointer, seed uintptr) uintptr {
 	return uintptr(a ^ b)
 }
 
-func memhash64(p unsafe.Pointer, seed uintptr) uintptr {
+func memhash64Fallback(p unsafe.Pointer, seed uintptr) uintptr {
 	a, b := mix32(uint32(seed), uint32(8^hashkey[0]))
 	a ^= readUnaligned32(p)
 	b ^= readUnaligned32(add(p, 4))
@@ -34,10 +30,8 @@ func memhash64(p unsafe.Pointer, seed uintptr) uintptr {
 	return uintptr(a ^ b)
 }
 
-func memhash(p unsafe.Pointer, seed, s uintptr) uintptr {
-	if GOARCH == "386" && GOOS != "nacl" && useAeshash {
-		return aeshash(p, seed, s)
-	}
+func memhashFallback(p unsafe.Pointer, seed, s uintptr) uintptr {
+
 	a, b := mix32(uint32(seed), uint32(s^hashkey[0]))
 	if s == 0 {
 		return uintptr(a ^ b)

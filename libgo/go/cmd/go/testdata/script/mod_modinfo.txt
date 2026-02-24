@@ -3,9 +3,6 @@
 # when module is enabled.
 env GO111MODULE=on
 
-# gccgo doesn't support reading modinfo in init functions.
-[gccgo] skip
-
 cd x
 go mod edit -require=rsc.io/quote@v1.5.2
 go mod edit -replace=rsc.io/quote@v1.5.2=rsc.io/quote@v1.0.0

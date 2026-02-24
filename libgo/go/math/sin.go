@@ -112,14 +112,15 @@ var _cos = [...]float64{
 // Cos returns the cosine of the radian argument x.
 //
 // Special cases are:
+//
 //	Cos(±Inf) = NaN
 //	Cos(NaN) = NaN
 func Cos(x float64) float64 {
-	return libc_cos(x)
+	if haveArchCos {
+		return archCos(x)
+	}
+	return cos(x)
 }
-
-//extern cos
-func libc_cos(float64) float64
 
 func cos(x float64) float64 {
 	const (
@@ -177,15 +178,16 @@ func cos(x float64) float64 {
 // Sin returns the sine of the radian argument x.
 //
 // Special cases are:
+//
 //	Sin(±0) = ±0
 //	Sin(±Inf) = NaN
 //	Sin(NaN) = NaN
 func Sin(x float64) float64 {
-	return libc_sin(x)
+	if haveArchSin {
+		return archSin(x)
+	}
+	return sin(x)
 }
-
-//extern sin
-func libc_sin(float64) float64
 
 func sin(x float64) float64 {
 	const (

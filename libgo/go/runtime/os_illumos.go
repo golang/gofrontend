@@ -8,6 +8,26 @@ import (
 	"unsafe"
 )
 
+//go:cgo_import_dynamic libc_getrctl getrctl "libc.so"
+//go:cgo_import_dynamic libc_rctlblk_get_local_action rctlblk_get_local_action "libc.so"
+//go:cgo_import_dynamic libc_rctlblk_get_local_flags rctlblk_get_local_flags "libc.so"
+//go:cgo_import_dynamic libc_rctlblk_get_value rctlblk_get_value "libc.so"
+//go:cgo_import_dynamic libc_rctlblk_size rctlblk_size "libc.so"
+
+//go:linkname libc_getrctl libc_getrctl
+//go:linkname libc_rctlblk_get_local_action libc_rctlblk_get_local_action
+//go:linkname libc_rctlblk_get_local_flags libc_rctlblk_get_local_flags
+//go:linkname libc_rctlblk_get_value libc_rctlblk_get_value
+//go:linkname libc_rctlblk_size libc_rctlblk_size
+
+var (
+	libc_getrctl,
+	libc_rctlblk_get_local_action,
+	libc_rctlblk_get_local_flags,
+	libc_rctlblk_get_value,
+	libc_rctlblk_size libcFunc
+)
+
 // Return the minimum value seen for the zone CPU cap, or 0 if no cap is
 // detected.
 func getcpucap() uint64 {
@@ -47,7 +67,7 @@ func getcpucap() uint64 {
 		}
 
 		lflags := rctlblk_get_local_flags(unsafe.Pointer(rblk))
-		action := rctlblk_get_local_action(unsafe.Pointer(rblk), 0)
+		action := rctlblk_get_local_action(unsafe.Pointer(rblk))
 		if (lflags&_RCTL_LOCAL_MAXIMAL) == 0 && action == _RCTL_LOCAL_DENY {
 			// This is a finite (not maximal) value representing a
 			// cap (deny) action.
@@ -67,7 +87,7 @@ func getcpucap() uint64 {
 	return capval
 }
 
-func getncpu() int32 {
+func getCPUCount() int32 {
 	n := int32(sysconf(__SC_NPROCESSORS_ONLN))
 	if n < 1 {
 		return 1
@@ -86,17 +106,27 @@ func getncpu() int32 {
 	return n
 }
 
-//extern getrctl
-func getrctl(controlname, oldbuf, newbuf unsafe.Pointer, flags uint32) int32
+//go:nosplit
+func getrctl(controlname, oldbuf, newbuf unsafe.Pointer, flags uint32) uintptr {
+	return sysvicall4(&libc_getrctl, uintptr(controlname), uintptr(oldbuf), uintptr(newbuf), uintptr(flags))
+}
 
-//extern rctlblk_get_local_action
-func rctlblk_get_local_action(buf, signalp unsafe.Pointer) uint32
+//go:nosplit
+func rctlblk_get_local_action(buf unsafe.Pointer) uintptr {
+	return sysvicall2(&libc_rctlblk_get_local_action, uintptr(buf), uintptr(0))
+}
 
-//extern rctlblk_get_local_flags
-func rctlblk_get_local_flags(buf unsafe.Pointer) uint32
+//go:nosplit
+func rctlblk_get_local_flags(buf unsafe.Pointer) uintptr {
+	return sysvicall1(&libc_rctlblk_get_local_flags, uintptr(buf))
+}
 
-//extern rctlblk_get_value
-func rctlblk_get_value(buf unsafe.Pointer) uint64
+//go:nosplit
+func rctlblk_get_value(buf unsafe.Pointer) uint64 {
+	return uint64(sysvicall1(&libc_rctlblk_get_value, uintptr(buf)))
+}
 
-//extern rctlblk_size
-func rclblk_size() uintptr
+//go:nosplit
+func rctlblk_size() uintptr {
+	return sysvicall0(&libc_rctlblk_size)
+}

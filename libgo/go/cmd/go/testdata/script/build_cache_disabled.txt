@@ -15,11 +15,11 @@
 env GOCACHE=off
 
 # Commands that don't completely load packages should work.
-[!gccgo] go doc fmt
-[!gccgo] stdout Printf
+go doc fmt
+stdout Printf
 
-[!gccgo] ! go tool compile -h
-[!gccgo] stderr usage:
+! go tool compile -h
+stderr usage:
 
 go version
 stdout '^go version'
@@ -42,7 +42,7 @@ go mod verify
 # Commands that load but don't build packages should work.
 go fmt .
 
-[!gccgo] go doc .
+go doc .
 
 -- main.go --
 package main

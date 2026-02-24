@@ -11,11 +11,6 @@ import (
 	"unsafe"
 )
 
-var _ = runtime.Caller
-var _ = strings.HasSuffix
-
-type _ testing.T
-
 func TestCaller(t *testing.T) {
 	procs := runtime.GOMAXPROCS(-1)
 	c := make(chan bool, procs)
@@ -34,6 +29,7 @@ func TestCaller(t *testing.T) {
 
 // These are marked noinline so that we can use FuncForPC
 // in testCallerBar.
+//
 //go:noinline
 func testCallerFoo(t *testing.T) {
 	testCallerBar(t)
@@ -46,9 +42,8 @@ func testCallerBar(t *testing.T) {
 		f := runtime.FuncForPC(pc)
 		if !ok ||
 			!strings.HasSuffix(file, "symtab_test.go") ||
-			// FuncForPC doesn't work gccgo, because of inlining.
-			// (i == 0 && !strings.HasSuffix(f.Name(), "testCallerBar")) ||
-			// (i == 1 && !strings.HasSuffix(f.Name(), "testCallerFoo")) ||
+			(i == 0 && !strings.HasSuffix(f.Name(), "testCallerBar")) ||
+			(i == 1 && !strings.HasSuffix(f.Name(), "testCallerFoo")) ||
 			line < 5 || line > 1000 ||
 			f.Entry() >= pc {
 			t.Errorf("incorrect symbol info %d: %t %d %d %s %s %d",
@@ -206,20 +201,20 @@ func tracebackFunc(t *testing.T) uintptr {
 // Go will never generate a stack trace containing such an address, as it is
 // not a valid call site. However, the cgo traceback function passed to
 // runtime.SetCgoTraceback may not be completely accurate and may incorrect
-// provide PCs in Go code or the alignement region between functions.
+// provide PCs in Go code or the alignment region between functions.
 //
 // Go obviously doesn't easily expose the problematic PCs to running programs,
 // so this test is a bit fragile. Some details:
 //
-// * tracebackFunc is our target function. We want to get a PC in the
-//   alignment region following this function. This function also has other
-//   functions inlined into it to ensure it has an InlTree (this was the source
-//   of the bug in issue 44971).
+//   - tracebackFunc is our target function. We want to get a PC in the
+//     alignment region following this function. This function also has other
+//     functions inlined into it to ensure it has an InlTree (this was the source
+//     of the bug in issue 44971).
 //
-// * We acquire a PC in tracebackFunc, walking forwards until FuncForPC says
-//   we're in a new function. The last PC of the function according to FuncForPC
-//   should be in the alignment region (assuming the function isn't already
-//   perfectly aligned).
+//   - We acquire a PC in tracebackFunc, walking forwards until FuncForPC says
+//     we're in a new function. The last PC of the function according to FuncForPC
+//     should be in the alignment region (assuming the function isn't already
+//     perfectly aligned).
 //
 // This is a regression test for issue 44971.
 func TestFunctionAlignmentTraceback(t *testing.T) {
@@ -241,7 +236,7 @@ func TestFunctionAlignmentTraceback(t *testing.T) {
 	// Is this an alignment region filler instruction? We only check this
 	// on amd64 for simplicity. If this function has no filler, then we may
 	// get a false negative, but will never get a false positive.
-	if runtime.GOARCH == "amd64" && runtime.Compiler == "gc" {
+	if runtime.GOARCH == "amd64" {
 		code := *(*uint8)(unsafe.Pointer(pc))
 		if code != 0xcc { // INT $3
 			t.Errorf("PC %v code got %#x want 0xcc", pc, code)
@@ -252,7 +247,7 @@ func TestFunctionAlignmentTraceback(t *testing.T) {
 	// PC.
 	frames := runtime.CallersFrames([]uintptr{pc})
 	frame, _ := frames.Next()
-	if *frame.Func != *f {
+	if frame.Func != f {
 		t.Errorf("frames.Next() got %+v want %+v", frame.Func, f)
 	}
 }

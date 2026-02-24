@@ -5,6 +5,7 @@
 package path_test
 
 import (
+	"path"
 	. "path"
 	"runtime"
 	"testing"
@@ -83,9 +84,6 @@ func TestCleanMallocs(t *testing.T) {
 		t.Log("skipping AllocsPerRun checks; GOMAXPROCS>1")
 		return
 	}
-
-	t.Log("Skipping AllocsPerRun for gccgo")
-	return
 
 	for _, test := range cleantests {
 		allocs := testing.AllocsPerRun(100, func() { Clean(test.result) })
@@ -235,5 +233,16 @@ func TestIsAbs(t *testing.T) {
 		if r := IsAbs(test.path); r != test.isAbs {
 			t.Errorf("IsAbs(%q) = %v, want %v", test.path, r, test.isAbs)
 		}
+	}
+}
+
+func BenchmarkJoin(b *testing.B) {
+	b.ReportAllocs()
+	parts := []string{"one", "two", "three", "four"}
+	s := parts[0]
+	for b.Loop() {
+		parts[0] = s
+		s = path.Join(parts...)
+		s = s[:3]
 	}
 }

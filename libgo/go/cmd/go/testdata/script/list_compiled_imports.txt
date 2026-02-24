@@ -15,7 +15,7 @@ stdout unicode/utf16
 # go list -compiled should report imports in compiled files as well,
 # adding "runtime/cgo", "unsafe", and "syscall" but not dropping "C".
 go list -compiled -f '{{.Imports}}'
-[!gccgo] stdout runtime/cgo
+stdout runtime/cgo
 stdout unsafe
 stdout syscall
 stdout C

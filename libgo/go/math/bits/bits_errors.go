@@ -3,14 +3,13 @@
 // license that can be found in the LICENSE file.
 
 //go:build !compiler_bootstrap
-// +build !compiler_bootstrap
 
 package bits
 
 import _ "unsafe"
 
-//go:linkname getOverflowError runtime.getOverflowError
-func getOverflowError() error
+//go:linkname overflowError runtime.overflowError
+var overflowError error
 
-//go:linkname getDivideError runtime.getDivideError
-func getDivideError() error
+//go:linkname divideError runtime.divideError
+var divideError error

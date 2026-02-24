@@ -114,22 +114,21 @@ package math
 //
 
 // Expm1 returns e**x - 1, the base-e exponential of x minus 1.
-// It is more accurate than Exp(x) - 1 when x is near zero.
+// It is more accurate than [Exp](x) - 1 when x is near zero.
 //
 // Special cases are:
+//
 //	Expm1(+Inf) = +Inf
 //	Expm1(-Inf) = -1
 //	Expm1(NaN) = NaN
+//
 // Very large values overflow to -1 or +Inf.
 func Expm1(x float64) float64 {
-	if x == 0 {
-		return x
+	if haveArchExpm1 {
+		return archExpm1(x)
 	}
-	return libc_expm1(x)
+	return expm1(x)
 }
-
-//extern expm1
-func libc_expm1(float64) float64
 
 func expm1(x float64) float64 {
 	const (

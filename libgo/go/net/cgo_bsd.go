@@ -2,14 +2,13 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build cgo && !netgo && (darwin || dragonfly || freebsd)
+//go:build cgo && !netgo && (dragonfly || freebsd)
 
 package net
 
 /*
 #include <netdb.h>
 */
+import "C"
 
-import "syscall"
-
-const cgoAddrInfoFlags = (syscall.AI_CANONNAME | syscall.AI_V4MAPPED | syscall.AI_ALL) & syscall.AI_MASK
+const cgoAddrInfoFlags = (C.AI_CANONNAME | C.AI_V4MAPPED | C.AI_ALL) & C.AI_MASK

@@ -9,6 +9,7 @@ import (
 	"internal/race"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -105,7 +106,7 @@ var headerWriteTests = []struct {
 }
 
 func TestHeaderWrite(t *testing.T) {
-	var buf bytes.Buffer
+	var buf strings.Builder
 	for i, test := range headerWriteTests {
 		test.h.WriteSubset(&buf, test.exclude)
 		if buf.String() != test.expected {
@@ -222,7 +223,6 @@ func TestHeaderWriteSubsetAllocs(t *testing.T) {
 	if race.Enabled {
 		t.Skip("skipping test under race detector")
 	}
-	t.Skip("Skipping alloc count test on gccgo")
 	if runtime.GOMAXPROCS(0) > 1 {
 		t.Skip("skipping; GOMAXPROCS>1")
 	}
@@ -248,6 +248,11 @@ func TestCloneOrMakeHeader(t *testing.T) {
 			name: "non-empty",
 			in:   Header{"foo": {"bar"}},
 			want: Header{"foo": {"bar"}},
+		},
+		{
+			name: "nil value",
+			in:   Header{"foo": nil},
+			want: Header{"foo": nil},
 		},
 	}
 

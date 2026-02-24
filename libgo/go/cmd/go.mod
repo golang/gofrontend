@@ -1,19 +1,21 @@
 module cmd
 
-go 1.18
+go 1.26
 
 require (
-	github.com/google/pprof v0.0.0-20211104044539-f987b9c94b31
-	golang.org/x/arch v0.0.0-20210923205945-b76863e36670
-	golang.org/x/mod v0.6.0-dev.0.20211102181907-3a5865c02020
-	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
-	golang.org/x/term v0.0.0-20210927222741-03fcf44c2211
-	golang.org/x/tools v0.1.9-0.20220124164225-97de9ec46646
+	github.com/google/pprof v0.0.0-20251114195745-4902fdda35c8
+	golang.org/x/arch v0.23.0
+	golang.org/x/build v0.0.0-20251128064159-b9bfd88b30e8
+	golang.org/x/mod v0.30.1-0.20251115032019-269c237cf350
+	golang.org/x/sync v0.19.0
+	golang.org/x/sys v0.39.0
+	golang.org/x/telemetry v0.0.0-20251128220624-abf20d0e57ec
+	golang.org/x/term v0.38.0
+	golang.org/x/tools v0.39.1-0.20251230210517-d44be789a05c
 )
 
 require (
-	github.com/ianlancetaylor/demangle v0.0.0-20210905161508-09a460cdf81d // indirect
-	golang.org/x/crypto v0.0.0-20211215153901-e495a2d5b3d3 // indirect
-	golang.org/x/sys v0.0.0-20211205182925-97ca703d548d // indirect
-	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
+	github.com/ianlancetaylor/demangle v0.0.0-20250417193237-f615e6bd150b // indirect
+	golang.org/x/text v0.32.0 // indirect
+	rsc.io/markdown v0.0.0-20240306144322-0bf8f97ee8ef // indirect
 )

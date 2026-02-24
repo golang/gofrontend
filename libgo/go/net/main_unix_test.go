@@ -2,11 +2,14 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build aix || darwin || dragonfly || freebsd || hurd || linux || netbsd || openbsd || solaris
+//go:build unix
 
 package net
 
-import "internal/poll"
+import (
+	"internal/poll"
+	"os/exec"
+)
 
 var (
 	// Placeholders for saving original socket system calls.
@@ -53,3 +56,5 @@ func forceCloseSockets() {
 		poll.CloseFunc(s)
 	}
 }
+
+func addCmdInheritedHandle(cmd *exec.Cmd, fd uintptr) {}

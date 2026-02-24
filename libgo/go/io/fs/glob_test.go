@@ -8,6 +8,8 @@ import (
 	. "io/fs"
 	"os"
 	"path"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -19,9 +21,7 @@ var globTests = []struct {
 	{os.DirFS("."), "gl?b.go", "glob.go"},
 	{os.DirFS("."), `gl\ob.go`, "glob.go"},
 	{os.DirFS("."), "*", "glob.go"},
-	// This test fails on gofrontend because the directory structure
-	// is different.
-	// {os.DirFS(".."), "*/glob.go", "fs/glob.go"},
+	{os.DirFS(".."), "*/glob.go", "fs/glob.go"},
 }
 
 func TestGlob(t *testing.T) {
@@ -31,7 +31,7 @@ func TestGlob(t *testing.T) {
 			t.Errorf("Glob error for %q: %s", tt.pattern, err)
 			continue
 		}
-		if !contains(matches, tt.result) {
+		if !slices.Contains(matches, tt.result) {
 			t.Errorf("Glob(%#q) = %#v want %v", tt.pattern, matches, tt.result)
 		}
 	}
@@ -57,14 +57,13 @@ func TestGlobError(t *testing.T) {
 	}
 }
 
-// contains reports whether vector contains the string s.
-func contains(vector []string, s string) bool {
-	for _, elem := range vector {
-		if elem == s {
-			return true
-		}
+func TestCVE202230630(t *testing.T) {
+	// Prior to CVE-2022-30630, a stack exhaustion would occur given a large
+	// number of separators. There is now a limit of 10,000.
+	_, err := Glob(os.DirFS("."), "/*"+strings.Repeat("/", 10001))
+	if err != path.ErrBadPattern {
+		t.Fatalf("Glob returned err=%v, want %v", err, path.ErrBadPattern)
 	}
-	return false
 }
 
 type globOnly struct{ GlobFS }

@@ -7,14 +7,10 @@ package runtime
 // This file contains the implementation of Go select statements.
 
 import (
-	"runtime/internal/atomic"
+	"internal/abi"
+	"internal/runtime/sys"
 	"unsafe"
 )
-
-// For gccgo, use go:linkname to export compiler-called functions.
-//
-//go:linkname selectgo
-//go:linkname block
 
 const debugSelect = false
 
@@ -24,6 +20,15 @@ const debugSelect = false
 type scase struct {
 	c    *hchan         // chan
 	elem unsafe.Pointer // data element
+}
+
+var (
+	chansendpc = abi.FuncPCABIInternal(chansend)
+	chanrecvpc = abi.FuncPCABIInternal(chanrecv)
+)
+
+func selectsetpc(pc *uintptr) {
+	*pc = sys.GetCallerPC()
 }
 
 func sellock(scases []scase, lockorder []uint16) {
@@ -65,7 +70,7 @@ func selparkcommit(gp *g, _ unsafe.Pointer) bool {
 	// Mark that it's safe for stack shrinking to occur now,
 	// because any thread acquiring this G's stack for shrinking
 	// is guaranteed to observe activeStackChans after this store.
-	atomic.Store8(&gp.parkingOnChan, 0)
+	gp.parkingOnChan.Store(false)
 	// Make sure we unlock after setting activeStackChans and
 	// unsetting parkingOnChan. The moment we unlock any of the
 	// channel locks we risk gp getting readied by a channel operation
@@ -78,7 +83,7 @@ func selparkcommit(gp *g, _ unsafe.Pointer) bool {
 	// channels in lock order.
 	var lastc *hchan
 	for sg := gp.waiting; sg != nil; sg = sg.waitlink {
-		if sg.c != lastc && lastc != nil {
+		if sg.c.get() != lastc && lastc != nil {
 			// As soon as we unlock the channel, fields in
 			// any sudog with that channel may change,
 			// including c and waitlink. Since multiple
@@ -87,7 +92,7 @@ func selparkcommit(gp *g, _ unsafe.Pointer) bool {
 			// of a channel.
 			unlock(&lastc.lock)
 		}
-		lastc = sg.c
+		lastc = sg.c.get()
 	}
 	if lastc != nil {
 		unlock(&lastc.lock)
@@ -96,7 +101,7 @@ func selparkcommit(gp *g, _ unsafe.Pointer) bool {
 }
 
 func block() {
-	gopark(nil, nil, waitReasonSelectNoCases, traceEvGoStop, 1) // forever
+	gopark(nil, nil, waitReasonSelectNoCases, traceBlockForever, 1) // forever
 }
 
 // selectgo implements the select statement.
@@ -114,7 +119,8 @@ func block() {
 // ordinal position of its respective select{recv,send,default} call.
 // Also, if the chosen scase was a receive operation, it reports whether
 // a value was received.
-func selectgo(cas0 *scase, order0 *uint16, nsends, nrecvs int, block bool) (int, bool) {
+func selectgo(cas0 *scase, order0 *uint16, pc0 *uintptr, nsends, nrecvs int, block bool) (int, bool) {
+	gp := getg()
 	if debugSelect {
 		print("select: cas0=", cas0, "\n")
 	}
@@ -130,6 +136,21 @@ func selectgo(cas0 *scase, order0 *uint16, nsends, nrecvs int, block bool) (int,
 	lockorder := order1[ncases:][:ncases:ncases]
 	// NOTE: pollorder/lockorder's underlying array was not zero-initialized by compiler.
 
+	// Even when raceenabled is true, there might be select
+	// statements in packages compiled without -race (e.g.,
+	// ensureSigM in runtime/signal_unix.go).
+	var pcs []uintptr
+	if raceenabled && pc0 != nil {
+		pc1 := (*[1 << 16]uintptr)(unsafe.Pointer(pc0))
+		pcs = pc1[:ncases:ncases]
+	}
+	casePC := func(casi int) uintptr {
+		if pcs == nil {
+			return 0
+		}
+		return pcs[casi]
+	}
+
 	var t0 int64
 	if blockprofilerate > 0 {
 		t0 = cputicks()
@@ -143,13 +164,9 @@ func selectgo(cas0 *scase, order0 *uint16, nsends, nrecvs int, block bool) (int,
 	// cases correctly, and they are rare enough not to bother
 	// optimizing (and needing to test).
 
-	// needed for gccgo, which doesn't zero pollorder
-	if ncases > 0 {
-		pollorder[0] = 0
-	}
-
 	// generate permuted order
 	norder := 0
+	allSynctest := true
 	for i := range scases {
 		cas := &scases[i]
 
@@ -159,13 +176,32 @@ func selectgo(cas0 *scase, order0 *uint16, nsends, nrecvs int, block bool) (int,
 			continue
 		}
 
-		j := fastrandn(uint32(norder + 1))
+		if cas.c.bubble != nil {
+			if getg().bubble != cas.c.bubble {
+				fatal("select on synctest channel from outside bubble")
+			}
+		} else {
+			allSynctest = false
+		}
+
+		if cas.c.timer != nil {
+			cas.c.timer.maybeRunChan(cas.c)
+		}
+
+		j := cheaprandn(uint32(norder + 1))
 		pollorder[norder] = pollorder[j]
 		pollorder[j] = uint16(i)
 		norder++
 	}
 	pollorder = pollorder[:norder]
 	lockorder = lockorder[:norder]
+
+	waitReason := waitReasonSelect
+	if gp.bubble != nil && allSynctest {
+		// Every channel selected on is in a synctest bubble,
+		// so this goroutine will count as idle while selecting.
+		waitReason = waitReasonSynctestSelect
+	}
 
 	// sort the cases by Hchan address to get the locking order.
 	// simple heap sort, to guarantee n log n time and constant stack footprint.
@@ -216,7 +252,6 @@ func selectgo(cas0 *scase, order0 *uint16, nsends, nrecvs int, block bool) (int,
 	sellock(scases, lockorder)
 
 	var (
-		gp     *g
 		sg     *sudog
 		c      *hchan
 		k      *scase
@@ -249,6 +284,9 @@ func selectgo(cas0 *scase, order0 *uint16, nsends, nrecvs int, block bool) (int,
 				goto rclose
 			}
 		} else {
+			if raceenabled {
+				racereadpc(c.raceaddr(), casePC(casi), chansendpc)
+			}
 			if c.closed != 0 {
 				goto sclose
 			}
@@ -269,7 +307,6 @@ func selectgo(cas0 *scase, order0 *uint16, nsends, nrecvs int, block bool) (int,
 	}
 
 	// pass 2 - enqueue on all chans
-	gp = getg()
 	if gp.waiting != nil {
 		throw("gp.waiting != nil")
 	}
@@ -283,12 +320,12 @@ func selectgo(cas0 *scase, order0 *uint16, nsends, nrecvs int, block bool) (int,
 		sg.isSelect = true
 		// No stack splits between assigning elem and enqueuing
 		// sg on gp.waiting where copystack can find it.
-		sg.elem = cas.elem
+		sg.elem.set(cas.elem)
 		sg.releasetime = 0
 		if t0 != 0 {
 			sg.releasetime = -1
 		}
-		sg.c = c
+		sg.c.set(c)
 		// Construct waiting list in lock order.
 		*nextp = sg
 		nextp = &sg.waitlink
@@ -298,6 +335,10 @@ func selectgo(cas0 *scase, order0 *uint16, nsends, nrecvs int, block bool) (int,
 		} else {
 			c.recvq.enqueue(sg)
 		}
+
+		if c.timer != nil {
+			blockTimerChan(c)
+		}
 	}
 
 	// wait for someone to wake us up
@@ -306,13 +347,13 @@ func selectgo(cas0 *scase, order0 *uint16, nsends, nrecvs int, block bool) (int,
 	// to park on a channel. The window between when this G's status
 	// changes and when we set gp.activeStackChans is not safe for
 	// stack shrinking.
-	atomic.Store8(&gp.parkingOnChan, 1)
-	gopark(selparkcommit, nil, waitReasonSelect, traceEvGoBlockSelect, 1)
+	gp.parkingOnChan.Store(true)
+	gopark(selparkcommit, nil, waitReason, traceBlockSelect, 1)
 	gp.activeStackChans = false
 
 	sellock(scases, lockorder)
 
-	gp.selectDone = 0
+	gp.selectDone.Store(0)
 	sg = (*sudog)(gp.param)
 	gp.param = nil
 
@@ -327,13 +368,16 @@ func selectgo(cas0 *scase, order0 *uint16, nsends, nrecvs int, block bool) (int,
 	// Clear all elem before unlinking from gp.waiting.
 	for sg1 := gp.waiting; sg1 != nil; sg1 = sg1.waitlink {
 		sg1.isSelect = false
-		sg1.elem = nil
-		sg1.c = nil
+		sg1.elem.set(nil)
+		sg1.c.set(nil)
 	}
 	gp.waiting = nil
 
 	for _, casei := range lockorder {
 		k = &scases[casei]
+		if k.c.timer != nil {
+			unblockTimerChan(k.c)
+		}
 		if sg == sglist {
 			// sg has already been dequeued by the G that woke us up.
 			casi = int(casei)
@@ -374,11 +418,45 @@ func selectgo(cas0 *scase, order0 *uint16, nsends, nrecvs int, block bool) (int,
 		recvOK = caseSuccess
 	}
 
+	if raceenabled {
+		if casi < nsends {
+			raceReadObjectPC(c.elemtype, cas.elem, casePC(casi), chansendpc)
+		} else if cas.elem != nil {
+			raceWriteObjectPC(c.elemtype, cas.elem, casePC(casi), chanrecvpc)
+		}
+	}
+	if msanenabled {
+		if casi < nsends {
+			msanread(cas.elem, c.elemtype.Size_)
+		} else if cas.elem != nil {
+			msanwrite(cas.elem, c.elemtype.Size_)
+		}
+	}
+	if asanenabled {
+		if casi < nsends {
+			asanread(cas.elem, c.elemtype.Size_)
+		} else if cas.elem != nil {
+			asanwrite(cas.elem, c.elemtype.Size_)
+		}
+	}
+
 	selunlock(scases, lockorder)
 	goto retc
 
 bufrecv:
 	// can receive from buffer
+	if raceenabled {
+		if cas.elem != nil {
+			raceWriteObjectPC(c.elemtype, cas.elem, casePC(casi), chanrecvpc)
+		}
+		racenotify(c, c.recvx, nil)
+	}
+	if msanenabled && cas.elem != nil {
+		msanwrite(cas.elem, c.elemtype.Size_)
+	}
+	if asanenabled && cas.elem != nil {
+		asanwrite(cas.elem, c.elemtype.Size_)
+	}
 	recvOK = true
 	qp = chanbuf(c, c.recvx)
 	if cas.elem != nil {
@@ -395,6 +473,16 @@ bufrecv:
 
 bufsend:
 	// can send to buffer
+	if raceenabled {
+		racenotify(c, c.sendx, nil)
+		raceReadObjectPC(c.elemtype, cas.elem, casePC(casi), chansendpc)
+	}
+	if msanenabled {
+		msanread(cas.elem, c.elemtype.Size_)
+	}
+	if asanenabled {
+		asanread(cas.elem, c.elemtype.Size_)
+	}
 	typedmemmove(c.elemtype, chanbuf(c, c.sendx), cas.elem)
 	c.sendx++
 	if c.sendx == c.dataqsiz {
@@ -427,6 +515,15 @@ rclose:
 
 send:
 	// can send to a sleeping receiver (sg)
+	if raceenabled {
+		raceReadObjectPC(c.elemtype, cas.elem, casePC(casi), chansendpc)
+	}
+	if msanenabled {
+		msanread(cas.elem, c.elemtype.Size_)
+	}
+	if asanenabled {
+		asanread(cas.elem, c.elemtype.Size_)
+	}
 	send(c, sg, cas.elem, func() { selunlock(scases, lockorder) }, 2)
 	if debugSelect {
 		print("syncsend: cas0=", cas0, " c=", c, "\n")
@@ -437,13 +534,6 @@ retc:
 	if caseReleaseTime > 0 {
 		blockevent(caseReleaseTime-t0, 1)
 	}
-
-	// Check preemption, since unlike gc we don't check on every call.
-	// A test case for this one is BenchmarkPingPongHog in proc_test.go.
-	if block && getg().preempt {
-		checkPreempt()
-	}
-
 	return casi, recvOK
 
 sclose:
@@ -514,8 +604,16 @@ func reflect_rselect(cases []runtimeSelect) (int, bool) {
 	}
 
 	order := make([]uint16, 2*(nsends+nrecvs))
+	var pc0 *uintptr
+	if raceenabled {
+		pcs := make([]uintptr, nsends+nrecvs)
+		for i := range pcs {
+			selectsetpc(&pcs[i])
+		}
+		pc0 = &pcs[0]
+	}
 
-	chosen, recvOK := selectgo(&sel[0], &order[0], nsends, nrecvs, dflt == -1)
+	chosen, recvOK := selectgo(&sel[0], &order[0], pc0, nsends, nrecvs, dflt == -1)
 
 	// Translate chosen back to caller's ordering.
 	if chosen < 0 {

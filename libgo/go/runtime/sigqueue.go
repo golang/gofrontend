@@ -33,7 +33,7 @@
 package runtime
 
 import (
-	"runtime/internal/atomic"
+	"internal/runtime/atomic"
 	_ "unsafe" // for go:linkname
 )
 
@@ -54,8 +54,8 @@ var sig struct {
 	wanted     [(_NSIG + 31) / 32]uint32
 	ignored    [(_NSIG + 31) / 32]uint32
 	recv       [(_NSIG + 31) / 32]uint32
-	state      uint32
-	delivering uint32
+	state      atomic.Uint32
+	delivering atomic.Uint32
 	inuse      bool
 }
 
@@ -74,11 +74,11 @@ func sigsend(s uint32) bool {
 		return false
 	}
 
-	atomic.Xadd(&sig.delivering, 1)
+	sig.delivering.Add(1)
 	// We are running in the signal handler; defer is not available.
 
 	if w := atomic.Load(&sig.wanted[s/32]); w&bit == 0 {
-		atomic.Xadd(&sig.delivering, -1)
+		sig.delivering.Add(-1)
 		return false
 	}
 
@@ -86,7 +86,7 @@ func sigsend(s uint32) bool {
 	for {
 		mask := sig.mask[s/32]
 		if mask&bit != 0 {
-			atomic.Xadd(&sig.delivering, -1)
+			sig.delivering.Add(-1)
 			return true // signal already in queue
 		}
 		if atomic.Cas(&sig.mask[s/32], mask, mask|bit) {
@@ -97,18 +97,18 @@ func sigsend(s uint32) bool {
 	// Notify receiver that queue has new bit.
 Send:
 	for {
-		switch atomic.Load(&sig.state) {
+		switch sig.state.Load() {
 		default:
 			throw("sigsend: inconsistent state")
 		case sigIdle:
-			if atomic.Cas(&sig.state, sigIdle, sigSending) {
+			if sig.state.CompareAndSwap(sigIdle, sigSending) {
 				break Send
 			}
 		case sigSending:
 			// notification already pending
 			break Send
 		case sigReceiving:
-			if atomic.Cas(&sig.state, sigReceiving, sigIdle) {
+			if sig.state.CompareAndSwap(sigReceiving, sigIdle) {
 				if GOOS == "darwin" || GOOS == "ios" {
 					sigNoteWakeup(&sig.note)
 					break Send
@@ -119,13 +119,14 @@ Send:
 		}
 	}
 
-	atomic.Xadd(&sig.delivering, -1)
+	sig.delivering.Add(-1)
 	return true
 }
 
 // Called to receive the next queued signal.
 // Must only be called from a single goroutine at a time.
-//go:linkname signal_recv os_1signal.signal__recv
+//
+//go:linkname signal_recv os/signal.signal_recv
 func signal_recv() uint32 {
 	for {
 		// Serve any signals from local copy.
@@ -139,11 +140,11 @@ func signal_recv() uint32 {
 		// Wait for updates to be available from signal sender.
 	Receive:
 		for {
-			switch atomic.Load(&sig.state) {
+			switch sig.state.Load() {
 			default:
 				throw("signal_recv: inconsistent state")
 			case sigIdle:
-				if atomic.Cas(&sig.state, sigIdle, sigReceiving) {
+				if sig.state.CompareAndSwap(sigIdle, sigReceiving) {
 					if GOOS == "darwin" || GOOS == "ios" {
 						sigNoteSleep(&sig.note)
 						break Receive
@@ -153,7 +154,7 @@ func signal_recv() uint32 {
 					break Receive
 				}
 			case sigSending:
-				if atomic.Cas(&sig.state, sigSending, sigIdle) {
+				if sig.state.CompareAndSwap(sigSending, sigIdle) {
 					break Receive
 				}
 			}
@@ -173,27 +174,29 @@ func signal_recv() uint32 {
 // the signal(s) in question, and here we are just waiting to make sure
 // that all the signals have been delivered to the user channels
 // by the os/signal package.
-//go:linkname signalWaitUntilIdle os_1signal.signalWaitUntilIdle
+//
+//go:linkname signalWaitUntilIdle os/signal.signalWaitUntilIdle
 func signalWaitUntilIdle() {
 	// Although the signals we care about have been removed from
 	// sig.wanted, it is possible that another thread has received
 	// a signal, has read from sig.wanted, is now updating sig.mask,
 	// and has not yet woken up the processor thread. We need to wait
 	// until all current signal deliveries have completed.
-	for atomic.Load(&sig.delivering) != 0 {
+	for sig.delivering.Load() != 0 {
 		Gosched()
 	}
 
 	// Although WaitUntilIdle seems like the right name for this
 	// function, the state we are looking for is sigReceiving, not
 	// sigIdle.  The sigIdle state is really more like sigProcessing.
-	for atomic.Load(&sig.state) != sigReceiving {
+	for sig.state.Load() != sigReceiving {
 		Gosched()
 	}
 }
 
 // Must only be called from a single goroutine at a time.
-//go:linkname signal_enable os_1signal.signal__enable
+//
+//go:linkname signal_enable os/signal.signal_enable
 func signal_enable(s uint32) {
 	if !sig.inuse {
 		// This is the first call to signal_enable. Initialize.
@@ -221,7 +224,8 @@ func signal_enable(s uint32) {
 }
 
 // Must only be called from a single goroutine at a time.
-//go:linkname signal_disable os_1signal.signal__disable
+//
+//go:linkname signal_disable os/signal.signal_disable
 func signal_disable(s uint32) {
 	if s >= uint32(len(sig.wanted)*32) {
 		return
@@ -234,7 +238,8 @@ func signal_disable(s uint32) {
 }
 
 // Must only be called from a single goroutine at a time.
-//go:linkname signal_ignore os_1signal.signal__ignore
+//
+//go:linkname signal_ignore os/signal.signal_ignore
 func signal_ignore(s uint32) {
 	if s >= uint32(len(sig.wanted)*32) {
 		return
@@ -253,6 +258,7 @@ func signal_ignore(s uint32) {
 // sigInitIgnored marks the signal as already ignored. This is called at
 // program start by initsig. In a shared library initsig is called by
 // libpreinit, so the runtime may not be initialized yet.
+//
 //go:nosplit
 func sigInitIgnored(s uint32) {
 	i := sig.ignored[s/32]
@@ -261,7 +267,8 @@ func sigInitIgnored(s uint32) {
 }
 
 // Checked by signal handlers.
-//go:linkname signal_ignored os_1signal.signal__ignored
+//
+//go:linkname signal_ignored os/signal.signal_ignored
 func signal_ignored(s uint32) bool {
 	i := atomic.Load(&sig.ignored[s/32])
 	return i&(1<<(s&31)) != 0

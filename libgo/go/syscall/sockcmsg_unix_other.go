@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build aix || darwin || freebsd || hurd || linux || netbsd || openbsd || solaris
+//go:build aix || darwin || freebsd || linux || netbsd || openbsd || solaris
 
 package syscall
 
@@ -12,7 +12,7 @@ import (
 
 // Round the length of a raw sockaddr up to align it properly.
 func cmsgAlignOf(salen int) int {
-	salign := int(sizeofPtr)
+	salign := sizeofPtr
 
 	// dragonfly needs to check ABI version at runtime, see cmsgAlignOf in
 	// sockcmsg_dragonfly.go

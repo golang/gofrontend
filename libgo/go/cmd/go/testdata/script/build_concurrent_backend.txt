@@ -1,8 +1,6 @@
 # Tests golang.org/issue/48490
 # cmd/go should enable concurrent compilation by default
 
-[gccgo] skip
-
 # Reset all experiments, since one of them can disable
 # concurrent compilation, e.g: fieldtrack.
 env GOEXPERIMENT=none

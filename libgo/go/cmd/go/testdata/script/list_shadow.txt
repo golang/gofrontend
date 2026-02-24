@@ -1,5 +1,3 @@
-[gccgo] skip
-
 env GO111MODULE=off
 env GOPATH=$WORK/gopath/src/shadow/root1${:}$WORK/gopath/src/shadow/root2
 

@@ -60,7 +60,7 @@ func TestCmpIfaceConcreteAlloc(t *testing.T) {
 		t.Skip("skipping on non-gc compiler")
 	}
 
-	n := testing.AllocsPerRun(1, func() {
+	n := testing.AllocsPerRun(100, func() {
 		_ = e == ts
 		_ = i1 == ts
 		_ = e == 1
@@ -250,10 +250,6 @@ func BenchmarkAssertE2E2Blank(b *testing.B) {
 }
 
 func TestNonEscapingConvT2E(t *testing.T) {
-	if runtime.Compiler == "gccgo" {
-		t.Skip("does not work on gccgo without better escape analysis")
-	}
-
 	m := make(map[any]bool)
 	m[42] = true
 	if !m[42] {
@@ -274,10 +270,6 @@ func TestNonEscapingConvT2E(t *testing.T) {
 }
 
 func TestNonEscapingConvT2I(t *testing.T) {
-	if runtime.Compiler == "gccgo" {
-		t.Skip("does not work on gccgo without better escape analysis")
-	}
-
 	m := make(map[I1]bool)
 	m[TM(42)] = true
 	if !m[TM(42)] {
@@ -298,10 +290,6 @@ func TestNonEscapingConvT2I(t *testing.T) {
 }
 
 func TestZeroConvT2x(t *testing.T) {
-	if runtime.Compiler == "gccgo" {
-		t.Skip("does not work on gccgo without better escape analysis")
-	}
-
 	tests := []struct {
 		name string
 		fn   func()

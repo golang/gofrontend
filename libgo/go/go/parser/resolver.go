@@ -54,6 +54,8 @@ func resolveFile(file *ast.File, handle *token.File, declErr func(token.Pos, str
 	file.Unresolved = r.unresolved[0:i]
 }
 
+const maxScopeDepth int = 1e3
+
 type resolver struct {
 	handle  *token.File
 	declErr func(token.Pos, string)
@@ -85,16 +87,19 @@ func (r *resolver) sprintf(format string, args ...any) string {
 }
 
 func (r *resolver) openScope(pos token.Pos) {
+	r.depth++
+	if r.depth > maxScopeDepth {
+		panic(bailout{pos: pos, msg: "exceeded max scope depth during object resolution"})
+	}
 	if debugResolve {
 		r.trace("opening scope @%v", pos)
-		r.depth++
 	}
 	r.topScope = ast.NewScope(r.topScope)
 }
 
 func (r *resolver) closeScope() {
+	r.depth--
 	if debugResolve {
-		r.depth--
 		r.trace("closing scope")
 	}
 	r.topScope = r.topScope.Outer
@@ -131,7 +136,7 @@ func (r *resolver) declare(decl, data any, scope *ast.Scope, kind ast.ObjKind, i
 		obj.Decl = decl
 		obj.Data = data
 		// Identifiers (for receiver type parameters) are written to the scope, but
-		// never set as the resolved object. See issue #50956.
+		// never set as the resolved object. See go.dev/issue/50956.
 		if _, ok := decl.(*ast.Ident); !ok {
 			ident.Obj = obj
 		}
@@ -188,7 +193,6 @@ var unresolved = new(ast.Object)
 // the object it denotes. If no object is found and collectUnresolved is
 // set, x is marked as unresolved and collected in the list of unresolved
 // identifiers.
-//
 func (r *resolver) resolve(ident *ast.Ident, collectUnresolved bool) {
 	if ident.Obj != nil {
 		panic(r.sprintf("%v: identifier %s already declared or resolved", ident.Pos(), ident.Name))
@@ -205,7 +209,7 @@ func (r *resolver) resolve(ident *ast.Ident, collectUnresolved bool) {
 			}
 			assert(obj.Name != "", "obj with no name")
 			// Identifiers (for receiver type parameters) are written to the scope,
-			// but never set as the resolved object. See issue #50956.
+			// but never set as the resolved object. See go.dev/issue/50956.
 			if _, ok := obj.Decl.(*ast.Ident); !ok {
 				ident.Obj = obj
 			}
@@ -230,7 +234,7 @@ func (r *resolver) walkExprs(list []ast.Expr) {
 
 func (r *resolver) walkLHS(list []ast.Expr) {
 	for _, expr := range list {
-		expr := unparen(expr)
+		expr := ast.Unparen(expr)
 		if _, ok := expr.(*ast.Ident); !ok && expr != nil {
 			ast.Walk(r, expr)
 		}
@@ -281,7 +285,7 @@ func (r *resolver) Visit(node ast.Node) ast.Visitor {
 		}
 		for _, e := range n.Elts {
 			if kv, _ := e.(*ast.KeyValueExpr); kv != nil {
-				// See issue #45160: try to resolve composite lit keys, but don't
+				// See go.dev/issue/45160: try to resolve composite lit keys, but don't
 				// collect them as unresolved if resolution failed. This replicates
 				// existing behavior when resolving during parsing.
 				if ident, _ := kv.Key.(*ast.Ident); ident != nil {

@@ -7,16 +7,11 @@ package runtime_test
 import (
 	"internal/testenv"
 	"os/exec"
-	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestCheckPtr(t *testing.T) {
-	if runtime.Compiler == "gccgo" {
-		t.Skip("gccgo does not have -d=checkptr")
-	}
-
 	// This test requires rebuilding packages with -d=checkptr=1,
 	// so it's somewhat slow.
 	if testing.Short() {
@@ -40,14 +35,16 @@ func TestCheckPtr(t *testing.T) {
 		{"CheckPtrAlignmentNilPtr", ""},
 		{"CheckPtrArithmetic", "fatal error: checkptr: pointer arithmetic result points to invalid allocation\n"},
 		{"CheckPtrArithmetic2", "fatal error: checkptr: pointer arithmetic result points to invalid allocation\n"},
+		{"CheckPtrArithmeticUnsafeAdd", "fatal error: checkptr: pointer arithmetic result points to invalid allocation\n"},
 		{"CheckPtrSize", "fatal error: checkptr: converted pointer straddles multiple allocations\n"},
 		{"CheckPtrSmall", "fatal error: checkptr: pointer arithmetic computed bad pointer value\n"},
 		{"CheckPtrSliceOK", ""},
 		{"CheckPtrSliceFail", "fatal error: checkptr: unsafe.Slice result straddles multiple allocations\n"},
+		{"CheckPtrStringOK", ""},
+		{"CheckPtrStringFail", "fatal error: checkptr: unsafe.String result straddles multiple allocations\n"},
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.cmd, func(t *testing.T) {
 			t.Parallel()
 			got, err := testenv.CleanCmdEnv(exec.Command(exe, tc.cmd)).CombinedOutput()
@@ -90,7 +87,6 @@ func TestCheckPtr2(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.cmd, func(t *testing.T) {
 			t.Parallel()
 			got, err := testenv.CleanCmdEnv(exec.Command(exe, tc.cmd)).CombinedOutput()

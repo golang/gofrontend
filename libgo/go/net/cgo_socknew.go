@@ -12,20 +12,21 @@ package net
 
 #include <netinet/in.h>
 */
+import "C"
 
 import (
 	"syscall"
 	"unsafe"
 )
 
-func cgoSockaddrInet4(ip IP) *syscall.RawSockaddr {
+func cgoSockaddrInet4(ip IP) *C.struct_sockaddr {
 	sa := syscall.RawSockaddrInet4{Family: syscall.AF_INET}
 	copy(sa.Addr[:], ip)
-	return (*syscall.RawSockaddr)(unsafe.Pointer(&sa))
+	return (*C.struct_sockaddr)(unsafe.Pointer(&sa))
 }
 
-func cgoSockaddrInet6(ip IP, zone int) *syscall.RawSockaddr {
+func cgoSockaddrInet6(ip IP, zone int) *C.struct_sockaddr {
 	sa := syscall.RawSockaddrInet6{Family: syscall.AF_INET6, Scope_id: uint32(zone)}
 	copy(sa.Addr[:], ip)
-	return (*syscall.RawSockaddr)(unsafe.Pointer(&sa))
+	return (*C.struct_sockaddr)(unsafe.Pointer(&sa))
 }

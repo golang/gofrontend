@@ -6,7 +6,6 @@ package fuzz
 
 import (
 	"math"
-	"runtime"
 	"strconv"
 	"testing"
 	"unicode"
@@ -215,6 +214,11 @@ uint(18446744073709551615)`
 				}
 			}(),
 		},
+		{
+			desc: "windows new line",
+			in:   "go test fuzz v1\r\nint(0)\r\n",
+			want: "go test fuzz v1\nint(0)",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {
@@ -229,9 +233,6 @@ uint(18446744073709551615)`
 				t.Fatalf("unmarshal unexpected error: %v", err)
 			}
 			newB := marshalCorpusFile(vals...)
-			if err != nil {
-				t.Fatalf("marshal unexpected error: %v", err)
-			}
 			if newB[len(newB)-1] != '\n' {
 				t.Error("didn't write final newline to corpus file")
 			}
@@ -259,7 +260,6 @@ func BenchmarkMarshalCorpusFile(b *testing.B) {
 	}
 
 	for sz := 1; sz <= len(buf); sz <<= 1 {
-		sz := sz
 		b.Run(strconv.Itoa(sz), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				b.SetBytes(int64(sz))
@@ -279,7 +279,6 @@ func BenchmarkUnmarshalCorpusFile(b *testing.B) {
 	}
 
 	for sz := 1; sz <= len(buf); sz <<= 1 {
-		sz := sz
 		data := marshalCorpusFile(buf[:sz])
 		b.Run(strconv.Itoa(sz), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
@@ -331,14 +330,6 @@ func FuzzFloat64RoundTrip(f *testing.F) {
 	f.Add(math.Float64bits(math.Inf(-1)))
 
 	f.Fuzz(func(t *testing.T, u1 uint64) {
-		// The signaling NaN test fails on 32-bit x86 with gccgo,
-		// which uses the 387 floating-point stack by default.
-		// Converting a signaling NaN in and out of the stack
-		// changes the NaN to a quiet NaN.
-		if runtime.GOARCH == "386" && u1 == 0x7FF0000000000001 {
-			t.Skip("skipping signalling NaN test on 386 with gccgo")
-		}
-
 		x1 := math.Float64frombits(u1)
 
 		b := marshalCorpusFile(x1)

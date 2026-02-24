@@ -5,8 +5,8 @@
 package runtime_test
 
 import (
-	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -67,7 +67,7 @@ func testCallers(t *testing.T, pcs []uintptr, pan bool) {
 	}
 }
 
-func testCallersEqual(t *testing.T, pcs []uintptr, want []string, ignore map[string]struct{}) {
+func testCallersEqual(t *testing.T, pcs []uintptr, want []string) {
 	t.Helper()
 
 	got := make([]string, 0, len(want))
@@ -78,11 +78,9 @@ func testCallersEqual(t *testing.T, pcs []uintptr, want []string, ignore map[str
 		if !more || len(got) >= len(want) {
 			break
 		}
-		if _, ok := ignore[frame.Function]; !ok {
-			got = append(got, frame.Function)
-		}
+		got = append(got, frame.Function)
 	}
-	if !reflect.DeepEqual(want, got) {
+	if !slices.Equal(want, got) {
 		t.Fatalf("wanted %v, got %v", want, got)
 	}
 }
@@ -97,11 +95,6 @@ func TestCallersPanic(t *testing.T) {
 	want := []string{"runtime.Callers", "runtime_test.TestCallersPanic.func1",
 		"runtime.gopanic", "runtime_test.f3", "runtime_test.f2", "runtime_test.f1",
 		"runtime_test.TestCallersPanic"}
-	if runtime.Compiler == "gccgo" {
-		want = []string{"runtime.Callers", "runtime_test.TestCallersPanic..func1",
-			"runtime.gopanic", "runtime_test.f3", "runtime_test.f2", "runtime_test.f1",
-			"runtime_test.TestCallersPanic"}
-	}
 
 	defer func() {
 		if r := recover(); r == nil {
@@ -110,7 +103,7 @@ func TestCallersPanic(t *testing.T) {
 		pcs := make([]uintptr, 20)
 		pcs = pcs[:runtime.Callers(0, pcs)]
 		testCallers(t, pcs, true)
-		testCallersEqual(t, pcs, want, nil)
+		testCallersEqual(t, pcs, want)
 	}()
 	f1(true)
 }
@@ -120,10 +113,6 @@ func TestCallersDoublePanic(t *testing.T) {
 	// open-coded defer processing)
 	want := []string{"runtime.Callers", "runtime_test.TestCallersDoublePanic.func1.1",
 		"runtime.gopanic", "runtime_test.TestCallersDoublePanic.func1", "runtime.gopanic", "runtime_test.TestCallersDoublePanic"}
-	if runtime.Compiler == "gccgo" {
-		want = []string{"runtime.Callers", "runtime_test.TestCallersDoublePanic..func2",
-			"runtime.gopanic", "runtime_test.TestCallersDoublePanic..func1", "runtime.gopanic", "runtime_test.TestCallersDoublePanic"}
-	}
 
 	defer func() {
 		defer func() {
@@ -132,7 +121,7 @@ func TestCallersDoublePanic(t *testing.T) {
 			if recover() == nil {
 				t.Fatal("did not panic")
 			}
-			testCallersEqual(t, pcs, want, nil)
+			testCallersEqual(t, pcs, want)
 		}()
 		if recover() == nil {
 			t.Fatal("did not panic")
@@ -146,14 +135,11 @@ func TestCallersDoublePanic(t *testing.T) {
 // from the function with the defers.
 func TestCallersAfterRecovery(t *testing.T) {
 	want := []string{"runtime.Callers", "runtime_test.TestCallersAfterRecovery.func1", "runtime_test.TestCallersAfterRecovery"}
-	if runtime.Compiler == "gccgo" {
-		want = []string{"runtime.Callers", "runtime_test.TestCallersAfterRecovery..func1", "runtime_test.TestCallersAfterRecovery"}
-	}
 
 	defer func() {
 		pcs := make([]uintptr, 20)
 		pcs = pcs[:runtime.Callers(0, pcs)]
-		testCallersEqual(t, pcs, want, nil)
+		testCallersEqual(t, pcs, want)
 	}()
 	defer func() {
 		if recover() == nil {
@@ -165,9 +151,6 @@ func TestCallersAfterRecovery(t *testing.T) {
 
 func TestCallersAbortedPanic(t *testing.T) {
 	want := []string{"runtime.Callers", "runtime_test.TestCallersAbortedPanic.func2", "runtime_test.TestCallersAbortedPanic"}
-	if runtime.Compiler == "gccgo" {
-		want = []string{"runtime.Callers", "runtime_test.TestCallersAbortedPanic..func2", "runtime_test.TestCallersAbortedPanic"}
-	}
 
 	defer func() {
 		r := recover()
@@ -181,7 +164,7 @@ func TestCallersAbortedPanic(t *testing.T) {
 		// recovered, there is no remaining panic on the stack.
 		pcs := make([]uintptr, 20)
 		pcs = pcs[:runtime.Callers(0, pcs)]
-		testCallersEqual(t, pcs, want, nil)
+		testCallersEqual(t, pcs, want)
 	}()
 	defer func() {
 		r := recover()
@@ -200,9 +183,6 @@ func TestCallersAbortedPanic(t *testing.T) {
 
 func TestCallersAbortedPanic2(t *testing.T) {
 	want := []string{"runtime.Callers", "runtime_test.TestCallersAbortedPanic2.func2", "runtime_test.TestCallersAbortedPanic2"}
-	if runtime.Compiler == "gccgo" {
-		want = []string{"runtime.Callers", "runtime_test.TestCallersAbortedPanic2..func2", "runtime_test.TestCallersAbortedPanic2"}
-	}
 	defer func() {
 		r := recover()
 		if r != nil {
@@ -212,7 +192,7 @@ func TestCallersAbortedPanic2(t *testing.T) {
 	defer func() {
 		pcs := make([]uintptr, 20)
 		pcs = pcs[:runtime.Callers(0, pcs)]
-		testCallersEqual(t, pcs, want, nil)
+		testCallersEqual(t, pcs, want)
 	}()
 	func() {
 		defer func() {
@@ -237,17 +217,6 @@ func TestCallersNilPointerPanic(t *testing.T) {
 	want := []string{"runtime.Callers", "runtime_test.TestCallersNilPointerPanic.func1",
 		"runtime.gopanic", "runtime.panicmem", "runtime.sigpanic",
 		"runtime_test.TestCallersNilPointerPanic"}
-	ign := make(map[string]struct{})
-	if runtime.Compiler == "gccgo" {
-		// The expected results of gollvm and gccgo are slightly different, the result
-		// of gccgo does not contain tRunner, and the result of gollvm does not contain
-		// sigpanic. Make these two elementes optional to pass both of gollvm and gccgo.
-		want = []string{"runtime.Callers", "runtime_test.TestCallersNilPointerPanic..func1",
-			"runtime.gopanic", "runtime.panicmem",
-			"runtime_test.TestCallersNilPointerPanic"}
-		ign["runtime.sigpanic"] = struct{}{}
-		ign["testing.tRunner"] = struct{}{}
-	}
 
 	defer func() {
 		if r := recover(); r == nil {
@@ -255,7 +224,7 @@ func TestCallersNilPointerPanic(t *testing.T) {
 		}
 		pcs := make([]uintptr, 20)
 		pcs = pcs[:runtime.Callers(0, pcs)]
-		testCallersEqual(t, pcs, want, ign)
+		testCallersEqual(t, pcs, want)
 	}()
 	var p *int
 	if *p == 3 {
@@ -269,11 +238,6 @@ func TestCallersDivZeroPanic(t *testing.T) {
 	want := []string{"runtime.Callers", "runtime_test.TestCallersDivZeroPanic.func1",
 		"runtime.gopanic", "runtime.panicdivide",
 		"runtime_test.TestCallersDivZeroPanic"}
-	if runtime.Compiler == "gccgo" {
-		want = []string{"runtime.Callers", "runtime_test.TestCallersDivZeroPanic..func1",
-			"runtime.gopanic", "runtime.panicdivide",
-			"runtime_test.TestCallersDivZeroPanic"}
-	}
 
 	defer func() {
 		if r := recover(); r == nil {
@@ -281,7 +245,7 @@ func TestCallersDivZeroPanic(t *testing.T) {
 		}
 		pcs := make([]uintptr, 20)
 		pcs = pcs[:runtime.Callers(0, pcs)]
-		testCallersEqual(t, pcs, want, nil)
+		testCallersEqual(t, pcs, want)
 	}()
 	var n int
 	if 5/n == 1 {
@@ -297,10 +261,6 @@ func TestCallersDeferNilFuncPanic(t *testing.T) {
 	state := 1
 	want := []string{"runtime.Callers", "runtime_test.TestCallersDeferNilFuncPanic.func1",
 		"runtime.gopanic", "runtime.panicmem", "runtime.sigpanic"}
-	if runtime.Compiler == "gccgo" {
-		want = []string{"runtime.Callers", "runtime_test.TestCallersDeferNilFuncPanic..func1",
-			"runtime.gopanic", "runtime.panicmem", "runtime.sigpanic"}
-	}
 
 	defer func() {
 		if r := recover(); r == nil {
@@ -308,7 +268,7 @@ func TestCallersDeferNilFuncPanic(t *testing.T) {
 		}
 		pcs := make([]uintptr, 20)
 		pcs = pcs[:runtime.Callers(0, pcs)]
-		testCallersEqual(t, pcs, want, nil)
+		testCallersEqual(t, pcs, want)
 		if state == 1 {
 			t.Fatal("nil defer func panicked at defer time rather than function exit time")
 		}
@@ -327,10 +287,6 @@ func TestCallersDeferNilFuncPanicWithLoop(t *testing.T) {
 	state := 1
 	want := []string{"runtime.Callers", "runtime_test.TestCallersDeferNilFuncPanicWithLoop.func1",
 		"runtime.gopanic", "runtime.panicmem", "runtime.sigpanic", "runtime.deferreturn", "runtime_test.TestCallersDeferNilFuncPanicWithLoop"}
-	if runtime.Compiler == "gccgo" {
-		want = []string{"runtime.Callers", "runtime_test.TestCallersDeferNilFuncPanicWithLoop..func1",
-			"runtime.gopanic", "runtime.panicmem", "runtime.sigpanic", "runtime_test.TestCallersDeferNilFuncPanicWithLoop"}
-	}
 
 	defer func() {
 		if r := recover(); r == nil {
@@ -338,7 +294,7 @@ func TestCallersDeferNilFuncPanicWithLoop(t *testing.T) {
 		}
 		pcs := make([]uintptr, 20)
 		pcs = pcs[:runtime.Callers(0, pcs)]
-		testCallersEqual(t, pcs, want, nil)
+		testCallersEqual(t, pcs, want)
 		if state == 1 {
 			t.Fatal("nil defer func panicked at defer time rather than function exit time")
 		}
@@ -352,4 +308,182 @@ func TestCallersDeferNilFuncPanicWithLoop(t *testing.T) {
 	// Use the value of 'state' to make sure nil defer func f causes panic at
 	// function exit, rather than at the defer statement.
 	state = 2
+}
+
+// issue #51988
+// Func.Endlineno was lost when instantiating generic functions, leading to incorrect
+// stack trace positions.
+func TestCallersEndlineno(t *testing.T) {
+	testNormalEndlineno(t)
+	testGenericEndlineno[int](t)
+}
+
+func testNormalEndlineno(t *testing.T) {
+	defer testCallerLine(t, callerLine(t, 0)+1)
+}
+
+func testGenericEndlineno[_ any](t *testing.T) {
+	defer testCallerLine(t, callerLine(t, 0)+1)
+}
+
+func testCallerLine(t *testing.T, want int) {
+	if have := callerLine(t, 1); have != want {
+		t.Errorf("callerLine(1) returned %d, but want %d\n", have, want)
+	}
+}
+
+func callerLine(t *testing.T, skip int) int {
+	_, _, line, ok := runtime.Caller(skip + 1)
+	if !ok {
+		t.Fatalf("runtime.Caller(%d) failed", skip+1)
+	}
+	return line
+}
+
+func BenchmarkCallers(b *testing.B) {
+	b.Run("cached", func(b *testing.B) {
+		// Very pcvalueCache-friendly, no inlining.
+		callersCached(b, 100)
+	})
+	b.Run("inlined", func(b *testing.B) {
+		// Some inlining, still pretty cache-friendly.
+		callersInlined(b, 100)
+	})
+	b.Run("no-cache", func(b *testing.B) {
+		// Cache-hostile
+		callersNoCache(b, 100)
+	})
+}
+
+func callersCached(b *testing.B, n int) int {
+	if n <= 0 {
+		pcs := make([]uintptr, 32)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			runtime.Callers(0, pcs)
+		}
+		b.StopTimer()
+		return 0
+	}
+	return 1 + callersCached(b, n-1)
+}
+
+func callersInlined(b *testing.B, n int) int {
+	if n <= 0 {
+		pcs := make([]uintptr, 32)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			runtime.Callers(0, pcs)
+		}
+		b.StopTimer()
+		return 0
+	}
+	return 1 + callersInlined1(b, n-1)
+}
+func callersInlined1(b *testing.B, n int) int { return callersInlined2(b, n) }
+func callersInlined2(b *testing.B, n int) int { return callersInlined3(b, n) }
+func callersInlined3(b *testing.B, n int) int { return callersInlined4(b, n) }
+func callersInlined4(b *testing.B, n int) int { return callersInlined(b, n) }
+
+func callersNoCache(b *testing.B, n int) int {
+	if n <= 0 {
+		pcs := make([]uintptr, 32)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			runtime.Callers(0, pcs)
+		}
+		b.StopTimer()
+		return 0
+	}
+	switch n % 16 {
+	case 0:
+		return 1 + callersNoCache(b, n-1)
+	case 1:
+		return 1 + callersNoCache(b, n-1)
+	case 2:
+		return 1 + callersNoCache(b, n-1)
+	case 3:
+		return 1 + callersNoCache(b, n-1)
+	case 4:
+		return 1 + callersNoCache(b, n-1)
+	case 5:
+		return 1 + callersNoCache(b, n-1)
+	case 6:
+		return 1 + callersNoCache(b, n-1)
+	case 7:
+		return 1 + callersNoCache(b, n-1)
+	case 8:
+		return 1 + callersNoCache(b, n-1)
+	case 9:
+		return 1 + callersNoCache(b, n-1)
+	case 10:
+		return 1 + callersNoCache(b, n-1)
+	case 11:
+		return 1 + callersNoCache(b, n-1)
+	case 12:
+		return 1 + callersNoCache(b, n-1)
+	case 13:
+		return 1 + callersNoCache(b, n-1)
+	case 14:
+		return 1 + callersNoCache(b, n-1)
+	default:
+		return 1 + callersNoCache(b, n-1)
+	}
+}
+
+func BenchmarkFPCallers(b *testing.B) {
+	b.Run("cached", func(b *testing.B) {
+		// Very pcvalueCache-friendly, no inlining.
+		fpCallersCached(b, 100)
+	})
+}
+
+func fpCallersCached(b *testing.B, n int) int {
+	if n <= 0 {
+		pcs := make([]uintptr, 32)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			runtime.FPCallers(pcs)
+		}
+		b.StopTimer()
+		return 0
+	}
+	return 1 + fpCallersCached(b, n-1)
+}
+
+func TestFPUnwindAfterRecovery(t *testing.T) {
+	if !runtime.FramePointerEnabled {
+		t.Skip("frame pointers not supported for this architecture")
+	}
+	// Make sure that frame pointer unwinding succeeds from a deferred
+	// function run after recovering from a panic. It can fail if the
+	// recovery does not properly restore the caller's frame pointer before
+	// running the remaining deferred functions.
+	//
+	// This test does not verify the accuracy of the call stack (it
+	// currently includes a frame from runtime.deferreturn which would
+	// normally be omitted). It is only intended to check that producing the
+	// call stack won't crash.
+	defer func() {
+		pcs := make([]uintptr, 32)
+		for i := range pcs {
+			// If runtime.recovery doesn't properly restore the
+			// frame pointer before returning control to this
+			// function, it will point somewhere lower in the stack
+			// from one of the frames of runtime.gopanic() or one of
+			// it's callees prior to recovery.  So, we put some
+			// non-zero values on the stack to ensure that frame
+			// pointer unwinding will crash if it sees the old,
+			// invalid frame pointer.
+			pcs[i] = 10
+		}
+		runtime.FPCallers(pcs)
+		t.Logf("%v", pcs)
+	}()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("did not recover from panic")
+		}
+	}()
+	panic(1)
 }

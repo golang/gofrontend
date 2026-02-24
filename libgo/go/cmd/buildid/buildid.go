@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"cmd/internal/buildid"
+	"cmd/internal/telemetry/counter"
 )
 
 func usage() {
@@ -25,8 +26,11 @@ var wflag = flag.Bool("w", false, "write build ID")
 func main() {
 	log.SetPrefix("buildid: ")
 	log.SetFlags(0)
+	counter.Open()
 	flag.Usage = usage
 	flag.Parse()
+	counter.Inc("buildid/invocations")
+	counter.CountFlags("buildid/flag:", *flag.CommandLine)
 	if flag.NArg() != 1 {
 		usage()
 	}
@@ -51,6 +55,11 @@ func main() {
 	f.Close()
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	// <= go 1.7 doesn't embed the contentID or actionID, so no slash is present
+	if !strings.Contains(id, "/") {
+		log.Fatalf("%s: build ID is a legacy format...binary too old for this tool", file)
 	}
 
 	newID := id[:strings.LastIndex(id, "/")] + "/" + buildid.HashToString(hash)

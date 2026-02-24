@@ -4,12 +4,6 @@
 
 package runtime
 
-import _ "unsafe" // For go:linkname.
-
-// For gccgo, use go:linkname to export compiler-called functions.
-//
-//go:linkname decoderune
-
 // Numbers fundamental to the encoding.
 const (
 	runeError = '\uFFFD'     // the "error" Rune or "Unicode replacement character"

@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build gccgo_examples
-
 package token_test
 
 import (
@@ -68,7 +66,7 @@ func ok(pos p) bool {
 		fmt.Printf("%s: %s\n", fmtPosition, kind)
 	}
 
-	//Output:
+	// Output:
 	//
 	// main.go:3:1: import
 	// main.go:5:1: import

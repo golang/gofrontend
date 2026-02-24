@@ -2,11 +2,11 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build ppc || ppc64 || ppc64le
+//go:build ppc64 || ppc64le
 
 package cpu
 
-// const CacheLinePadSize = 128
+const CacheLinePadSize = 128
 
 func doinit() {
 	options = []option{
@@ -20,4 +20,16 @@ func doinit() {
 
 func isSet(hwc uint, value uint) bool {
 	return hwc&value != 0
+}
+
+func Name() string {
+	switch {
+	case PPC64.IsPOWER10:
+		return "POWER10"
+	case PPC64.IsPOWER9:
+		return "POWER9"
+	case PPC64.IsPOWER8:
+		return "POWER8"
+	}
+	return ""
 }

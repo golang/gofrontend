@@ -24,7 +24,7 @@ go mod edit -json x.mod
 go clean -modcache
 
 # doc succeeds for standard library
-[!gccgo] go doc unsafe
+go doc unsafe
 
 # env succeeds
 go env

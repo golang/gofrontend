@@ -5,13 +5,17 @@
 package doc
 
 import (
+	"cmp"
 	"fmt"
 	"go/ast"
 	"go/token"
 	"internal/lazyregexp"
-	"sort"
+	"path"
+	"slices"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ----------------------------------------------------------------------------
@@ -21,12 +25,10 @@ import (
 
 // A methodSet describes a set of methods. Entries where Decl == nil are conflict
 // entries (more than one method with the same name at the same embedding level).
-//
 type methodSet map[string]*Func
 
 // recvString returns a string representation of recv of the form "T", "*T",
 // "T[A, ...]", "*T[A, ...]" or "BADRECV" (if not a proper receiver type).
-//
 func recvString(recv ast.Expr) string {
 	switch t := recv.(type) {
 	case *ast.Ident:
@@ -65,7 +67,6 @@ func recvParam(p ast.Expr) string {
 // If there are multiple f's with the same name, set keeps the first
 // one with documentation; conflicts are ignored. The boolean
 // specifies whether to leave the AST untouched.
-//
 func (mset methodSet) set(f *ast.FuncDecl, preserveAST bool) {
 	name := f.Name.Name
 	if g := mset[name]; g != nil && g.Doc != "" {
@@ -101,7 +102,6 @@ func (mset methodSet) set(f *ast.FuncDecl, preserveAST bool) {
 // add adds method m to the method set; m is ignored if the method set
 // already contains a method with the same name at the same or a higher
 // level than m.
-//
 func (mset methodSet) add(m *Func) {
 	old := mset[m.Name]
 	if old == nil || m.Level < old.Level {
@@ -122,7 +122,6 @@ func (mset methodSet) add(m *Func) {
 
 // baseTypeName returns the name of the base type of x (or "")
 // and whether the type is imported or not.
-//
 func baseTypeName(x ast.Expr) (name string, imported bool) {
 	switch t := x.(type) {
 	case *ast.Ident:
@@ -151,7 +150,6 @@ type embeddedSet map[*namedType]bool
 // A namedType represents a named unqualified (package local, or possibly
 // predeclared) type. The namedType for a type name is always found via
 // reader.lookupType.
-//
 type namedType struct {
 	doc  string       // doc comment for type
 	name string       // type name
@@ -176,7 +174,6 @@ type namedType struct {
 // in the respective AST nodes so that they are not printed
 // twice (once when printing the documentation and once when
 // printing the corresponding AST node).
-//
 type reader struct {
 	mode Mode
 
@@ -185,13 +182,16 @@ type reader struct {
 	filenames []string
 	notes     map[string][]*Note
 
+	// imports
+	imports      map[string]int
+	hasDotImp    bool // if set, package contains a dot import
+	importByName map[string]string
+
 	// declarations
-	imports   map[string]int
-	hasDotImp bool     // if set, package contains a dot import
-	values    []*Value // consts and vars
-	order     int      // sort order of const and var declarations (when we can't use a name)
-	types     map[string]*namedType
-	funcs     methodSet
+	values []*Value // consts and vars
+	order  int      // sort order of const and var declarations (when we can't use a name)
+	types  map[string]*namedType
+	funcs  methodSet
 
 	// support for package-local shadowing of predeclared types
 	shadowedPredecl map[string]bool
@@ -206,7 +206,6 @@ func (r *reader) isVisible(name string) bool {
 // If the base type has not been encountered yet, a new
 // type with the given name but no associated declaration
 // is added to the type map.
-//
 func (r *reader) lookupType(name string) *namedType {
 	if name == "" || name == "_" {
 		return nil // no type docs for anonymous types
@@ -229,7 +228,6 @@ func (r *reader) lookupType(name string) *namedType {
 // anonymous field in the parent type. If the field is imported
 // (qualified name) or the parent is nil, the field is ignored.
 // The function returns the field name.
-//
 func (r *reader) recordAnonymousField(parent *namedType, fieldType ast.Expr) (fname string) {
 	fname, imp := baseTypeName(fieldType)
 	if parent == nil || imp {
@@ -273,7 +271,6 @@ func specNames(specs []ast.Spec) []string {
 }
 
 // readValue processes a const or var declaration.
-//
 func (r *reader) readValue(decl *ast.GenDecl) {
 	// determine if decl should be associated with a type
 	// Heuristic: For each typed entry, determine the type name, if any.
@@ -347,7 +344,6 @@ func (r *reader) readValue(decl *ast.GenDecl) {
 }
 
 // fields returns a struct's fields or an interface's methods.
-//
 func fields(typ ast.Expr) (list []*ast.Field, isStruct bool) {
 	var fields *ast.FieldList
 	switch t := typ.(type) {
@@ -364,7 +360,6 @@ func fields(typ ast.Expr) (list []*ast.Field, isStruct bool) {
 }
 
 // readType processes a type declaration.
-//
 func (r *reader) readType(decl *ast.GenDecl, spec *ast.TypeSpec) {
 	typ := r.lookupType(spec.Name.Name)
 	if typ == nil {
@@ -400,13 +395,11 @@ func (r *reader) readType(decl *ast.GenDecl, spec *ast.TypeSpec) {
 }
 
 // isPredeclared reports whether n denotes a predeclared type.
-//
 func (r *reader) isPredeclared(n string) bool {
 	return predeclaredTypes[n] && r.types[n] == nil
 }
 
 // readFunc processes a func or method declaration.
-//
 func (r *reader) readFunc(fun *ast.FuncDecl) {
 	// strip function body if requested.
 	if r.mode&PreserveAST == 0 {
@@ -499,8 +492,29 @@ var (
 	noteCommentRx = lazyregexp.New(`^/[/*][ \t]*` + noteMarker) // MARKER(uid) at comment start
 )
 
+// clean replaces each sequence of space, \r, or \t characters
+// with a single space and removes any trailing and leading spaces.
+func clean(s string) string {
+	var b []byte
+	p := byte(' ')
+	for i := 0; i < len(s); i++ {
+		q := s[i]
+		if q == '\r' || q == '\t' {
+			q = ' '
+		}
+		if q != ' ' || p != ' ' {
+			b = append(b, q)
+			p = q
+		}
+	}
+	// remove trailing blank, if any
+	if n := len(b); n > 0 && p == ' ' {
+		b = b[0 : n-1]
+	}
+	return string(b)
+}
+
 // readNote collects a single note from a sequence of comments.
-//
 func (r *reader) readNote(list []*ast.Comment) {
 	text := (&ast.CommentGroup{List: list}).Text()
 	if m := noteMarkerRx.FindStringSubmatchIndex(text); m != nil {
@@ -508,7 +522,7 @@ func (r *reader) readNote(list []*ast.Comment) {
 		// We remove any formatting so that we don't
 		// get spurious line breaks/indentation when
 		// showing the TODO body.
-		body := clean(text[m[1]:], keepNL)
+		body := clean(text[m[1]:])
 		if body != "" {
 			marker := text[m[2]:m[3]]
 			r.notes[marker] = append(r.notes[marker], &Note{
@@ -526,7 +540,6 @@ func (r *reader) readNote(list []*ast.Comment) {
 // and is followed by the note body (e.g., "// BUG(gri): fix this").
 // The note ends at the end of the comment group or at the start of
 // another note in the same comment group, whichever comes first.
-//
 func (r *reader) readNotes(comments []*ast.CommentGroup) {
 	for _, group := range comments {
 		i := -1 // comment index of most recent note start, valid if >= 0
@@ -546,7 +559,6 @@ func (r *reader) readNotes(comments []*ast.CommentGroup) {
 }
 
 // readFile adds the AST for a source file to the reader.
-//
 func (r *reader) readFile(src *ast.File) {
 	// add package documentation
 	if src.Doc != nil {
@@ -567,8 +579,23 @@ func (r *reader) readFile(src *ast.File) {
 					if s, ok := spec.(*ast.ImportSpec); ok {
 						if import_, err := strconv.Unquote(s.Path.Value); err == nil {
 							r.imports[import_] = 1
-							if s.Name != nil && s.Name.Name == "." {
-								r.hasDotImp = true
+							var name string
+							if s.Name != nil {
+								name = s.Name.Name
+								if name == "." {
+									r.hasDotImp = true
+								}
+							}
+							if name != "." {
+								if name == "" {
+									name = assumedPackageName(import_)
+								}
+								old, ok := r.importByName[name]
+								if !ok {
+									r.importByName[name] = import_
+								} else if old != import_ && old != "" {
+									r.importByName[name] = "" // ambiguous
+								}
 							}
 						}
 					}
@@ -628,6 +655,7 @@ func (r *reader) readPackage(pkg *ast.Package, mode Mode) {
 	r.types = make(map[string]*namedType)
 	r.funcs = make(methodSet)
 	r.notes = make(map[string][]*Note)
+	r.importByName = make(map[string]string)
 
 	// sort package files before reading them so that the
 	// result does not depend on map iteration order
@@ -636,7 +664,7 @@ func (r *reader) readPackage(pkg *ast.Package, mode Mode) {
 		r.filenames[i] = filename
 		i++
 	}
-	sort.Strings(r.filenames)
+	slices.Sort(r.filenames)
 
 	// process files in sorted order
 	for _, filename := range r.filenames {
@@ -645,6 +673,12 @@ func (r *reader) readPackage(pkg *ast.Package, mode Mode) {
 			r.fileExports(f)
 		}
 		r.readFile(f)
+	}
+
+	for name, path := range r.importByName {
+		if path == "" {
+			delete(r.importByName, name)
+		}
 	}
 
 	// process functions now that we have better type information
@@ -696,7 +730,6 @@ func customizeRecv(f *Func, recvTypeName string, embeddedIsPtr bool, level int) 
 }
 
 // collectEmbeddedMethods collects the embedded methods of typ in mset.
-//
 func (r *reader) collectEmbeddedMethods(mset methodSet, typ *namedType, recvTypeName string, embeddedIsPtr bool, level int, visited embeddedSet) {
 	visited[typ] = true
 	for embedded, isPtr := range typ.embedded {
@@ -720,7 +753,6 @@ func (r *reader) collectEmbeddedMethods(mset methodSet, typ *namedType, recvType
 }
 
 // computeMethodSets determines the actual method sets for each type encountered.
-//
 func (r *reader) computeMethodSets() {
 	for _, t := range r.types {
 		// collect embedded methods for t
@@ -746,7 +778,6 @@ func (r *reader) computeMethodSets() {
 // types that have no declaration. Instead, these functions and methods
 // are shown at the package level. It also removes types with missing
 // declarations or which are not visible.
-//
 func (r *reader) cleanupTypes() {
 	for _, t := range r.types {
 		visible := r.isVisible(t.name)
@@ -786,21 +817,6 @@ func (r *reader) cleanupTypes() {
 // ----------------------------------------------------------------------------
 // Sorting
 
-type data struct {
-	n    int
-	swap func(i, j int)
-	less func(i, j int) bool
-}
-
-func (d *data) Len() int           { return d.n }
-func (d *data) Swap(i, j int)      { d.swap(i, j) }
-func (d *data) Less(i, j int) bool { return d.less(i, j) }
-
-// sortBy is a helper function for sorting
-func sortBy(less func(i, j int) bool, swap func(i, j int), n int) {
-	sort.Sort(&data{n, swap, less})
-}
-
 func sortedKeys(m map[string]int) []string {
 	list := make([]string, len(m))
 	i := 0
@@ -808,12 +824,11 @@ func sortedKeys(m map[string]int) []string {
 		list[i] = key
 		i++
 	}
-	sort.Strings(list)
+	slices.Sort(list)
 	return list
 }
 
 // sortingName returns the name to use when sorting d into place.
-//
 func sortingName(d *ast.GenDecl) string {
 	if len(d.Specs) == 1 {
 		if s, ok := d.Specs[0].(*ast.ValueSpec); ok {
@@ -834,16 +849,13 @@ func sortedValues(m []*Value, tok token.Token) []*Value {
 	}
 	list = list[0:i]
 
-	sortBy(
-		func(i, j int) bool {
-			if ni, nj := sortingName(list[i].Decl), sortingName(list[j].Decl); ni != nj {
-				return ni < nj
-			}
-			return list[i].order < list[j].order
-		},
-		func(i, j int) { list[i], list[j] = list[j], list[i] },
-		len(list),
-	)
+	slices.SortFunc(list, func(a, b *Value) int {
+		r := strings.Compare(sortingName(a.Decl), sortingName(b.Decl))
+		if r != 0 {
+			return r
+		}
+		return cmp.Compare(a.order, b.order)
+	})
 
 	return list
 }
@@ -864,11 +876,9 @@ func sortedTypes(m map[string]*namedType, allMethods bool) []*Type {
 		i++
 	}
 
-	sortBy(
-		func(i, j int) bool { return list[i].Name < list[j].Name },
-		func(i, j int) { list[i], list[j] = list[j], list[i] },
-		len(list),
-	)
+	slices.SortFunc(list, func(a, b *Type) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 
 	return list
 }
@@ -896,17 +906,14 @@ func sortedFuncs(m methodSet, allMethods bool) []*Func {
 		}
 	}
 	list = list[0:i]
-	sortBy(
-		func(i, j int) bool { return list[i].Name < list[j].Name },
-		func(i, j int) { list[i], list[j] = list[j], list[i] },
-		len(list),
-	)
+	slices.SortFunc(list, func(a, b *Func) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 	return list
 }
 
 // noteBodies returns a list of note body strings given a list of notes.
 // This is only used to populate the deprecated Package.Bugs field.
-//
 func noteBodies(notes []*Note) []string {
 	var list []string
 	for _, n := range notes {
@@ -951,6 +958,7 @@ var predeclaredTypes = map[string]bool{
 var predeclaredFuncs = map[string]bool{
 	"append":  true,
 	"cap":     true,
+	"clear":   true,
 	"close":   true,
 	"complex": true,
 	"copy":    true,
@@ -958,6 +966,8 @@ var predeclaredFuncs = map[string]bool{
 	"imag":    true,
 	"len":     true,
 	"make":    true,
+	"max":     true,
+	"min":     true,
 	"new":     true,
 	"panic":   true,
 	"print":   true,
@@ -971,4 +981,31 @@ var predeclaredConstants = map[string]bool{
 	"iota":  true,
 	"nil":   true,
 	"true":  true,
+}
+
+// assumedPackageName returns the assumed package name
+// for a given import path. This is a copy of
+// golang.org/x/tools/internal/imports.ImportPathToAssumedName.
+func assumedPackageName(importPath string) string {
+	notIdentifier := func(ch rune) bool {
+		return !('a' <= ch && ch <= 'z' || 'A' <= ch && ch <= 'Z' ||
+			'0' <= ch && ch <= '9' ||
+			ch == '_' ||
+			ch >= utf8.RuneSelf && (unicode.IsLetter(ch) || unicode.IsDigit(ch)))
+	}
+
+	base := path.Base(importPath)
+	if strings.HasPrefix(base, "v") {
+		if _, err := strconv.Atoi(base[1:]); err == nil {
+			dir := path.Dir(importPath)
+			if dir != "." {
+				base = path.Base(dir)
+			}
+		}
+	}
+	base = strings.TrimPrefix(base, "go-")
+	if i := strings.IndexFunc(base, notIdentifier); i >= 0 {
+		base = base[:i]
+	}
+	return base
 }

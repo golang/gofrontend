@@ -5,9 +5,7 @@
 // Package constraint implements parsing and evaluation of build constraint lines.
 // See https://golang.org/cmd/go/#hdr-Build_constraints for documentation about build constraints themselves.
 //
-// This package parses both the original “// +build” syntax and the “//go:build” syntax that will be added in Go 1.17.
-// The parser is being included in Go 1.16 to allow tools that need to process Go 1.17 source code
-// to still be built against the Go 1.16 release.
+// This package parses both the original “// +build” syntax and the “//go:build” syntax that was added in Go 1.17.
 // See https://golang.org/design/draft-gobuild for details about the “//go:build” syntax.
 package constraint
 
@@ -18,8 +16,12 @@ import (
 	"unicode/utf8"
 )
 
+// maxSize is a limit used to control the complexity of expressions, in order
+// to prevent stack exhaustion issues due to recursion.
+const maxSize = 1000
+
 // An Expr is a build tag constraint expression.
-// The underlying concrete type is *AndExpr, *OrExpr, *NotExpr, or *TagExpr.
+// The underlying concrete type is *[AndExpr], *[OrExpr], *[NotExpr], or *[TagExpr].
 type Expr interface {
 	// String returns the string form of the expression,
 	// using the boolean syntax used in //go:build lines.
@@ -35,7 +37,7 @@ type Expr interface {
 	isExpr()
 }
 
-// A TagExpr is an Expr for the single tag Tag.
+// A TagExpr is an [Expr] for the single tag Tag.
 type TagExpr struct {
 	Tag string // for example, “linux” or “cgo”
 }
@@ -153,7 +155,7 @@ func Parse(line string) (Expr, error) {
 		return parseExpr(text)
 	}
 	if text, ok := splitPlusBuild(line); ok {
-		return parsePlusBuildExpr(text), nil
+		return parsePlusBuildExpr(text)
 	}
 	return nil, errNotConstraint
 }
@@ -203,6 +205,8 @@ type exprParser struct {
 	tok   string // last token read
 	isTag bool
 	pos   int // position (start) of last token
+
+	size int
 }
 
 // parseExpr parses a boolean build tag expression.
@@ -251,6 +255,10 @@ func (p *exprParser) and() Expr {
 // On entry, the next input token has not yet been lexed.
 // On exit, the next input token has been lexed and is in p.tok.
 func (p *exprParser) not() Expr {
+	p.size++
+	if p.size > maxSize {
+		panic(&SyntaxError{Offset: p.pos, Err: "build expression too large"})
+	}
 	p.lex()
 	if p.tok == "!" {
 		p.lex()
@@ -345,7 +353,6 @@ func (p *exprParser) lex() {
 	p.i += len(tag)
 	p.tok = p.s[p.pos:p.i]
 	p.isTag = true
-	return
 }
 
 // IsPlusBuild reports whether the line of text is a “// +build” constraint.
@@ -391,11 +398,17 @@ func splitPlusBuild(line string) (expr string, ok bool) {
 }
 
 // parsePlusBuildExpr parses a legacy build tag expression (as used with “// +build”).
-func parsePlusBuildExpr(text string) Expr {
+func parsePlusBuildExpr(text string) (Expr, error) {
+	// Only allow up to 100 AND/OR operators for "old" syntax.
+	// This is much less than the limit for "new" syntax,
+	// but uses of old syntax were always very simple.
+	const maxOldSize = 100
+	size := 0
+
 	var x Expr
-	for _, clause := range strings.Fields(text) {
+	for clause := range strings.FieldsSeq(text) {
 		var y Expr
-		for _, lit := range strings.Split(clause, ",") {
+		for lit := range strings.SplitSeq(clause, ",") {
 			var z Expr
 			var neg bool
 			if strings.HasPrefix(lit, "!!") || lit == "!" {
@@ -417,19 +430,25 @@ func parsePlusBuildExpr(text string) Expr {
 			if y == nil {
 				y = z
 			} else {
+				if size++; size > maxOldSize {
+					return nil, errComplex
+				}
 				y = and(y, z)
 			}
 		}
 		if x == nil {
 			x = y
 		} else {
+			if size++; size > maxOldSize {
+				return nil, errComplex
+			}
 			x = or(x, y)
 		}
 	}
 	if x == nil {
 		x = tag("ignore")
 	}
-	return x
+	return x, nil
 }
 
 // isValidTag reports whether the word is a valid build tag.
@@ -496,18 +515,18 @@ func PlusBuildLines(x Expr) ([]string, error) {
 	// Prepare the +build lines.
 	var lines []string
 	for _, or := range split {
-		line := "// +build"
+		var line strings.Builder
+		line.WriteString("// +build")
 		for _, and := range or {
-			clause := ""
+			line.WriteString(" ")
 			for i, lit := range and {
 				if i > 0 {
-					clause += ","
+					line.WriteString(",")
 				}
-				clause += lit.String()
+				line.WriteString(lit.String())
 			}
-			line += " " + clause
 		}
-		lines = append(lines, line)
+		lines = append(lines, line.String())
 	}
 
 	return lines, nil

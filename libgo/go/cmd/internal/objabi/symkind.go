@@ -37,18 +37,23 @@ type SymKind uint8
 // These are used to index into cmd/link/internal/sym/AbiSymKindToSymKind
 //
 // TODO(rsc): Give idiomatic Go names.
+//
 //go:generate stringer -type=SymKind
 const (
 	// An otherwise invalid zero value for the type
 	Sxxx SymKind = iota
 	// Executable instructions
 	STEXT
+	STEXTFIPS
 	// Read only static data
 	SRODATA
+	SRODATAFIPS
 	// Static data that does not contain any pointers
 	SNOPTRDATA
+	SNOPTRDATAFIPS
 	// Static data
 	SDATA
+	SDATAFIPS
 	// Statically data that is initially all 0s
 	SBSS
 	// Statically data that is initially all 0s and does not contain pointers
@@ -65,8 +70,29 @@ const (
 	SDWARFRANGE
 	SDWARFLOC
 	SDWARFLINES
+	SDWARFADDR
 	// Coverage instrumentation counter for libfuzzer.
-	SLIBFUZZER_EXTRA_COUNTER
-	// Update cmd/link/internal/sym/AbiSymKindToSymKind for new SymKind values.
+	SLIBFUZZER_8BIT_COUNTER
+	// Coverage instrumentation counter, aux variable for cmd/cover
+	SCOVERAGE_COUNTER
+	SCOVERAGE_AUXVAR
 
+	SSEHUNWINDINFO
+	// Update cmd/link/internal/sym/AbiSymKindToSymKind for new SymKind values.
 )
+
+// IsText reports whether t is one of the text kinds.
+func (t SymKind) IsText() bool {
+	return t == STEXT || t == STEXTFIPS
+}
+
+// IsDATA reports whether t is one of the DATA kinds (SDATA or SDATAFIPS,
+// excluding NOPTRDATA, RODATA, BSS, and so on).
+func (t SymKind) IsDATA() bool {
+	return t == SDATA || t == SDATAFIPS
+}
+
+// IsFIPS reports whether t is one fo the FIPS kinds.
+func (t SymKind) IsFIPS() bool {
+	return t == STEXTFIPS || t == SRODATAFIPS || t == SNOPTRDATAFIPS || t == SDATAFIPS
+}

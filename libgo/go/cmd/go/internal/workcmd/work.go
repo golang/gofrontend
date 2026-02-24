@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Package workcmd implements the ``go work'' command.
+// Package workcmd implements the “go work” command.
 package workcmd
 
 import (
@@ -74,5 +74,6 @@ used.
 		cmdInit,
 		cmdSync,
 		cmdUse,
+		cmdVendor,
 	},
 }

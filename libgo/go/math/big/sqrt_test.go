@@ -8,20 +8,12 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"runtime"
 	"testing"
 )
 
 // TestFloatSqrt64 tests that Float.Sqrt of numbers with 53bit mantissa
 // behaves like float math.Sqrt.
 func TestFloatSqrt64(t *testing.T) {
-	// This test fails for gccgo on 386 with a one ULP difference,
-	// presumably due to the use of extended precision floating
-	// point.
-	if runtime.Compiler == "gccgo" && runtime.GOARCH == "386" {
-		t.Skip("skipping on gccgo for 386; gets a one ULP difference")
-	}
-
 	for i := 0; i < 1e5; i++ {
 		if i == 1e2 && testing.Short() {
 			break

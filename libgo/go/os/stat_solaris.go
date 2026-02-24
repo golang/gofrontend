@@ -1,20 +1,27 @@
-// Copyright 2011 The Go Authors. All rights reserved.
+// Copyright 2009 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
-
-// +build !solaristag
 
 package os
 
 import (
+	"internal/filepathlite"
 	"syscall"
 	"time"
 )
 
+// These constants aren't in the syscall package, which is frozen.
+// Values taken from golang.org/x/sys/unix.
+const (
+	_S_IFNAM  = 0x5000
+	_S_IFDOOR = 0xd000
+	_S_IFPORT = 0xe000
+)
+
 func fillFileStatFromSys(fs *fileStat, name string) {
-	fs.name = basename(name)
-	fs.size = int64(fs.sys.Size)
-	fs.modTime = timestrucToTime(fs.sys.Mtim)
+	fs.name = filepathlite.Base(name)
+	fs.size = fs.sys.Size
+	fs.modTime = time.Unix(fs.sys.Mtim.Unix())
 	fs.mode = FileMode(fs.sys.Mode & 0777)
 	switch fs.sys.Mode & syscall.S_IFMT {
 	case syscall.S_IFBLK:
@@ -31,6 +38,8 @@ func fillFileStatFromSys(fs *fileStat, name string) {
 		// nothing to do
 	case syscall.S_IFSOCK:
 		fs.mode |= ModeSocket
+	case _S_IFNAM, _S_IFDOOR, _S_IFPORT:
+		fs.mode |= ModeIrregular
 	}
 	if fs.sys.Mode&syscall.S_ISGID != 0 {
 		fs.mode |= ModeSetgid
@@ -43,11 +52,7 @@ func fillFileStatFromSys(fs *fileStat, name string) {
 	}
 }
 
-func timestrucToTime(ts syscall.Timestruc) time.Time {
-	return time.Unix(int64(ts.Sec), int64(ts.Nsec))
-}
-
 // For testing.
 func atime(fi FileInfo) time.Time {
-	return timestrucToTime(fi.(*fileStat).Sys().(*syscall.Stat_t).Atim)
+	return time.Unix(fi.Sys().(*syscall.Stat_t).Atim.Unix())
 }

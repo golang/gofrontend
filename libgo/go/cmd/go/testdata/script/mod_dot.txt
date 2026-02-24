@@ -1,3 +1,4 @@
+env GOWORK=off
 env GO111MODULE=on
 
 # golang.org/issue/32917 and golang.org/issue/28459: 'go build' and 'go test'
@@ -61,23 +62,23 @@ stdout '^pkg$'
 
 # Packages within GOROOT should resolve as in any other module,
 # except that -mod=vendor is implied by default.
-[!gccgo] cd $GOROOT/src
-[!gccgo] ! go list .
-[!gccgo] stderr '^no Go files in '$GOROOT'[/\\]src$'
+cd $GOROOT/src
+! go list .
+stderr '^no Go files in '$GOROOT'[/\\]src$'
 
-[!gccgo] ! go list ./builtin
-[!gccgo] stderr '^"builtin" is a pseudo-package, not an importable package$'
+! go list ./builtin
+stderr '^"builtin" is a pseudo-package, not an importable package$'
 
-[!gccgo] ! go list ./debug
-[!gccgo] ! stderr 'cannot find module providing package'
-[!gccgo] stderr '^no Go files in '$GOROOT'[/\\]src[/\\]debug$'
+! go list ./debug
+! stderr 'cannot find module providing package'
+stderr '^no Go files in '$GOROOT'[/\\]src[/\\]debug$'
 
-[!gccgo] ! go list ./golang.org/x/tools/cmd/goimports
-[!gccgo] ! stderr 'cannot find module providing package'
-[!gccgo] stderr '^stat '$GOROOT'[/\\]src[/\\]golang.org[/\\]x[/\\]tools[/\\]cmd[/\\]goimports: directory not found'
+! go list ./golang.org/x/tools/cmd/goimports
+! stderr 'cannot find module providing package'
+stderr '^stat '$GOROOT'[/\\]src[/\\]golang.org[/\\]x[/\\]tools[/\\]cmd[/\\]goimports: directory not found'
 
-[!gccgo] go list ./vendor/golang.org/x/net/http2/hpack
-[!gccgo] stdout '^golang.org/x/net/http2/hpack$'
+go list ./vendor/golang.org/x/net/http2/hpack
+stdout '^golang.org/x/net/http2/hpack$'
 
 # golang.org/issue/30756: packages in other GOROOTs should not get the special
 # prefixless treatment of GOROOT itself.

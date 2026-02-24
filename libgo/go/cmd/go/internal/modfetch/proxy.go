@@ -5,13 +5,13 @@
 package modfetch
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"net/url"
-	"path"
 	pathpkg "path"
 	"path/filepath"
 	"strings"
@@ -97,7 +97,7 @@ func proxyList() ([]proxySpec, error) {
 			// Single-word tokens are reserved for built-in behaviors, and anything
 			// containing the string ":/" or matching an absolute file path must be a
 			// complete URL. For all other paths, implicitly add "https://".
-			if strings.ContainsAny(url, ".:/") && !strings.Contains(url, ":/") && !filepath.IsAbs(url) && !path.IsAbs(url) {
+			if strings.ContainsAny(url, ".:/") && !strings.Contains(url, ":/") && !filepath.IsAbs(url) && !pathpkg.IsAbs(url) {
 				url = "https://" + url
 			}
 
@@ -184,41 +184,55 @@ func TryProxies(f func(proxy string) error) error {
 }
 
 type proxyRepo struct {
-	url         *url.URL
-	path        string
-	redactedURL string
+	url          *url.URL // The combined module proxy URL joined with the module path.
+	path         string   // The module path (unescaped).
+	redactedBase string   // The base module proxy URL in [url.URL.Redacted] form.
+
+	listLatestOnce sync.Once
+	listLatest     *RevInfo
+	listLatestErr  error
 }
 
 func newProxyRepo(baseURL, path string) (Repo, error) {
+	// Parse the base proxy URL.
 	base, err := url.Parse(baseURL)
 	if err != nil {
 		return nil, err
 	}
+	redactedBase := base.Redacted()
 	switch base.Scheme {
 	case "http", "https":
 		// ok
 	case "file":
 		if *base != (url.URL{Scheme: base.Scheme, Path: base.Path, RawPath: base.RawPath}) {
-			return nil, fmt.Errorf("invalid file:// proxy URL with non-path elements: %s", base.Redacted())
+			return nil, fmt.Errorf("invalid file:// proxy URL with non-path elements: %s", redactedBase)
 		}
 	case "":
-		return nil, fmt.Errorf("invalid proxy URL missing scheme: %s", base.Redacted())
+		return nil, fmt.Errorf("invalid proxy URL missing scheme: %s", redactedBase)
 	default:
-		return nil, fmt.Errorf("invalid proxy URL scheme (must be https, http, file): %s", base.Redacted())
+		return nil, fmt.Errorf("invalid proxy URL scheme (must be https, http, file): %s", redactedBase)
 	}
 
+	// Append the module path to the URL.
+	url := base
 	enc, err := module.EscapePath(path)
 	if err != nil {
 		return nil, err
 	}
-	redactedURL := base.Redacted()
-	base.Path = strings.TrimSuffix(base.Path, "/") + "/" + enc
-	base.RawPath = strings.TrimSuffix(base.RawPath, "/") + "/" + pathEscape(enc)
-	return &proxyRepo{base, path, redactedURL}, nil
+	url.Path = strings.TrimSuffix(base.Path, "/") + "/" + enc
+	url.RawPath = strings.TrimSuffix(base.RawPath, "/") + "/" + pathEscape(enc)
+
+	return &proxyRepo{url, path, redactedBase, sync.Once{}, nil, nil}, nil
 }
 
 func (p *proxyRepo) ModulePath() string {
 	return p.path
+}
+
+var errProxyReuse = fmt.Errorf("proxy does not support CheckReuse")
+
+func (p *proxyRepo) CheckReuse(ctx context.Context, old *codehost.Origin) error {
+	return errProxyReuse
 }
 
 // versionError returns err wrapped in a ModuleError for p.path.
@@ -241,16 +255,23 @@ func (p *proxyRepo) versionError(version string, err error) error {
 	}
 }
 
-func (p *proxyRepo) getBytes(path string) ([]byte, error) {
-	body, err := p.getBody(path)
+func (p *proxyRepo) getBytes(ctx context.Context, path string) ([]byte, error) {
+	body, redactedURL, err := p.getBody(ctx, path)
 	if err != nil {
 		return nil, err
 	}
 	defer body.Close()
-	return io.ReadAll(body)
+
+	b, err := io.ReadAll(body)
+	if err != nil {
+		// net/http doesn't add context to Body read errors, so add it here.
+		// (See https://go.dev/issue/52727.)
+		return b, &url.Error{Op: "read", URL: redactedURL, Err: err}
+	}
+	return b, nil
 }
 
-func (p *proxyRepo) getBody(path string) (io.ReadCloser, error) {
+func (p *proxyRepo) getBody(ctx context.Context, path string) (r io.ReadCloser, redactedURL string, err error) {
 	fullPath := pathpkg.Join(p.url.Path, path)
 
 	target := *p.url
@@ -259,57 +280,68 @@ func (p *proxyRepo) getBody(path string) (io.ReadCloser, error) {
 
 	resp, err := web.Get(web.DefaultSecurity, &target)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := resp.Err(); err != nil {
 		resp.Body.Close()
-		return nil, err
+		return nil, "", err
 	}
-	return resp.Body, nil
+	return resp.Body, resp.URL, nil
 }
 
-func (p *proxyRepo) Versions(prefix string) ([]string, error) {
-	data, err := p.getBytes("@v/list")
+func (p *proxyRepo) Versions(ctx context.Context, prefix string) (*Versions, error) {
+	data, err := p.getBytes(ctx, "@v/list")
 	if err != nil {
+		p.listLatestOnce.Do(func() {
+			p.listLatest, p.listLatestErr = nil, p.versionError("", err)
+		})
 		return nil, p.versionError("", err)
 	}
 	var list []string
-	for _, line := range strings.Split(string(data), "\n") {
+	allLine := strings.Split(string(data), "\n")
+	for _, line := range allLine {
 		f := strings.Fields(line)
 		if len(f) >= 1 && semver.IsValid(f[0]) && strings.HasPrefix(f[0], prefix) && !module.IsPseudoVersion(f[0]) {
 			list = append(list, f[0])
 		}
 	}
+	p.listLatestOnce.Do(func() {
+		p.listLatest, p.listLatestErr = p.latestFromList(ctx, allLine)
+	})
 	semver.Sort(list)
-	return list, nil
+	return &Versions{List: list}, nil
 }
 
-func (p *proxyRepo) latest() (*RevInfo, error) {
-	data, err := p.getBytes("@v/list")
-	if err != nil {
-		return nil, p.versionError("", err)
-	}
+func (p *proxyRepo) latest(ctx context.Context) (*RevInfo, error) {
+	p.listLatestOnce.Do(func() {
+		data, err := p.getBytes(ctx, "@v/list")
+		if err != nil {
+			p.listLatestErr = p.versionError("", err)
+			return
+		}
+		list := strings.Split(string(data), "\n")
+		p.listLatest, p.listLatestErr = p.latestFromList(ctx, list)
+	})
+	return p.listLatest, p.listLatestErr
+}
 
+func (p *proxyRepo) latestFromList(ctx context.Context, allLine []string) (*RevInfo, error) {
 	var (
-		bestTime             time.Time
-		bestTimeIsFromPseudo bool
-		bestVersion          string
+		bestTime    time.Time
+		bestVersion string
 	)
-
-	for _, line := range strings.Split(string(data), "\n") {
+	for _, line := range allLine {
 		f := strings.Fields(line)
 		if len(f) >= 1 && semver.IsValid(f[0]) {
 			// If the proxy includes timestamps, prefer the timestamp it reports.
 			// Otherwise, derive the timestamp from the pseudo-version.
 			var (
-				ft             time.Time
-				ftIsFromPseudo = false
+				ft time.Time
 			)
 			if len(f) >= 2 {
 				ft, _ = time.Parse(time.RFC3339, f[1])
 			} else if module.IsPseudoVersion(f[0]) {
 				ft, _ = module.PseudoVersionTime(f[0])
-				ftIsFromPseudo = true
 			} else {
 				// Repo.Latest promises that this method is only called where there are
 				// no tagged versions. Ignore any tagged versions that were added in the
@@ -318,7 +350,6 @@ func (p *proxyRepo) latest() (*RevInfo, error) {
 			}
 			if bestTime.Before(ft) {
 				bestTime = ft
-				bestTimeIsFromPseudo = ftIsFromPseudo
 				bestVersion = f[0]
 			}
 		}
@@ -327,36 +358,22 @@ func (p *proxyRepo) latest() (*RevInfo, error) {
 		return nil, p.versionError("", codehost.ErrNoCommits)
 	}
 
-	if bestTimeIsFromPseudo {
-		// We parsed bestTime from the pseudo-version, but that's in UTC and we're
-		// supposed to report the timestamp as reported by the VCS.
-		// Stat the selected version to canonicalize the timestamp.
-		//
-		// TODO(bcmills): Should we also stat other versions to ensure that we
-		// report the correct Name and Short for the revision?
-		return p.Stat(bestVersion)
-	}
-
-	return &RevInfo{
-		Version: bestVersion,
-		Name:    bestVersion,
-		Short:   bestVersion,
-		Time:    bestTime,
-	}, nil
+	// Call Stat to get all the other fields, including Origin information.
+	return p.Stat(ctx, bestVersion)
 }
 
-func (p *proxyRepo) Stat(rev string) (*RevInfo, error) {
+func (p *proxyRepo) Stat(ctx context.Context, rev string) (*RevInfo, error) {
 	encRev, err := module.EscapeVersion(rev)
 	if err != nil {
 		return nil, p.versionError(rev, err)
 	}
-	data, err := p.getBytes("@v/" + encRev + ".info")
+	data, err := p.getBytes(ctx, "@v/"+encRev+".info")
 	if err != nil {
 		return nil, p.versionError(rev, err)
 	}
 	info := new(RevInfo)
 	if err := json.Unmarshal(data, info); err != nil {
-		return nil, p.versionError(rev, fmt.Errorf("invalid response from proxy %q: %w", p.redactedURL, err))
+		return nil, p.versionError(rev, fmt.Errorf("invalid response from proxy %q: %w", p.redactedBase, err))
 	}
 	if info.Version != rev && rev == module.CanonicalVersion(rev) && module.Check(p.path, rev) == nil {
 		// If we request a correct, appropriate version for the module path, the
@@ -367,22 +384,22 @@ func (p *proxyRepo) Stat(rev string) (*RevInfo, error) {
 	return info, nil
 }
 
-func (p *proxyRepo) Latest() (*RevInfo, error) {
-	data, err := p.getBytes("@latest")
+func (p *proxyRepo) Latest(ctx context.Context) (*RevInfo, error) {
+	data, err := p.getBytes(ctx, "@latest")
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			return nil, p.versionError("", err)
 		}
-		return p.latest()
+		return p.latest(ctx)
 	}
 	info := new(RevInfo)
 	if err := json.Unmarshal(data, info); err != nil {
-		return nil, p.versionError("", fmt.Errorf("invalid response from proxy %q: %w", p.redactedURL, err))
+		return nil, p.versionError("", fmt.Errorf("invalid response from proxy %q: %w", p.redactedBase, err))
 	}
 	return info, nil
 }
 
-func (p *proxyRepo) GoMod(version string) ([]byte, error) {
+func (p *proxyRepo) GoMod(ctx context.Context, version string) ([]byte, error) {
 	if version != module.CanonicalVersion(version) {
 		return nil, p.versionError(version, fmt.Errorf("internal error: version passed to GoMod is not canonical"))
 	}
@@ -391,14 +408,14 @@ func (p *proxyRepo) GoMod(version string) ([]byte, error) {
 	if err != nil {
 		return nil, p.versionError(version, err)
 	}
-	data, err := p.getBytes("@v/" + encVer + ".mod")
+	data, err := p.getBytes(ctx, "@v/"+encVer+".mod")
 	if err != nil {
 		return nil, p.versionError(version, err)
 	}
 	return data, nil
 }
 
-func (p *proxyRepo) Zip(dst io.Writer, version string) error {
+func (p *proxyRepo) Zip(ctx context.Context, dst io.Writer, version string) error {
 	if version != module.CanonicalVersion(version) {
 		return p.versionError(version, fmt.Errorf("internal error: version passed to Zip is not canonical"))
 	}
@@ -407,7 +424,8 @@ func (p *proxyRepo) Zip(dst io.Writer, version string) error {
 	if err != nil {
 		return p.versionError(version, err)
 	}
-	body, err := p.getBody("@v/" + encVer + ".zip")
+	path := "@v/" + encVer + ".zip"
+	body, redactedURL, err := p.getBody(ctx, path)
 	if err != nil {
 		return p.versionError(version, err)
 	}
@@ -415,6 +433,9 @@ func (p *proxyRepo) Zip(dst io.Writer, version string) error {
 
 	lr := &io.LimitedReader{R: body, N: codehost.MaxZipFile + 1}
 	if _, err := io.Copy(dst, lr); err != nil {
+		// net/http doesn't add context to Body read errors, so add it here.
+		// (See https://go.dev/issue/52727.)
+		err = &url.Error{Op: "read", URL: redactedURL, Err: err}
 		return p.versionError(version, err)
 	}
 	if lr.N <= 0 {

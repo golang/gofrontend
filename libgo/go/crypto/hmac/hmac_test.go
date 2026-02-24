@@ -5,10 +5,13 @@
 package hmac
 
 import (
+	"crypto/internal/boring"
+	"crypto/internal/cryptotest"
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
+	"errors"
 	"fmt"
 	"hash"
 	"testing"
@@ -518,6 +521,31 @@ var hmacTests = []hmacTest{
 		sha512.Size,
 		sha512.BlockSize,
 	},
+	// HMAC without key is dumb but should probably not fail.
+	{
+		sha1.New,
+		[]byte{},
+		[]byte("message"),
+		"d5d1ed05121417247616cfc8378f360a39da7cfa",
+		sha1.Size,
+		sha1.BlockSize,
+	},
+	{
+		sha256.New,
+		[]byte{},
+		[]byte("message"),
+		"eb08c1f56d5ddee07f7bdf80468083da06b64cf4fac64fe3a90883df5feacae4",
+		sha256.Size,
+		sha256.BlockSize,
+	},
+	{
+		sha512.New,
+		[]byte{},
+		[]byte("message"),
+		"08fce52f6395d59c2a3fb8abb281d74ad6f112b9a9c787bcea290d94dadbc82b2ca3e5e12bf2277c7fedbb0154d5493e41bb7459f63c8e39554ea3651b812492",
+		sha512.Size,
+		sha512.BlockSize,
+	},
 }
 
 func TestHMAC(t *testing.T) {
@@ -556,7 +584,22 @@ func TestHMAC(t *testing.T) {
 	}
 }
 
+func TestNoClone(t *testing.T) {
+	h := New(func() hash.Hash { return justHash{sha256.New()} }, []byte("key"))
+	if _, ok := h.(hash.Cloner); !ok {
+		t.Skip("no Cloner support")
+	}
+	h.Write([]byte("test"))
+	_, err := h.(hash.Cloner).Clone()
+	if !errors.Is(err, errors.ErrUnsupported) {
+		t.Errorf("Clone() = %v, want ErrUnsupported", err)
+	}
+}
+
 func TestNonUniqueHash(t *testing.T) {
+	if boring.Enabled {
+		t.Skip("hash.Hash provided by boringcrypto are not comparable")
+	}
 	sha := sha256.New()
 	defer func() {
 		err := recover()
@@ -589,6 +632,29 @@ func TestEqual(t *testing.T) {
 	if Equal(b, c) {
 		t.Error("Equal accepted unequal slices")
 	}
+}
+
+func TestHMACHash(t *testing.T) {
+	for i, test := range hmacTests {
+		baseHash := test.hash
+		key := test.key
+
+		t.Run(fmt.Sprintf("test-%d", i), func(t *testing.T) {
+			cryptotest.TestHash(t, func() hash.Hash { return New(baseHash, key) })
+		})
+	}
+}
+
+func TestExtraMethods(t *testing.T) {
+	h := New(sha256.New, []byte("key"))
+	cryptotest.NoExtraMethods(t, maybeCloner(h))
+}
+
+func maybeCloner(h hash.Hash) any {
+	if c, ok := h.(hash.Cloner); ok {
+		return &c
+	}
+	return &h
 }
 
 func BenchmarkHMACSHA256_1K(b *testing.B) {

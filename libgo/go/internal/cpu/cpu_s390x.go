@@ -4,7 +4,7 @@
 
 package cpu
 
-// const CacheLinePadSize = 256
+const CacheLinePadSize = 256
 
 var HWCap uint
 
@@ -150,6 +150,14 @@ func doinit() {
 
 	aes := []function{aes128, aes192, aes256}
 	facilities := stfle()
+
+	S390X.HasZARCH = facilities.Has(zarch)
+	S390X.HasSTFLE = facilities.Has(stflef)
+	S390X.HasLDISP = facilities.Has(ldisp)
+	S390X.HasEIMM = facilities.Has(eimm)
+	S390X.HasDFP = facilities.Has(dfp)
+	S390X.HasETF3EH = facilities.Has(etf3eh)
+	S390X.HasMSA = facilities.Has(msa)
 
 	if S390X.HasMSA {
 		// cipher message

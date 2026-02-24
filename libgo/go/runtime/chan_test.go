@@ -204,11 +204,6 @@ func TestNonblockRecvRace(t *testing.T) {
 	n := 10000
 	if testing.Short() {
 		n = 100
-	} else {
-		if runtime.GOARCH == "s390" {
-			// Test uses too much address space on 31-bit S390.
-			t.Skip("skipping long test on s390")
-		}
 	}
 	for i := 0; i < n; i++ {
 		c := make(chan int, 1)
@@ -231,11 +226,13 @@ func TestNonblockRecvRace(t *testing.T) {
 // This test checks that select acts on the state of the channels at one
 // moment in the execution, not over a smeared time window.
 // In the test, one goroutine does:
+//
 //	create c1, c2
 //	make c1 ready for receiving
 //	create second goroutine
 //	make c2 ready for receiving
 //	make c1 no longer ready for receiving (if possible)
+//
 // The second goroutine does a non-blocking select receiving from c1 and c2.
 // From the time the second goroutine is created, at least one of c1 and c2
 // is always ready for receiving, so the select in the second goroutine must
@@ -312,7 +309,6 @@ func TestSelfSelect(t *testing.T) {
 		wg.Add(2)
 		c := make(chan int, chanCap)
 		for p := 0; p < 2; p++ {
-			p := p
 			go func() {
 				defer wg.Done()
 				for i := 0; i < 1000; i++ {
@@ -362,7 +358,6 @@ func TestSelectStress(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(10)
 	for k := 0; k < 4; k++ {
-		k := k
 		go func() {
 			for i := 0; i < N; i++ {
 				c[k] <- 0
@@ -484,12 +479,13 @@ func TestSelectFairness(t *testing.T) {
 	}
 	// If the select in the goroutine is fair,
 	// cnt1 and cnt2 should be about the same value.
-	// With 10,000 trials, the expected margin of error at
-	// a confidence level of six nines is 4.891676 / (2 * Sqrt(10000)).
-	r := float64(cnt1) / trials
-	e := math.Abs(r - 0.5)
-	t.Log(cnt1, cnt2, r, e)
-	if e > 4.891676/(2*math.Sqrt(trials)) {
+	// See if we're more than 10 sigma away from the expected value.
+	// 10 sigma is a lot, but we're ok with some systematic bias as
+	// long as it isn't too severe.
+	const mean = trials * 0.5
+	const variance = trials * 0.5 * (1 - 0.5)
+	stddev := math.Sqrt(variance)
+	if math.Abs(float64(cnt1-mean)) > 10*stddev {
 		t.Errorf("unfair select: in %d trials, results were %d, %d", trials, cnt1, cnt2)
 	}
 	close(done)
@@ -631,6 +627,9 @@ func TestShrinkStackDuringBlockedSend(t *testing.T) {
 func TestNoShrinkStackWhileParking(t *testing.T) {
 	if runtime.GOOS == "netbsd" && runtime.GOARCH == "arm64" {
 		testenv.SkipFlaky(t, 49382)
+	}
+	if runtime.GOOS == "openbsd" {
+		testenv.SkipFlaky(t, 51482)
 	}
 
 	// The goal of this test is to trigger a "racy sudog adjustment"
@@ -1127,6 +1126,19 @@ func BenchmarkSelectProdCons(b *testing.B) {
 	for p := 0; p < procs; p++ {
 		<-c
 		<-c
+	}
+}
+
+func BenchmarkReceiveDataFromClosedChan(b *testing.B) {
+	count := b.N
+	ch := make(chan struct{}, count)
+	for i := 0; i < count; i++ {
+		ch <- struct{}{}
+	}
+	close(ch)
+
+	b.ResetTimer()
+	for range ch {
 	}
 }
 

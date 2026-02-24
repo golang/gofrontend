@@ -7,10 +7,9 @@
 package net
 
 /*
-#cgo LDFLAGS: -lsocket -lnsl -lsendfile
+#cgo LDFLAGS: -lsocket -lnsl
 #include <netdb.h>
 */
+import "C"
 
-import "syscall"
-
-const cgoAddrInfoFlags = syscall.AI_CANONNAME | syscall.AI_V4MAPPED | syscall.AI_ALL
+const cgoAddrInfoFlags = C.AI_CANONNAME | C.AI_V4MAPPED | C.AI_ALL

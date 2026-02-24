@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris
+//go:build unix
 
 package syscall_test
 
@@ -12,7 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -71,7 +71,7 @@ func TestDirent(t *testing.T) {
 		}
 	}
 
-	sort.Strings(names)
+	slices.Sort(names)
 	t.Logf("names: %q", names)
 
 	if len(names) != 10 {
@@ -82,7 +82,7 @@ func TestDirent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("names[%d] is non-integer %q: %v", i, names[i], err)
 		}
-		if expected := string(strings.Repeat(name[:1], filenameMinSize+ord)); name != expected {
+		if expected := strings.Repeat(name[:1], filenameMinSize+ord); name != expected {
 			t.Errorf("names[%d] is %q (len %d); expected %q (len %d)", i, name, len(name), expected, len(expected))
 		}
 	}
@@ -96,9 +96,6 @@ func TestDirentRepeat(t *testing.T) {
 	if runtime.GOOS == "freebsd" || runtime.GOOS == "netbsd" {
 		if size < 1024 {
 			size = 1024 // DIRBLKSIZ, see issue 31403.
-		}
-		if runtime.GOOS == "freebsd" {
-			t.Skip("need to fix issue 31416 first")
 		}
 	}
 
@@ -141,9 +138,9 @@ func TestDirentRepeat(t *testing.T) {
 	}
 
 	// Check results
-	sort.Strings(files)
-	sort.Strings(files2)
-	if strings.Join(files, "|") != strings.Join(files2, "|") {
+	slices.Sort(files)
+	slices.Sort(files2)
+	if !slices.Equal(files, files2) {
 		t.Errorf("bad file list: want\n%q\ngot\n%q", files, files2)
 	}
 }

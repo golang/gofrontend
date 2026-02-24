@@ -4,18 +4,19 @@
 
 package time
 
-import "runtime"
-
 func init() {
-	// force US/Pacific for time zone tests
+	// Force US/Pacific for time zone tests.
 	ForceUSPacificForTesting()
 }
 
 func initTestingZone() {
-	z, err := loadLocation("America/Los_Angeles", zoneSources[len(zoneSources)-1:])
-	if runtime.Compiler == "gccgo" && err != nil {
-		z, err = loadLocation("America/Los_Angeles", zoneSources)
-	}
+	// For hermeticity, use only tzinfo source from the test's GOROOT,
+	// not the system sources and not whatever GOROOT may happen to be
+	// set in the process's environment (if any).
+	// This test runs in GOROOT/src/time, so GOROOT is "../..",
+	// but it is theoretically possible
+	sources := []string{"../../lib/time/zoneinfo.zip"}
+	z, err := loadLocation("America/Los_Angeles", sources)
 	if err != nil {
 		panic("cannot load America/Los_Angeles for testing: " + err.Error() + "; you may want to use -tags=timetzdata")
 	}
@@ -23,20 +24,19 @@ func initTestingZone() {
 	localLoc = *z
 }
 
-var OrigZoneSources = zoneSources
+var origPlatformZoneSources []string = platformZoneSources
 
-func forceZipFileForTesting(zipOnly bool) {
-	zoneSources = make([]string, len(OrigZoneSources))
-	copy(zoneSources, OrigZoneSources)
-	if zipOnly {
-		zoneSources = zoneSources[len(zoneSources)-1:]
+func disablePlatformSources() (undo func()) {
+	platformZoneSources = nil
+	return func() {
+		platformZoneSources = origPlatformZoneSources
 	}
 }
 
 var Interrupt = interrupt
 var DaysIn = daysIn
 
-func empty(arg any, seq uintptr) {}
+func empty(arg any, seq uintptr, delta int64) {}
 
 // Test that a runtimeTimer with a period that would overflow when on
 // expiration does not throw or cause other timers to hang.
@@ -47,14 +47,8 @@ func CheckRuntimeTimerPeriodOverflow() {
 	// We manually create a runtimeTimer with huge period, but that expires
 	// immediately. The public Timer interface would require waiting for
 	// the entire period before the first update.
-	r := &runtimeTimer{
-		when:   runtimeNano(),
-		period: 1<<63 - 1,
-		f:      empty,
-		arg:    nil,
-	}
-	startTimer(r)
-	defer stopTimer(r)
+	t := newTimer(runtimeNano(), 1<<63-1, empty, nil, nil)
+	defer t.Stop()
 
 	// If this test fails, we will either throw (when siftdownTimer detects
 	// bad when on update), or other timers will hang (if the timer in a

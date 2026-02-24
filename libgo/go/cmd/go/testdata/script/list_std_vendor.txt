@@ -2,8 +2,6 @@
 # dependencies regardless of whether they are listed from within or outside
 # GOROOT/src.
 
-[gccgo] skip
-
 # Control case: net, viewed from outside the 'std' module,
 # should depend on vendor/golang.org/… instead of golang.org/….
 
@@ -27,8 +25,9 @@ cmp stdout $WORK/net-deps.txt
 # However, 'go mod' and 'go get' subcommands should report the original module
 # dependencies, not the vendored packages.
 
-[!net] stop
+[!net:golang.org] stop
 
 env GOPROXY=
+env GOWORK=off
 go mod why -m golang.org/x/net
 stdout '^# golang.org/x/net\nnet\ngolang.org/x/net'

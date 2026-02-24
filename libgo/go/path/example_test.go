@@ -2,9 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build gccgo_examples
-
-package path
+package path_test
 
 import (
 	"fmt"
@@ -27,6 +25,8 @@ func ExampleClean() {
 		"a//c",
 		"a/c/.",
 		"a/c/b/..",
+		"../a/c",
+		"../a/b/../././/c",
 		"/../a/c",
 		"/../a/b/../././/c",
 		"",
@@ -41,6 +41,8 @@ func ExampleClean() {
 	// Clean("a//c") = "a/c"
 	// Clean("a/c/.") = "a/c"
 	// Clean("a/c/b/..") = "a/c"
+	// Clean("../a/c") = "../a/c"
+	// Clean("../a/b/../././/c") = "../a/c"
 	// Clean("/../a/c") = "/a/c"
 	// Clean("/../a/b/../././/c") = "/a/c"
 	// Clean("") = "."

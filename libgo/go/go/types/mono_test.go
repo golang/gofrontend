@@ -5,37 +5,22 @@
 package types_test
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/importer"
-	"go/parser"
-	"go/token"
 	"go/types"
-	"runtime"
 	"strings"
 	"testing"
 )
 
 func checkMono(t *testing.T, body string) error {
-	if runtime.Compiler == "gccgo" {
-		t.Skip("skipping for gofronted: fails to import unsafe")
-	}
+	src := "package x; import `unsafe`; var _ unsafe.Pointer;\n" + body
 
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "x.go", "package x; import `unsafe`; var _ unsafe.Pointer;\n"+body, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	files := []*ast.File{file}
-
-	var buf bytes.Buffer
+	var buf strings.Builder
 	conf := types.Config{
 		Error:    func(err error) { fmt.Fprintln(&buf, err) },
-		Importer: importer.Default(),
+		Importer: defaultImporter(fset), // TODO(adonovan): use same FileSet as typecheck
 	}
-	conf.Check("x", fset, files, nil)
+	typecheck(src, &conf, nil)
 	if buf.Len() == 0 {
 		return nil
 	}

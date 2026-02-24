@@ -73,16 +73,17 @@ package math
 // Log returns the natural logarithm of x.
 //
 // Special cases are:
+//
 //	Log(+Inf) = +Inf
 //	Log(0) = -Inf
 //	Log(x < 0) = NaN
 //	Log(NaN) = NaN
 func Log(x float64) float64 {
-	return libc_log(x)
+	if haveArchLog {
+		return archLog(x)
+	}
+	return log(x)
 }
-
-//extern log
-func libc_log(float64) float64
 
 func log(x float64) float64 {
 	const (

@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"testing"
 	"text/template"
@@ -153,20 +152,7 @@ func Test(t *testing.T) {
 	t.Run("AllMethods", func(t *testing.T) { test(t, AllMethods) })
 }
 
-func TestAnchorID(t *testing.T) {
-	const in = "Important Things 2 Know & Stuff"
-	const want = "hdr-Important_Things_2_Know___Stuff"
-	got := anchorID(in)
-	if got != want {
-		t.Errorf("anchorID(%q) = %q; want %q", in, got, want)
-	}
-}
-
 func TestFuncs(t *testing.T) {
-	if runtime.Compiler == "gccgo" {
-		t.Skip("FIXME skipping for gofrontend: generics")
-	}
-
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "funcs.go", strings.NewReader(funcsTestFile), parser.ParseComments)
 	if err != nil {
@@ -188,8 +174,6 @@ func TestFuncs(t *testing.T) {
 			m.Decl = nil
 		}
 	}
-
-	/* FIXME: Commented out for gofrontend.
 
 	compareFuncs := func(t *testing.T, msg string, got, want *Func) {
 		// ignore Decl and Examples
@@ -213,10 +197,7 @@ func TestFuncs(t *testing.T) {
 			compareSlices(t, got.Name+".Methods", got.Methods, want.Methods, compareFuncs)
 		}
 	})
-	*/
 }
-
-/* FIXME: Commented out for gofrontend.
 
 func compareSlices[E any](t *testing.T, name string, got, want []E, compareElem func(*testing.T, string, E, E)) {
 	if len(got) != len(want) {
@@ -226,8 +207,6 @@ func compareSlices[E any](t *testing.T, name string, got, want []E, compareElem 
 		compareElem(t, fmt.Sprintf("%s[%d]", name, i), got[i], want[i])
 	}
 }
-
-*/
 
 const funcsTestFile = `
 package funcs

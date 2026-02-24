@@ -8,7 +8,15 @@ import "unsafe"
 
 var labelSync uintptr
 
-//go:linkname runtime_setProfLabel runtime_1pprof.runtime__setProfLabel
+// runtime_setProfLabel should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/cloudwego/localsession
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname runtime_setProfLabel runtime/pprof.runtime_setProfLabel
 func runtime_setProfLabel(labels unsafe.Pointer) {
 	// Introduce race edge for read-back via profile.
 	// This would more properly use &getg().labels as the sync address,
@@ -34,7 +42,15 @@ func runtime_setProfLabel(labels unsafe.Pointer) {
 	getg().labels = labels
 }
 
-//go:linkname runtime_getProfLabel runtime_1pprof.runtime__getProfLabel
+// runtime_getProfLabel should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/cloudwego/localsession
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname runtime_getProfLabel runtime/pprof.runtime_getProfLabel
 func runtime_getProfLabel() unsafe.Pointer {
 	return getg().labels
 }

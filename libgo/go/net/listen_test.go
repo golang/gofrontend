@@ -2,12 +2,11 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build !js && !plan9
+//go:build !plan9
 
 package net
 
 import (
-	"context"
 	"fmt"
 	"internal/testenv"
 	"os"
@@ -611,7 +610,8 @@ func TestIPv6MulticastListener(t *testing.T) {
 	if !supportsIPv6() {
 		t.Skip("IPv6 is not supported")
 	}
-	if os.Getuid() != 0 {
+	// On Windows, the test can be run by non-admin users.
+	if runtime.GOOS != "windows" && os.Getuid() != 0 {
 		t.Skip("must be root")
 	}
 
@@ -670,7 +670,7 @@ func checkMulticastListener(c *UDPConn, ip IP) error {
 
 func multicastRIBContains(ip IP) (bool, error) {
 	switch runtime.GOOS {
-	case "aix", "dragonfly", "netbsd", "openbsd", "plan9", "solaris", "illumos", "windows":
+	case "aix", "dragonfly", "netbsd", "openbsd", "plan9", "solaris", "illumos":
 		return true, nil // not implemented yet
 	case "linux":
 		if runtime.GOARCH == "arm" || runtime.GOARCH == "alpha" {
@@ -735,17 +735,7 @@ func TestListenConfigControl(t *testing.T) {
 			if !testableNetwork(network) {
 				continue
 			}
-			ln := newLocalListener(t, network)
-			address := ln.Addr().String()
-			// TODO: This is racy. The selected address could be reused in between
-			// this Close and the subsequent Listen.
-			ln.Close()
-			lc := ListenConfig{Control: controlOnConnSetup}
-			ln, err := lc.Listen(context.Background(), network, address)
-			if err != nil {
-				t.Error(err)
-				continue
-			}
+			ln := newLocalListener(t, network, &ListenConfig{Control: controlOnConnSetup})
 			ln.Close()
 		}
 	})
@@ -754,24 +744,8 @@ func TestListenConfigControl(t *testing.T) {
 			if !testableNetwork(network) {
 				continue
 			}
-			c := newLocalPacketListener(t, network)
-			address := c.LocalAddr().String()
-			// TODO: This is racy. The selected address could be reused in between
-			// this Close and the subsequent ListenPacket.
+			c := newLocalPacketListener(t, network, &ListenConfig{Control: controlOnConnSetup})
 			c.Close()
-			if network == "unixgram" {
-				os.Remove(address)
-			}
-			lc := ListenConfig{Control: controlOnConnSetup}
-			c, err := lc.ListenPacket(context.Background(), network, address)
-			if err != nil {
-				t.Error(err)
-				continue
-			}
-			c.Close()
-			if network == "unixgram" {
-				os.Remove(address)
-			}
 		}
 	})
 }

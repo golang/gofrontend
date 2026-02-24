@@ -5,9 +5,7 @@
 package types_test
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
+	"fmt"
 	"internal/testenv"
 	"strings"
 	"testing"
@@ -32,23 +30,23 @@ func TestIsAlias(t *testing.T) {
 
 	// various other types
 	pkg := NewPackage("p", "p")
-	t1 := NewTypeName(0, pkg, "t1", nil)
+	t1 := NewTypeName(nopos, pkg, "t1", nil)
 	n1 := NewNamed(t1, new(Struct), nil)
-	t5 := NewTypeName(0, pkg, "t5", nil)
+	t5 := NewTypeName(nopos, pkg, "t5", nil)
 	NewTypeParam(t5, nil)
 	for _, test := range []struct {
 		name  *TypeName
 		alias bool
 	}{
-		{NewTypeName(0, nil, "t0", nil), false},                       // no type yet
-		{NewTypeName(0, pkg, "t0", nil), false},                       // no type yet
-		{t1, false},                                                   // type name refers to named type and vice versa
-		{NewTypeName(0, nil, "t2", NewInterfaceType(nil, nil)), true}, // type name refers to unnamed type
-		{NewTypeName(0, pkg, "t3", n1), true},                         // type name refers to named type with different type name
-		{NewTypeName(0, nil, "t4", Typ[Int32]), true},                 // type name refers to basic type with different name
-		{NewTypeName(0, nil, "int32", Typ[Int32]), false},             // type name refers to basic type with same name
-		{NewTypeName(0, pkg, "int32", Typ[Int32]), true},              // type name is declared in user-defined package (outside Universe)
-		{NewTypeName(0, nil, "rune", Typ[Rune]), true},                // type name refers to basic type rune which is an alias already
+		{NewTypeName(nopos, nil, "t0", nil), false}, // no type yet
+		{NewTypeName(nopos, pkg, "t0", nil), false}, // no type yet
+		{t1, false}, // type name refers to named type and vice versa
+		{NewTypeName(nopos, nil, "t2", NewInterfaceType(nil, nil)), true}, // type name refers to unnamed type
+		{NewTypeName(nopos, pkg, "t3", n1), true},                         // type name refers to named type with different type name
+		{NewTypeName(nopos, nil, "t4", Typ[Int32]), true},                 // type name refers to basic type with different name
+		{NewTypeName(nopos, nil, "int32", Typ[Int32]), false},             // type name refers to basic type with same name
+		{NewTypeName(nopos, pkg, "int32", Typ[Int32]), true},              // type name is declared in user-defined package (outside Universe)
+		{NewTypeName(nopos, nil, "rune", Typ[Rune]), true},                // type name refers to basic type rune which is an alias already
 		{t5, false}, // type name refers to type parameter and vice versa
 	} {
 		check(test.name, test.alias)
@@ -56,21 +54,10 @@ func TestIsAlias(t *testing.T) {
 }
 
 // TestEmbeddedMethod checks that an embedded method is represented by
-// the same Func Object as the original method. See also issue #34421.
+// the same Func Object as the original method. See also go.dev/issue/34421.
 func TestEmbeddedMethod(t *testing.T) {
 	const src = `package p; type I interface { error }`
-
-	// type-check src
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "", src, 0)
-	if err != nil {
-		t.Fatalf("parse failed: %s", err)
-	}
-	var conf Config
-	pkg, err := conf.Check(f.Name.Name, fset, []*ast.File{f}, nil)
-	if err != nil {
-		t.Fatalf("typecheck failed: %s", err)
-	}
+	pkg := mustTypecheck(src, nil, nil)
 
 	// get original error.Error method
 	eface := Universe.Lookup("error")
@@ -93,69 +80,77 @@ func TestEmbeddedMethod(t *testing.T) {
 }
 
 var testObjects = []struct {
-	src  string
-	obj  string
-	want string
+	src   string
+	obj   string
+	want  string
+	alias bool // needs materialized (and possibly generic) aliases
 }{
-	{"import \"io\"; var r io.Reader", "r", "var p.r io.Reader"},
+	{"import \"io\"; var r io.Reader", "r", "var p.r io.Reader", false},
 
-	{"const c = 1.2", "c", "const p.c untyped float"},
-	{"const c float64 = 3.14", "c", "const p.c float64"},
+	{"const c = 1.2", "c", "const p.c untyped float", false},
+	{"const c float64 = 3.14", "c", "const p.c float64", false},
 
-	{"type t struct{f int}", "t", "type p.t struct{f int}"},
-	{"type t func(int)", "t", "type p.t func(int)"},
-	{"type t[P any] struct{f P}", "t", "type p.t[P any] struct{f P}"},
-	{"type t[P any] struct{f P}", "t.P", "type parameter P any"},
-	{"type C interface{m()}; type t[P C] struct{}", "t.P", "type parameter P p.C"},
+	{"type t struct{f int}", "t", "type p.t struct{f int}", false},
+	{"type t func(int)", "t", "type p.t func(int)", false},
+	{"type t[P any] struct{f P}", "t", "type p.t[P any] struct{f P}", false},
+	{"type t[P any] struct{f P}", "t.P", "type parameter P any", false},
+	{"type C interface{m()}; type t[P C] struct{}", "t.P", "type parameter P p.C", false},
 
-	{"type t = struct{f int}", "t", "type p.t = struct{f int}"},
-	{"type t = func(int)", "t", "type p.t = func(int)"},
+	{"type t = struct{f int}", "t", "type p.t = struct{f int}", false},
+	{"type t = func(int)", "t", "type p.t = func(int)", false},
+	{"type A = B; type B = int", "A", "type p.A = p.B", true},
+	{"type A[P ~int] = struct{}", "A", "type p.A[P ~int] = struct{}", true},
+	{"var v int", "v", "var p.v int", false},
 
-	{"var v int", "v", "var p.v int"},
-
-	{"func f(int) string", "f", "func p.f(int) string"},
-	{"func g[P any](x P){}", "g", "func p.g[P any](x P)"},
-	{"func g[P interface{~int}](x P){}", "g.P", "type parameter P interface{~int}"},
-	{"", "any", "type any = interface{}"},
+	{"func f(int) string", "f", "func p.f(int) string", false},
+	{"func g[P any](x P){}", "g", "func p.g[P any](x P)", false},
+	{"func g[P interface{~int}](x P){}", "g.P", "type parameter P interface{~int}", false},
+	{"", "any", "type any = interface{}", false},
 }
 
 func TestObjectString(t *testing.T) {
 	testenv.MustHaveGoBuild(t)
 
-	for _, test := range testObjects {
-		src := "package p; " + test.src
-		pkg, err := makePkg(src)
-		if err != nil {
-			t.Errorf("%s: %s", src, err)
-			continue
-		}
-
-		names := strings.Split(test.obj, ".")
-		if len(names) != 1 && len(names) != 2 {
-			t.Errorf("%s: invalid object path %s", test.src, test.obj)
-			continue
-		}
-		_, obj := pkg.Scope().LookupParent(names[0], token.NoPos)
-		if obj == nil {
-			t.Errorf("%s: %s not found", test.src, names[0])
-			continue
-		}
-		if len(names) == 2 {
-			if typ, ok := obj.Type().(interface{ TypeParams() *TypeParamList }); ok {
-				obj = lookupTypeParamObj(typ.TypeParams(), names[1])
-				if obj == nil {
-					t.Errorf("%s: %s not found", test.src, test.obj)
-					continue
-				}
-			} else {
-				t.Errorf("%s: %s has no type parameters", test.src, names[0])
-				continue
+	for i, test := range testObjects {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			if test.alias {
+				t.Setenv("GODEBUG", "gotypesalias=1")
 			}
-		}
 
-		if got := obj.String(); got != test.want {
-			t.Errorf("%s: got %s, want %s", test.src, got, test.want)
-		}
+			src := "package p; " + test.src
+			pkg, err := typecheck(src, nil, nil)
+			if err != nil {
+				t.Fatalf("%s: %s", src, err)
+			}
+
+			names := strings.Split(test.obj, ".")
+			if len(names) != 1 && len(names) != 2 {
+				t.Fatalf("%s: invalid object path %s", test.src, test.obj)
+			}
+
+			var obj Object
+			for s := pkg.Scope(); s != nil && obj == nil; s = s.Parent() {
+				obj = s.Lookup(names[0])
+			}
+			if obj == nil {
+				t.Fatalf("%s: %s not found", test.src, names[0])
+			}
+
+			if len(names) == 2 {
+				if typ, ok := obj.Type().(interface{ TypeParams() *TypeParamList }); ok {
+					obj = lookupTypeParamObj(typ.TypeParams(), names[1])
+					if obj == nil {
+						t.Fatalf("%s: %s not found", test.src, test.obj)
+					}
+				} else {
+					t.Fatalf("%s: %s has no type parameters", test.src, names[0])
+				}
+			}
+
+			if got := obj.String(); got != test.want {
+				t.Errorf("%s: got %s, want %s", test.src, got, test.want)
+			}
+		})
 	}
 }
 

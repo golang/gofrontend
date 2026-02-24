@@ -6,12 +6,15 @@
 
 package runtime
 
+import "unsafe"
+
 func sbrk0() uintptr
 
-func gettid() _pid_t {
-	return _pid_t(syscall(_SYS_gettid, 0, 0, 0, 0, 0, 0))
-}
-
-func tgkill(pid _pid_t, tid _pid_t, sig uint32) uint32 {
-	return uint32(syscall(_SYS_tgkill, uintptr(pid), uintptr(tid), uintptr(sig), 0, 0, 0))
-}
+// Called from write_err_android.go only, but defined in sys_linux_*.s;
+// declared here (instead of in write_err_android.go) for go vet on non-android builds.
+// The return value is the raw syscall result, which may encode an error number.
+//
+//go:noescape
+func access(name *byte, mode int32) int32
+func connect(fd int32, addr unsafe.Pointer, len int32) int32
+func socket(domain int32, typ int32, prot int32) int32

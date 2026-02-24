@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build aix || darwin || dragonfly || freebsd || hurd || linux || netbsd || openbsd || solaris
+//go:build unix
 
 // Fork, exec, wait, etc.
 
@@ -16,64 +16,8 @@ import (
 	"unsafe"
 )
 
-//sysnb	raw_fork() (pid Pid_t, err Errno)
-//fork() Pid_t
-
-//sysnb	raw_getpid() (pid Pid_t)
-//getpid() Pid_t
-
-//sysnb	raw_getppid() (pid Pid_t)
-//getppid() Pid_t
-
-//sysnb raw_setsid() (err Errno)
-//setsid() Pid_t
-
-//sysnb raw_setpgid(pid int, pgid int) (err Errno)
-//setpgid(pid Pid_t, pgid Pid_t) _C_int
-
-//sysnb	raw_chroot(path *byte) (err Errno)
-//chroot(path *byte) _C_int
-
-//sysnb	raw_chdir(path *byte) (err Errno)
-//chdir(path *byte) _C_int
-
-//sysnb	raw_fcntl(fd int, cmd int, arg int) (val int, err Errno)
-//__go_fcntl(fd _C_int, cmd _C_int, arg _C_int) _C_int
-
-//sysnb	raw_close(fd int) (err Errno)
-//close(fd _C_int) _C_int
-
-//sysnb	raw_ioctl(fd int, cmd uintptr, val int) (rval int, err Errno)
-//__go_ioctl(fd _C_int, cmd _C_int, val _C_int) _C_int
-
-//sysnb raw_ioctl_ptr(fd int, cmd uintptr, val unsafe.Pointer) (rval int, err Errno)
-//__go_ioctl_ptr(fd _C_int, cmd _C_int, val unsafe.Pointer) _C_int
-
-//sysnb	raw_execve(argv0 *byte, argv **byte, envv **byte) (err Errno)
-//execve(argv0 *byte, argv **byte, envv **byte) _C_int
-
-//sysnb raw_read(fd int, buf *byte, count int) (c int, err Errno)
-//read(fd _C_int, buf *byte, count Size_t) Ssize_t
-
-//sysnb	raw_write(fd int, buf *byte, count int) (c int, err Errno)
-//write(fd _C_int, buf *byte, count Size_t) Ssize_t
-
-//sysnb	raw_exit(status int)
-//_exit(status _C_int)
-
-//sysnb raw_dup2(oldfd int, newfd int) (err Errno)
-//dup2(oldfd _C_int, newfd _C_int) _C_int
-
-//sysnb raw_dup3(oldfd int, newfd int, flags int) (err Errno)
-//dup3(oldfd _C_int, newfd _C_int, flags _C_int) _C_int
-
-//sysnb raw_kill(pid Pid_t, sig Signal) (err Errno)
-//kill(pid Pid_t, sig _C_int) _C_int
-
-//sysnb raw_setgroups(size int, list unsafe.Pointer) (err Errno)
-//setgroups(size Size_t, list *Gid_t) _C_int
-
-// Lock synchronizing creation of new file descriptors with fork.
+// ForkLock is used to synchronize creation of new file descriptors
+// with fork.
 //
 // We want the child in a fork/exec sequence to inherit only the
 // file descriptors we intend. To do that, we mark all file
@@ -110,23 +54,21 @@ import (
 // The rules for which file descriptor-creating operations use the
 // ForkLock are as follows:
 //
-// 1) Pipe. Does not block. Use the ForkLock.
-// 2) Socket. Does not block. Use the ForkLock.
-// 3) Accept. If using non-blocking mode, use the ForkLock.
-//             Otherwise, live with the race.
-// 4) Open. Can block. Use O_CLOEXEC if available (GNU/Linux).
-//             Otherwise, live with the race.
-// 5) Dup. Does not block. Use the ForkLock.
-//             On GNU/Linux, could use fcntl F_DUPFD_CLOEXEC
-//             instead of the ForkLock, but only for dup(fd, -1).
-
+//   - [Pipe]. Use pipe2 if available. Otherwise, does not block,
+//     so use ForkLock.
+//   - [Socket]. Use SOCK_CLOEXEC if available. Otherwise, does not
+//     block, so use ForkLock.
+//   - [Open]. Use [O_CLOEXEC] if available. Otherwise, may block,
+//     so live with the race.
+//   - [Dup]. Use [F_DUPFD_CLOEXEC] or dup3 if available. Otherwise,
+//     does not block, so use ForkLock.
 var ForkLock sync.RWMutex
 
 // StringSlicePtr converts a slice of strings to a slice of pointers
 // to NUL-terminated byte arrays. If any string contains a NUL byte
 // this function panics instead of returning an error.
 //
-// Deprecated: Use SlicePtrFromStrings instead.
+// Deprecated: Use [SlicePtrFromStrings] instead.
 func StringSlicePtr(ss []string) []*byte {
 	bb := make([]*byte, len(ss)+1)
 	for i := 0; i < len(ss); i++ {
@@ -138,7 +80,7 @@ func StringSlicePtr(ss []string) []*byte {
 
 // SlicePtrFromStrings converts a slice of strings to a slice of
 // pointers to NUL-terminated byte arrays. If any string contains
-// a NUL byte, it returns (nil, EINVAL).
+// a NUL byte, it returns (nil, [EINVAL]).
 func SlicePtrFromStrings(ss []string) ([]*byte, error) {
 	n := 0
 	for _, s := range ss {
@@ -165,6 +107,9 @@ func SetNonblock(fd int, nonblocking bool) (err error) {
 	if err != nil {
 		return err
 	}
+	if (flag&O_NONBLOCK != 0) == nonblocking {
+		return nil
+	}
 	if nonblocking {
 		flag |= O_NONBLOCK
 	} else {
@@ -175,7 +120,7 @@ func SetNonblock(fd int, nonblocking bool) (err error) {
 }
 
 // Credential holds user and group identities to be assumed
-// by a child process started by StartProcess.
+// by a child process started by [StartProcess].
 type Credential struct {
 	Uid         uint32   // User ID.
 	Gid         uint32   // Group ID.
@@ -184,7 +129,7 @@ type Credential struct {
 }
 
 // ProcAttr holds attributes that will be applied to a new process started
-// by StartProcess.
+// by [StartProcess].
 type ProcAttr struct {
 	Dir   string    // Current working directory.
 	Env   []string  // Environment.
@@ -223,7 +168,7 @@ func forkExec(argv0 string, argv []string, attr *ProcAttr) (pid int, err error) 
 		return 0, err
 	}
 
-	if (runtime.GOOS == "freebsd" || runtime.GOOS == "dragonfly") && len(argv[0]) > len(argv0) {
+	if (runtime.GOOS == "freebsd" || runtime.GOOS == "dragonfly") && len(argv) > 0 && len(argv[0]) > len(argv0) {
 		argvp[0] = argv0p
 	}
 
@@ -251,14 +196,11 @@ func forkExec(argv0 string, argv []string, attr *ProcAttr) (pid int, err error) 
 		return 0, errorspkg.New("Setctty set but Ctty not valid in child")
 	}
 
-	// Acquire the fork lock so that no other threads
-	// create new fds that are not yet close-on-exec
-	// before we fork.
-	ForkLock.Lock()
+	acquireForkLock()
 
 	// Allocate child status pipe close on exec.
 	if err = forkExecPipe(p[:]); err != nil {
-		ForkLock.Unlock()
+		releaseForkLock()
 		return 0, err
 	}
 
@@ -267,10 +209,10 @@ func forkExec(argv0 string, argv []string, attr *ProcAttr) (pid int, err error) 
 	if err1 != 0 {
 		Close(p[0])
 		Close(p[1])
-		ForkLock.Unlock()
+		releaseForkLock()
 		return 0, Errno(err1)
 	}
-	ForkLock.Unlock()
+	releaseForkLock()
 
 	// Read child error status from pipe.
 	Close(p[1])
@@ -295,6 +237,10 @@ func forkExec(argv0 string, argv []string, attr *ProcAttr) (pid int, err error) 
 		for err1 == EINTR {
 			_, err1 = Wait4(pid, &wstatus, 0, nil)
 		}
+
+		// OS-specific cleanup on failure.
+		forkAndExecFailureCleanup(attr, sys)
+
 		return 0, err
 	}
 
@@ -307,7 +253,7 @@ func ForkExec(argv0 string, argv []string, attr *ProcAttr) (pid int, err error) 
 	return forkExec(argv0, argv, attr)
 }
 
-// StartProcess wraps ForkExec for package os.
+// StartProcess wraps [ForkExec] for package os.
 func StartProcess(argv0 string, argv []string, attr *ProcAttr) (pid int, handle uintptr, err error) {
 	pid, err = forkExec(argv0, argv, attr)
 	return pid, 0, err
@@ -319,8 +265,7 @@ func runtime_AfterExec()
 
 // execveLibc is non-nil on OS using libc syscall, set to execve in exec_libc.go; this
 // avoids a build dependency for other platforms.
-var execveDarwin func(path *byte, argv **byte, envp **byte) error
-var execveOpenBSD func(path *byte, argv **byte, envp **byte) error
+var execveLibc func(path *byte, argv **byte, envp **byte) error
 
 // Exec invokes the execve(2) system call.
 func Exec(argv0 string, argv []string, envv []string) (err error) {
@@ -338,17 +283,18 @@ func Exec(argv0 string, argv []string, envv []string) (err error) {
 	}
 	runtime_BeforeExec()
 
+	rlim := origRlimitNofile.Load()
+	if rlim != nil {
+		Setrlimit(RLIMIT_NOFILE, rlim)
+	}
+
 	var err1 error
-	if runtime.GOOS == "solaris" || runtime.GOOS == "illumos" || runtime.GOOS == "aix" || runtime.GOOS == "hurd" {
-		// RawSyscall should never be used on Solaris, illumos, or AIX.
-		err1 = raw_execve(argv0p, &argvp[0], &envvp[0])
-	} else if runtime.GOOS == "darwin" || runtime.GOOS == "ios" {
-		// Similarly on Darwin.
-		err1 = execveDarwin(argv0p, &argvp[0], &envvp[0])
-	} else if runtime.GOOS == "openbsd" && (runtime.GOARCH == "386" || runtime.GOARCH == "amd64" || runtime.GOARCH == "arm" || runtime.GOARCH == "arm64") {
-		// Similarly on OpenBSD.
-		err1 = execveOpenBSD(argv0p, &argvp[0], &envvp[0])
-	} else {
+	switch runtime.GOOS {
+	case "aix", "darwin", "illumos", "ios", "openbsd", "solaris":
+		// RawSyscall should never be used on these platforms.
+		err1 = execveLibc(argv0p, &argvp[0], &envvp[0])
+
+	default:
 		_, _, err1 = RawSyscall(SYS_EXECVE,
 			uintptr(unsafe.Pointer(argv0p)),
 			uintptr(unsafe.Pointer(&argvp[0])),

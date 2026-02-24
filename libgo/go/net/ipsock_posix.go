@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build aix || darwin || dragonfly || freebsd || hurd || (js && wasm) || linux || netbsd || openbsd || solaris || windows
+//go:build unix || js || wasip1 || windows
 
 package net
 
@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"runtime"
 	"syscall"
+	_ "unsafe" // for linkname
 )
 
 // probe probes IPv4, IPv6 and IPv4-mapped IPv6 communication
@@ -25,6 +26,15 @@ import (
 // general. Unfortunately, we need to run on kernels built without
 // IPv6 support too. So probe the kernel to figure it out.
 func (p *ipStackCapabilities) probe() {
+	switch runtime.GOOS {
+	case "js", "wasip1":
+		// Both ipv4 and ipv6 are faked; see net_fake.go.
+		p.ipv4Enabled = true
+		p.ipv6Enabled = true
+		p.ipv4MappedIPv6Enabled = true
+		return
+	}
+
 	s, err := sysSocket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
 	switch err {
 	case syscall.EAFNOSUPPORT, syscall.EPROTONOSUPPORT:
@@ -78,29 +88,29 @@ func (p *ipStackCapabilities) probe() {
 // address family, both AF_INET and AF_INET6, and a wildcard address
 // like the following:
 //
-//	- A listen for a wildcard communication domain, "tcp" or
-//	  "udp", with a wildcard address: If the platform supports
-//	  both IPv6 and IPv4-mapped IPv6 communication capabilities,
-//	  or does not support IPv4, we use a dual stack, AF_INET6 and
-//	  IPV6_V6ONLY=0, wildcard address listen. The dual stack
-//	  wildcard address listen may fall back to an IPv6-only,
-//	  AF_INET6 and IPV6_V6ONLY=1, wildcard address listen.
-//	  Otherwise we prefer an IPv4-only, AF_INET, wildcard address
-//	  listen.
+//   - A listen for a wildcard communication domain, "tcp" or
+//     "udp", with a wildcard address: If the platform supports
+//     both IPv6 and IPv4-mapped IPv6 communication capabilities,
+//     or does not support IPv4, we use a dual stack, AF_INET6 and
+//     IPV6_V6ONLY=0, wildcard address listen. The dual stack
+//     wildcard address listen may fall back to an IPv6-only,
+//     AF_INET6 and IPV6_V6ONLY=1, wildcard address listen.
+//     Otherwise we prefer an IPv4-only, AF_INET, wildcard address
+//     listen.
 //
-//	- A listen for a wildcard communication domain, "tcp" or
-//	  "udp", with an IPv4 wildcard address: same as above.
+//   - A listen for a wildcard communication domain, "tcp" or
+//     "udp", with an IPv4 wildcard address: same as above.
 //
-//	- A listen for a wildcard communication domain, "tcp" or
-//	  "udp", with an IPv6 wildcard address: same as above.
+//   - A listen for a wildcard communication domain, "tcp" or
+//     "udp", with an IPv6 wildcard address: same as above.
 //
-//	- A listen for an IPv4 communication domain, "tcp4" or "udp4",
-//	  with an IPv4 wildcard address: We use an IPv4-only, AF_INET,
-//	  wildcard address listen.
+//   - A listen for an IPv4 communication domain, "tcp4" or "udp4",
+//     with an IPv4 wildcard address: We use an IPv4-only, AF_INET,
+//     wildcard address listen.
 //
-//	- A listen for an IPv6 communication domain, "tcp6" or "udp6",
-//	  with an IPv6 wildcard address: We use an IPv6-only, AF_INET6
-//	  and IPV6_V6ONLY=1, wildcard address listen.
+//   - A listen for an IPv6 communication domain, "tcp6" or "udp6",
+//     with an IPv6 wildcard address: We use an IPv6-only, AF_INET6
+//     and IPV6_V6ONLY=1, wildcard address listen.
 //
 // Otherwise guess: If the addresses are IPv4 then returns AF_INET,
 // or else returns AF_INET6. It also returns a boolean value what
@@ -109,6 +119,18 @@ func (p *ipStackCapabilities) probe() {
 // Note that the latest DragonFly BSD and OpenBSD kernels allow
 // neither "net.inet6.ip6.v6only=1" change nor IPPROTO_IPV6 level
 // IPV6_V6ONLY socket option setting.
+//
+// favoriteAddrFamily should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/database64128/tfo-go/v2
+//   - github.com/metacubex/tfo-go
+//   - github.com/sagernet/tfo-go
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname favoriteAddrFamily
 func favoriteAddrFamily(network string, laddr, raddr sockaddr, mode string) (family int, ipv6only bool) {
 	switch network[len(network)-1] {
 	case '4':
@@ -134,12 +156,15 @@ func favoriteAddrFamily(network string, laddr, raddr sockaddr, mode string) (fam
 	return syscall.AF_INET6, false
 }
 
-func internetSocket(ctx context.Context, net string, laddr, raddr sockaddr, sotype, proto int, mode string, ctrlFn func(string, string, syscall.RawConn) error) (fd *netFD, err error) {
-	if (runtime.GOOS == "aix" || runtime.GOOS == "windows" || runtime.GOOS == "openbsd") && mode == "dial" && raddr.isWildcard() {
-		raddr = raddr.toLocal(net)
+func internetSocket(ctx context.Context, net string, laddr, raddr sockaddr, sotype, proto int, mode string, ctrlCtxFn func(context.Context, string, string, syscall.RawConn) error) (fd *netFD, err error) {
+	switch runtime.GOOS {
+	case "aix", "windows", "openbsd", "js", "wasip1":
+		if mode == "dial" && raddr.isWildcard() {
+			raddr = raddr.toLocal(net)
+		}
 	}
 	family, ipv6only := favoriteAddrFamily(net, laddr, raddr, mode)
-	return socket(ctx, net, family, sotype, proto, ipv6only, laddr, raddr, ctrlFn)
+	return socket(ctx, net, family, sotype, proto, ipv6only, laddr, raddr, ctrlCtxFn)
 }
 
 func ipToSockaddrInet4(ip IP, port int) (syscall.SockaddrInet4, error) {
@@ -180,6 +205,17 @@ func ipToSockaddrInet6(ip IP, port int, zone string) (syscall.SockaddrInet6, err
 	return sa, nil
 }
 
+// ipToSockaddr should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/database64128/tfo-go/v2
+//   - github.com/metacubex/tfo-go
+//   - github.com/sagernet/tfo-go
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname ipToSockaddr
 func ipToSockaddr(family int, ip IP, port int, zone string) (syscall.Sockaddr, error) {
 	switch family {
 	case syscall.AF_INET:
@@ -201,8 +237,12 @@ func ipToSockaddr(family int, ip IP, port int, zone string) (syscall.Sockaddr, e
 func addrPortToSockaddrInet4(ap netip.AddrPort) (syscall.SockaddrInet4, error) {
 	// ipToSockaddrInet4 has special handling here for zero length slices.
 	// We do not, because netip has no concept of a generic zero IP address.
+	//
+	// addr is allowed to be an IPv4-mapped IPv6 address.
+	// As4 will unmap it to an IPv4 address.
+	// The error message is kept consistent with ipToSockaddrInet4.
 	addr := ap.Addr()
-	if !addr.Is4() {
+	if !addr.Is4() && !addr.Is4In6() {
 		return syscall.SockaddrInet4{}, &AddrError{Err: "non-IPv4 address", Addr: addr.String()}
 	}
 	sa := syscall.SockaddrInet4{
@@ -215,10 +255,11 @@ func addrPortToSockaddrInet4(ap netip.AddrPort) (syscall.SockaddrInet4, error) {
 func addrPortToSockaddrInet6(ap netip.AddrPort) (syscall.SockaddrInet6, error) {
 	// ipToSockaddrInet6 has special handling here for zero length slices.
 	// We do not, because netip has no concept of a generic zero IP address.
+	//
+	// addr is allowed to be an IPv4 address, because As16 will convert it
+	// to an IPv4-mapped IPv6 address.
+	// The error message is kept consistent with ipToSockaddrInet6.
 	addr := ap.Addr()
-	if !addr.Is6() {
-		return syscall.SockaddrInet6{}, &AddrError{Err: "non-IPv6 address", Addr: addr.String()}
-	}
 	sa := syscall.SockaddrInet6{
 		Addr:   addr.As16(),
 		Port:   int(ap.Port()),

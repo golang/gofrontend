@@ -5,53 +5,31 @@
 package runtime
 
 import (
+	"internal/abi"
+	"internal/byteorder"
 	"internal/cpu"
 	"internal/goarch"
+	"internal/runtime/sys"
 	"unsafe"
 )
 
-// For gccgo, use go:linkname to export compiler-called functions.
-//
-//go:linkname memhash0
-//go:linkname memhash8
-//go:linkname memhash16
-//go:linkname memhash32
-//go:linkname memhash64
-//go:linkname memhash128
-//go:linkname strhash
-//go:linkname f32hash
-//go:linkname f64hash
-//go:linkname c64hash
-//go:linkname c128hash
-//go:linkname interhash
-//go:linkname nilinterhash
-//go:linkname memequal0
-//go:linkname memequal8
-//go:linkname memequal16
-//go:linkname memequal32
-//go:linkname memequal64
-//go:linkname memequal128
-//go:linkname strequal
-//go:linkname f32equal
-//go:linkname f64equal
-//go:linkname c64equal
-//go:linkname c128equal
-//go:linkname interequal
-//go:linkname nilinterequal
-//go:linkname efaceeq
-//go:linkname ifaceeq
-//go:linkname ifacevaleq
-//go:linkname ifaceefaceeq
-//go:linkname efacevaleq
-//go:linkname cmpstring
-//
-// Temporary to be called from C code.
-//go:linkname alginit
-
 const (
-	c0 = uintptr((8-goarch.PtrSize)/4*2860486313 + (goarch.PtrSize-4)/4*33054211828000289)
-	c1 = uintptr((8-goarch.PtrSize)/4*3267000013 + (goarch.PtrSize-4)/4*23344194077549503)
+	// We use 32-bit hash on Wasm, see hash32.go.
+	hashSize = (1-goarch.IsWasm)*goarch.PtrSize + goarch.IsWasm*4
+	c0       = uintptr((8-hashSize)/4*2860486313 + (hashSize-4)/4*33054211828000289)
+	c1       = uintptr((8-hashSize)/4*3267000013 + (hashSize-4)/4*23344194077549503)
 )
+
+func trimHash(h uintptr) uintptr {
+	if goarch.IsWasm != 0 {
+		// On Wasm, we use 32-bit hash, despite that uintptr is 64-bit.
+		// memhash* always returns a uintptr with high 32-bit being 0
+		// (see hash32.go). We trim the hash in other places where we
+		// compute the hash manually, e.g. in interhash.
+		return uintptr(uint32(h))
+	}
+	return h
+}
 
 func memhash0(p unsafe.Pointer, h uintptr) uintptr {
 	return h
@@ -69,26 +47,61 @@ func memhash128(p unsafe.Pointer, h uintptr) uintptr {
 	return memhash(p, h, 16)
 }
 
+//go:nosplit
+func memhash_varlen(p unsafe.Pointer, h uintptr) uintptr {
+	ptr := sys.GetClosurePtr()
+	size := *(*uintptr)(unsafe.Pointer(ptr + unsafe.Sizeof(h)))
+	return memhash(p, h, size)
+}
+
 // runtime variable to check if the processor we're running on
 // actually supports the instructions used by the AES-based
 // hash implementation.
 var useAeshash bool
 
-// in C code
-func aeshashbody(p unsafe.Pointer, h, s uintptr, sched []byte) uintptr
+// in asm_*.s
 
-func aeshash(p unsafe.Pointer, h, s uintptr) uintptr {
-	return aeshashbody(p, h, s, aeskeysched[:])
-}
+// memhash should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/aacfactory/fns
+//   - github.com/dgraph-io/ristretto
+//   - github.com/minio/simdjson-go
+//   - github.com/nbd-wtf/go-nostr
+//   - github.com/outcaste-io/ristretto
+//   - github.com/puzpuzpuz/xsync/v2
+//   - github.com/puzpuzpuz/xsync/v3
+//   - github.com/authzed/spicedb
+//   - github.com/pingcap/badger
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname memhash
+func memhash(p unsafe.Pointer, h, s uintptr) uintptr
 
-func aeshashstr(p unsafe.Pointer, h uintptr) uintptr {
-	ps := (*stringStruct)(p)
-	return aeshashbody(unsafe.Pointer(ps.str), h, uintptr(ps.len), aeskeysched[:])
-}
+func memhash32(p unsafe.Pointer, h uintptr) uintptr
 
-func strhash(a unsafe.Pointer, h uintptr) uintptr {
+func memhash64(p unsafe.Pointer, h uintptr) uintptr
+
+// strhash should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/aristanetworks/goarista
+//   - github.com/bytedance/sonic
+//   - github.com/bytedance/go-tagexpr/v2
+//   - github.com/cloudwego/dynamicgo
+//   - github.com/v2fly/v2ray-core/v5
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname strhash
+func strhash(p unsafe.Pointer, h uintptr) uintptr
+
+func strhashFallback(a unsafe.Pointer, h uintptr) uintptr {
 	x := (*stringStruct)(a)
-	return memhash(x.str, h, uintptr(x.len))
+	return memhashFallback(x.str, h, uintptr(x.len))
 }
 
 // NOTE: Because NaN != NaN, a map can contain any
@@ -100,9 +113,9 @@ func f32hash(p unsafe.Pointer, h uintptr) uintptr {
 	f := *(*float32)(p)
 	switch {
 	case f == 0:
-		return c1 * (c0 ^ h) // +0, -0
+		return trimHash(c1 * (c0 ^ h)) // +0, -0
 	case f != f:
-		return c1 * (c0 ^ h ^ uintptr(fastrand())) // any kind of NaN
+		return trimHash(c1 * (c0 ^ h ^ uintptr(rand()))) // any kind of NaN
 	default:
 		return memhash(p, h, 4)
 	}
@@ -112,9 +125,9 @@ func f64hash(p unsafe.Pointer, h uintptr) uintptr {
 	f := *(*float64)(p)
 	switch {
 	case f == 0:
-		return c1 * (c0 ^ h) // +0, -0
+		return trimHash(c1 * (c0 ^ h)) // +0, -0
 	case f != f:
-		return c1 * (c0 ^ h ^ uintptr(fastrand())) // any kind of NaN
+		return trimHash(c1 * (c0 ^ h ^ uintptr(rand()))) // any kind of NaN
 	default:
 		return memhash(p, h, 8)
 	}
@@ -136,35 +149,45 @@ func interhash(p unsafe.Pointer, h uintptr) uintptr {
 	if tab == nil {
 		return h
 	}
-	t := *(**_type)(tab)
-	if t.equal == nil {
+	t := tab.Type
+	if t.Equal == nil {
 		// Check hashability here. We could do this check inside
 		// typehash, but we want to report the topmost type in
 		// the error text (e.g. in a struct with a field of slice type
 		// we want to report the struct, not the slice).
-		panic(errorString("hash of unhashable type " + t.string()))
+		panic(errorString("hash of unhashable type " + toRType(t).string()))
 	}
-	if isDirectIface(t) {
-		return c1 * typehash(t, unsafe.Pointer(&a.data), h^c0)
+	if t.IsDirectIface() {
+		return trimHash(c1 * typehash(t, unsafe.Pointer(&a.data), h^c0))
 	} else {
-		return c1 * typehash(t, a.data, h^c0)
+		return trimHash(c1 * typehash(t, a.data, h^c0))
 	}
 }
 
+// nilinterhash should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/anacrolix/stm
+//   - github.com/aristanetworks/goarista
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname nilinterhash
 func nilinterhash(p unsafe.Pointer, h uintptr) uintptr {
 	a := (*eface)(p)
 	t := a._type
 	if t == nil {
 		return h
 	}
-	if t.equal == nil {
+	if t.Equal == nil {
 		// See comment in interhash above.
-		panic(errorString("hash of unhashable type " + t.string()))
+		panic(errorString("hash of unhashable type " + toRType(t).string()))
 	}
-	if isDirectIface(t) {
-		return c1 * typehash(t, unsafe.Pointer(&a.data), h^c0)
+	if t.IsDirectIface() {
+		return trimHash(c1 * typehash(t, unsafe.Pointer(&a.data), h^c0))
 	} else {
-		return c1 * typehash(t, a.data, h^c0)
+		return trimHash(c1 * typehash(t, a.data, h^c0))
 	}
 }
 
@@ -178,54 +201,65 @@ func nilinterhash(p unsafe.Pointer, h uintptr) uintptr {
 // maps generated by reflect.MapOf (reflect_typehash, below).
 // Note: this function must match the compiler generated
 // functions exactly. See issue 37716.
+//
+// typehash should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/puzpuzpuz/xsync/v2
+//   - github.com/puzpuzpuz/xsync/v3
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname typehash
 func typehash(t *_type, p unsafe.Pointer, h uintptr) uintptr {
-	if t.tflag&tflagRegularMemory != 0 {
+	if t.TFlag&abi.TFlagRegularMemory != 0 {
 		// Handle ptr sizes specially, see issue 37086.
-		switch t.size {
+		switch t.Size_ {
 		case 4:
 			return memhash32(p, h)
 		case 8:
 			return memhash64(p, h)
 		default:
-			return memhash(p, h, t.size)
+			return memhash(p, h, t.Size_)
 		}
 	}
-	switch t.kind & kindMask {
-	case kindFloat32:
+	switch t.Kind() {
+	case abi.Float32:
 		return f32hash(p, h)
-	case kindFloat64:
+	case abi.Float64:
 		return f64hash(p, h)
-	case kindComplex64:
+	case abi.Complex64:
 		return c64hash(p, h)
-	case kindComplex128:
+	case abi.Complex128:
 		return c128hash(p, h)
-	case kindString:
+	case abi.String:
 		return strhash(p, h)
-	case kindInterface:
+	case abi.Interface:
 		i := (*interfacetype)(unsafe.Pointer(t))
-		if len(i.methods) == 0 {
+		if len(i.Methods) == 0 {
 			return nilinterhash(p, h)
 		}
 		return interhash(p, h)
-	case kindArray:
+	case abi.Array:
 		a := (*arraytype)(unsafe.Pointer(t))
-		for i := uintptr(0); i < a.len; i++ {
-			h = typehash(a.elem, add(p, i*a.elem.size), h)
+		for i := uintptr(0); i < a.Len; i++ {
+			h = typehash(a.Elem, add(p, i*a.Elem.Size_), h)
 		}
 		return h
-	case kindStruct:
+	case abi.Struct:
 		s := (*structtype)(unsafe.Pointer(t))
-		for _, f := range s.fields {
-			if f.name != nil && *f.name == "_" {
+		for _, f := range s.Fields {
+			if f.Name.IsBlank() {
 				continue
 			}
-			h = typehash(f.typ, add(p, f.offset()), h)
+			h = typehash(f.Typ, add(p, f.Offset), h)
 		}
 		return h
 	default:
 		// Should never happen, as typehash should only be called
 		// with comparable types.
-		panic(errorString("hash of unhashable type " + t.string()))
+		panic(errorString("hash of unhashable type " + toRType(t).string()))
 	}
 }
 
@@ -268,173 +302,58 @@ func strequal(p, q unsafe.Pointer) bool {
 	return *(*string)(p) == *(*string)(q)
 }
 func interequal(p, q unsafe.Pointer) bool {
-	return ifaceeq(*(*iface)(p), *(*iface)(q))
+	x := *(*iface)(p)
+	y := *(*iface)(q)
+	return x.tab == y.tab && ifaceeq(x.tab, x.data, y.data)
 }
 func nilinterequal(p, q unsafe.Pointer) bool {
-	return efaceeq(*(*eface)(p), *(*eface)(q))
+	x := *(*eface)(p)
+	y := *(*eface)(q)
+	return x._type == y._type && efaceeq(x._type, x.data, y.data)
 }
-func efaceeq(x, y eface) bool {
-	t := x._type
-	if !eqtype(t, y._type) {
-		return false
-	}
+func efaceeq(t *_type, x, y unsafe.Pointer) bool {
 	if t == nil {
 		return true
 	}
-	eq := t.equal
+	eq := t.Equal
 	if eq == nil {
-		panic(errorString("comparing uncomparable type " + t.string()))
+		panic(errorString("comparing uncomparable type " + toRType(t).string()))
 	}
-	if isDirectIface(t) {
-		return x.data == y.data
-	}
-	return eq(x.data, y.data)
-}
-
-func ifaceeq(x, y iface) bool {
-	xtab := x.tab
-	if xtab == nil && y.tab == nil {
-		return true
-	}
-	if xtab == nil || y.tab == nil {
-		return false
-	}
-	t := *(**_type)(xtab)
-	if !eqtype(t, *(**_type)(y.tab)) {
-		return false
-	}
-	eq := t.equal
-	if eq == nil {
-		panic(errorString("comparing uncomparable type " + t.string()))
-	}
-	if isDirectIface(t) {
+	if t.IsDirectIface() {
 		// Direct interface types are ptr, chan, map, func, and single-element structs/arrays thereof.
 		// Maps and funcs are not comparable, so they can't reach here.
 		// Ptrs, chans, and single-element items can be compared directly using ==.
-		return x.data == y.data
+		return x == y
 	}
-	return eq(x.data, y.data)
+	return eq(x, y)
 }
-
-func ifacevaleq(x iface, t *_type, p unsafe.Pointer) bool {
-	if x.tab == nil {
-		return false
-	}
-	xt := *(**_type)(x.tab)
-	if !eqtype(xt, t) {
-		return false
-	}
-	eq := t.equal
-	if eq == nil {
-		panic(errorString("comparing uncomparable type " + t.string()))
-	}
-	if isDirectIface(t) {
-		return x.data == p
-	}
-	return eq(x.data, p)
-}
-
-func ifaceefaceeq(x iface, y eface) bool {
-	if x.tab == nil && y._type == nil {
+func ifaceeq(tab *itab, x, y unsafe.Pointer) bool {
+	if tab == nil {
 		return true
 	}
-	if x.tab == nil || y._type == nil {
-		return false
-	}
-	xt := *(**_type)(x.tab)
-	if !eqtype(xt, y._type) {
-		return false
-	}
-	eq := xt.equal
+	t := tab.Type
+	eq := t.Equal
 	if eq == nil {
-		panic(errorString("comparing uncomparable type " + xt.string()))
+		panic(errorString("comparing uncomparable type " + toRType(t).string()))
 	}
-	if isDirectIface(xt) {
-		return x.data == y.data
-	}
-	return eq(x.data, y.data)
-}
-
-func efacevaleq(x eface, t *_type, p unsafe.Pointer) bool {
-	if x._type == nil {
-		return false
-	}
-	if !eqtype(x._type, t) {
-		return false
-	}
-	eq := t.equal
-	if eq == nil {
-		panic(errorString("comparing uncomparable type " + t.string()))
-	}
-	if isDirectIface(t) {
+	if t.IsDirectIface() {
 		// See comment in efaceeq.
-		return x.data == p
+		return x == y
 	}
-	return eq(x.data, p)
+	return eq(x, y)
 }
-
-func cmpstring(x, y string) int {
-	a := stringStructOf(&x)
-	b := stringStructOf(&y)
-	l := a.len
-	if l > b.len {
-		l = b.len
-	}
-	i := memcmp(unsafe.Pointer(a.str), unsafe.Pointer(b.str), uintptr(l))
-	if i != 0 {
-		return int(i)
-	}
-	if a.len < b.len {
-		return -1
-	} else if a.len > b.len {
-		return 1
-	}
-	return 0
-}
-
-// For the unsafe.Pointer type descriptor in libgo/runtime/go-unsafe-pointer.c.
-
-func pointerhash(p unsafe.Pointer, h uintptr) uintptr {
-	return memhash(p, h, unsafe.Sizeof(unsafe.Pointer))
-}
-
-func pointerequal(p, q unsafe.Pointer) bool {
-	return *(*unsafe.Pointer)(p) == *(*unsafe.Pointer)(q)
-}
-
-// Force the creation of function descriptors for equality and hash
-// functions.  These will be referenced directly by the compiler.
-var _ = memhash
-var _ = memhash0
-var _ = memhash8
-var _ = memhash16
-var _ = memhash32
-var _ = memhash64
-var _ = memhash128
-var _ = strhash
-var _ = f32hash
-var _ = f64hash
-var _ = c64hash
-var _ = c128hash
-var _ = interhash
-var _ = nilinterhash
-var _ = memequal0
-var _ = memequal8
-var _ = memequal16
-var _ = memequal32
-var _ = memequal64
-var _ = memequal128
-var _ = f32equal
-var _ = f64equal
-var _ = c64equal
-var _ = c128equal
-var _ = strequal
-var _ = interequal
-var _ = nilinterequal
-var _ = pointerhash
-var _ = pointerequal
 
 // Testing adapters for hash quality tests (see hash_test.go)
+//
+// stringHash should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/k14s/starlark-go
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname stringHash
 func stringHash(s string, seed uintptr) uintptr {
 	return strhash(noescape(unsafe.Pointer(&s)), seed)
 }
@@ -473,7 +392,6 @@ var hashkey [4]uintptr
 func alginit() {
 	// Install AES hash algorithms if the instructions needed are present.
 	if (GOARCH == "386" || GOARCH == "amd64") &&
-		support_aes &&
 		cpu.X86.HasAES && // AESENC
 		cpu.X86.HasSSSE3 && // PSHUFB
 		cpu.X86.HasSSE41 { // PINSR{D,Q}
@@ -484,33 +402,33 @@ func alginit() {
 		initAlgAES()
 		return
 	}
-	getRandomData((*[len(hashkey) * goarch.PtrSize]byte)(unsafe.Pointer(&hashkey))[:])
-	hashkey[0] |= 1 // make sure these numbers are odd
-	hashkey[1] |= 1
-	hashkey[2] |= 1
-	hashkey[3] |= 1
+	for i := range hashkey {
+		hashkey[i] = uintptr(bootstrapRand())
+	}
 }
 
 func initAlgAES() {
 	useAeshash = true
 	// Initialize with random data so hash collisions will be hard to engineer.
-	getRandomData(aeskeysched[:])
+	key := (*[hashRandomBytes / 8]uint64)(unsafe.Pointer(&aeskeysched))
+	for i := range key {
+		key[i] = bootstrapRand()
+	}
 }
 
 // Note: These routines perform the read with a native endianness.
 func readUnaligned32(p unsafe.Pointer) uint32 {
 	q := (*[4]byte)(p)
 	if goarch.BigEndian {
-		return uint32(q[3]) | uint32(q[2])<<8 | uint32(q[1])<<16 | uint32(q[0])<<24
+		return byteorder.BEUint32(q[:])
 	}
-	return uint32(q[0]) | uint32(q[1])<<8 | uint32(q[2])<<16 | uint32(q[3])<<24
+	return byteorder.LEUint32(q[:])
 }
 
 func readUnaligned64(p unsafe.Pointer) uint64 {
 	q := (*[8]byte)(p)
 	if goarch.BigEndian {
-		return uint64(q[7]) | uint64(q[6])<<8 | uint64(q[5])<<16 | uint64(q[4])<<24 |
-			uint64(q[3])<<32 | uint64(q[2])<<40 | uint64(q[1])<<48 | uint64(q[0])<<56
+		return byteorder.BEUint64(q[:])
 	}
-	return uint64(q[0]) | uint64(q[1])<<8 | uint64(q[2])<<16 | uint64(q[3])<<24 | uint64(q[4])<<32 | uint64(q[5])<<40 | uint64(q[6])<<48 | uint64(q[7])<<56
+	return byteorder.LEUint64(q[:])
 }

@@ -14,7 +14,7 @@ stdout ^FAIL\tbadtest/badvar
 
 ! go test notest
 ! stdout ^ok
-stderr '^notest.hello.go:6:1: .*declaration' # Exercise issue #7108
+stderr '^notest.hello.go:6:1: syntax error: non-declaration statement outside function body' # Exercise issue #7108
 
 -- badtest/badexec/x_test.go --
 package badexec

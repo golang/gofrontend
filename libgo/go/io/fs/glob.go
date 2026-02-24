@@ -20,17 +20,27 @@ type GlobFS interface {
 
 // Glob returns the names of all files matching pattern or nil
 // if there is no matching file. The syntax of patterns is the same
-// as in path.Match. The pattern may describe hierarchical names such as
+// as in [path.Match]. The pattern may describe hierarchical names such as
 // usr/*/bin/ed.
 //
 // Glob ignores file system errors such as I/O errors reading directories.
-// The only possible returned error is path.ErrBadPattern, reporting that
+// The only possible returned error is [path.ErrBadPattern], reporting that
 // the pattern is malformed.
 //
-// If fs implements GlobFS, Glob calls fs.Glob.
-// Otherwise, Glob uses ReadDir to traverse the directory tree
+// If fs implements [GlobFS], Glob calls fs.Glob.
+// Otherwise, Glob uses [ReadDir] to traverse the directory tree
 // and look for matches for the pattern.
 func Glob(fsys FS, pattern string) (matches []string, err error) {
+	return globWithLimit(fsys, pattern, 0)
+}
+
+func globWithLimit(fsys FS, pattern string, depth int) (matches []string, err error) {
+	// This limit is added to prevent stack exhaustion issues. See
+	// CVE-2022-30630.
+	const pathSeparatorsLimit = 10000
+	if depth > pathSeparatorsLimit {
+		return nil, path.ErrBadPattern
+	}
 	if fsys, ok := fsys.(GlobFS); ok {
 		return fsys.Glob(pattern)
 	}
@@ -59,9 +69,9 @@ func Glob(fsys FS, pattern string) (matches []string, err error) {
 	}
 
 	var m []string
-	m, err = Glob(fsys, dir)
+	m, err = globWithLimit(fsys, dir, depth+1)
 	if err != nil {
-		return
+		return nil, err
 	}
 	for _, d := range m {
 		matches, err = glob(fsys, d, file, matches)

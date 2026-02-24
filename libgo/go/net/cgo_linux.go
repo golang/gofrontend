@@ -9,8 +9,7 @@ package net
 /*
 #include <netdb.h>
 */
-
-import "syscall"
+import "C"
 
 // NOTE(rsc): In theory there are approximately balanced
 // arguments for and against including AI_ADDRCONFIG
@@ -18,4 +17,4 @@ import "syscall"
 // and similarly for IPv6), but in practice setting it causes
 // getaddrinfo to return the wrong canonical name on Linux.
 // So definitely leave it out.
-const cgoAddrInfoFlags = syscall.AI_CANONNAME | syscall.AI_V4MAPPED | syscall.AI_ALL
+const cgoAddrInfoFlags = C.AI_CANONNAME | C.AI_V4MAPPED | C.AI_ALL

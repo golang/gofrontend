@@ -18,7 +18,7 @@ func TestReadGCStats(t *testing.T) {
 
 	var stats GCStats
 	var mstats runtime.MemStats
-	var min, max time.Duration
+	var minimum, maximum time.Duration
 
 	// First ReadGCStats will allocate, second should not,
 	// especially if we follow up with an explicit garbage collection.
@@ -52,11 +52,11 @@ func TestReadGCStats(t *testing.T) {
 			if dt != time.Duration(mstats.PauseNs[off]) {
 				t.Errorf("stats.Pause[%d] = %d, want %d", i, dt, mstats.PauseNs[off])
 			}
-			if max < dt {
-				max = dt
-			}
-			if min > dt || i == 0 {
-				min = dt
+			maximum = max(maximum, dt)
+			if i == 0 {
+				minimum = dt
+			} else {
+				minimum = min(minimum, dt)
 			}
 			off = (off + len(mstats.PauseNs) - 1) % len(mstats.PauseNs)
 		}
@@ -64,8 +64,8 @@ func TestReadGCStats(t *testing.T) {
 
 	q := stats.PauseQuantiles
 	nq := len(q)
-	if q[0] != min || q[nq-1] != max {
-		t.Errorf("stats.PauseQuantiles = [%d, ..., %d], want [%d, ..., %d]", q[0], q[nq-1], min, max)
+	if q[0] != minimum || q[nq-1] != maximum {
+		t.Errorf("stats.PauseQuantiles = [%d, ..., %d], want [%d, ..., %d]", q[0], q[nq-1], minimum, maximum)
 	}
 
 	for i := 0; i < nq-1; i++ {
@@ -91,10 +91,6 @@ func TestReadGCStats(t *testing.T) {
 var big []byte
 
 func TestFreeOSMemory(t *testing.T) {
-	if runtime.Compiler == "gccgo" {
-		t.Skip("conservative GC")
-	}
-
 	// Tests FreeOSMemory by making big susceptible to collection
 	// and checking that at least that much memory is returned to
 	// the OS after.
@@ -150,7 +146,7 @@ func TestFreeOSMemory(t *testing.T) {
 		return
 	}
 	if after.HeapReleased-before.HeapReleased < bigBytes-slack {
-		t.Fatalf("less than %d released: %d -> %d", bigBytes, before.HeapReleased, after.HeapReleased)
+		t.Fatalf("less than %d released: %d -> %d", bigBytes-slack, before.HeapReleased, after.HeapReleased)
 	}
 }
 
@@ -192,7 +188,7 @@ func TestSetGCPercent(t *testing.T) {
 		t.Errorf("NextGC = %d MB, want %d±%d MB", ms.NextGC>>20, want>>20, thresh>>20)
 	}
 	// Create some garbage, but not enough to trigger another GC.
-	for i := 0; float64(i) < 1.2*baseline; i += 1 << 10 {
+	for i := 0; i < int(1.2*baseline); i += 1 << 10 {
 		setGCPercentSink = make([]byte, 1<<10)
 	}
 	setGCPercentSink = nil

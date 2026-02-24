@@ -5,9 +5,6 @@
 // The C definitions for tracebackctxt.go. That file uses //export so
 // it can't put function definitions in the "C" import comment.
 
-//go:build !gccgo
-// +build !gccgo
-
 #include <stdlib.h>
 #include <stdint.h>
 
@@ -15,6 +12,7 @@
 extern void G1(void);
 extern void G2(void);
 extern void TracebackContextPreemptionGoFunction(int);
+extern void TracebackContextProfileGoFunction(void);
 
 void C1() {
 	G1();
@@ -103,4 +101,8 @@ void tcSymbolizer(void *parg) {
 
 void TracebackContextPreemptionCallGo(int i) {
 	TracebackContextPreemptionGoFunction(i);
+}
+
+void TracebackContextProfileCallGo(void) {
+	TracebackContextProfileGoFunction();
 }

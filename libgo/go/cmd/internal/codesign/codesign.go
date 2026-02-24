@@ -15,6 +15,8 @@ import (
 	"debug/macho"
 	"encoding/binary"
 	"io"
+
+	"cmd/internal/hash"
 )
 
 // Code signature layout.
@@ -190,7 +192,7 @@ func Size(codeSize int64, id string) int64 {
 	nhashes := (codeSize + pageSize - 1) / pageSize
 	idOff := int64(codeDirectorySize)
 	hashOff := idOff + int64(len(id)+1)
-	cdirSz := hashOff + nhashes*sha256.Size
+	cdirSz := hashOff + nhashes*hash.Size32
 	return int64(superBlobSize+blobSize) + cdirSz
 }
 
@@ -226,7 +228,7 @@ func Sign(out []byte, data io.Reader, id string, codeSize, textOff, textSize int
 		identOffset:  uint32(idOff),
 		nCodeSlots:   uint32(nhashes),
 		codeLimit:    uint32(codeSize),
-		hashSize:     sha256.Size,
+		hashSize:     hash.Size32,
 		hashType:     CS_HASHTYPE_SHA256,
 		pageSize:     uint8(pageSizeBits),
 		execSegBase:  uint64(textOff),
@@ -246,7 +248,6 @@ func Sign(out []byte, data io.Reader, id string, codeSize, textOff, textSize int
 
 	// emit hashes
 	var buf [pageSize]byte
-	h := sha256.New()
 	p := 0
 	for p < int(codeSize) {
 		n, err := io.ReadFull(data, buf[:])
@@ -260,9 +261,7 @@ func Sign(out []byte, data io.Reader, id string, codeSize, textOff, textSize int
 			n = int(codeSize) - p
 		}
 		p += n
-		h.Reset()
-		h.Write(buf[:n])
-		b := h.Sum(nil)
+		b := sha256.Sum256(buf[:n])
 		outp = puts(outp, b[:])
 	}
 }

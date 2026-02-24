@@ -8,7 +8,7 @@ stdout TestMsgExternal
 # In module mode, they cannot.
 env GO111MODULE=on
 ! go test -mod=vendor
-stderr 'undefined.*strings.Msg'
+stderr 'undefined: strings.Msg'
 
 -- vend/hello/go.mod --
 module vend/hello

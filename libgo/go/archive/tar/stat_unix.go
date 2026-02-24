@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build aix || hurd || linux || darwin || dragonfly || freebsd || openbsd || netbsd || solaris
+//go:build unix
 
 package tar
 
@@ -19,34 +19,34 @@ func init() {
 	sysStat = statUnix
 }
 
-// userMap and groupMap caches UID and GID lookups for performance reasons.
+// userMap and groupMap cache UID and GID lookups for performance reasons.
 // The downside is that renaming uname or gname by the OS never takes effect.
 var userMap, groupMap sync.Map // map[int]string
 
-func statUnix(fi fs.FileInfo, h *Header) error {
+func statUnix(fi fs.FileInfo, h *Header, doNameLookups bool) error {
 	sys, ok := fi.Sys().(*syscall.Stat_t)
 	if !ok {
 		return nil
 	}
 	h.Uid = int(sys.Uid)
 	h.Gid = int(sys.Gid)
-
-	// Best effort at populating Uname and Gname.
-	// The os/user functions may fail for any number of reasons
-	// (not implemented on that platform, cgo not enabled, etc).
-	if u, ok := userMap.Load(h.Uid); ok {
-		h.Uname = u.(string)
-	} else if u, err := user.LookupId(strconv.Itoa(h.Uid)); err == nil {
-		h.Uname = u.Username
-		userMap.Store(h.Uid, h.Uname)
+	if doNameLookups {
+		// Best effort at populating Uname and Gname.
+		// The os/user functions may fail for any number of reasons
+		// (not implemented on that platform, cgo not enabled, etc).
+		if u, ok := userMap.Load(h.Uid); ok {
+			h.Uname = u.(string)
+		} else if u, err := user.LookupId(strconv.Itoa(h.Uid)); err == nil {
+			h.Uname = u.Username
+			userMap.Store(h.Uid, h.Uname)
+		}
+		if g, ok := groupMap.Load(h.Gid); ok {
+			h.Gname = g.(string)
+		} else if g, err := user.LookupGroupId(strconv.Itoa(h.Gid)); err == nil {
+			h.Gname = g.Name
+			groupMap.Store(h.Gid, h.Gname)
+		}
 	}
-	if g, ok := groupMap.Load(h.Gid); ok {
-		h.Gname = g.(string)
-	} else if g, err := user.LookupGroupId(strconv.Itoa(h.Gid)); err == nil {
-		h.Gname = g.Name
-		groupMap.Store(h.Gid, h.Gname)
-	}
-
 	h.AccessTime = statAtime(sys)
 	h.ChangeTime = statCtime(sys)
 
@@ -56,13 +56,8 @@ func statUnix(fi fs.FileInfo, h *Header) error {
 		switch runtime.GOOS {
 		case "aix":
 			var major, minor uint32
-			if runtime.GOARCH == "ppc64" {
-				major = uint32((dev & 0x3fffffff00000000) >> 32)
-				minor = uint32((dev & 0x00000000ffffffff) >> 0)
-			} else {
-				major = uint32((dev >> 16) & 0xffff)
-				minor = uint32(dev & 0xffff)
-			}
+			major = uint32((dev & 0x3fffffff00000000) >> 32)
+			minor = uint32((dev & 0x00000000ffffffff) >> 0)
 			h.Devmajor, h.Devminor = int64(major), int64(minor)
 		case "linux":
 			// Copied from golang.org/x/sys/unix/dev_linux.go.

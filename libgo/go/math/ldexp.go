@@ -4,25 +4,19 @@
 
 package math
 
-// Ldexp is the inverse of Frexp.
+// Ldexp is the inverse of [Frexp].
 // It returns frac × 2**exp.
 //
 // Special cases are:
+//
 //	Ldexp(±0, exp) = ±0
 //	Ldexp(±Inf, exp) = ±Inf
 //	Ldexp(NaN, exp) = NaN
-
-//extern ldexp
-func libc_ldexp(float64, int32) float64
-
 func Ldexp(frac float64, exp int) float64 {
-	if exp > MaxInt32 {
-		exp = MaxInt32
-	} else if exp < MinInt32 {
-		exp = MinInt32
+	if haveArchLdexp {
+		return archLdexp(frac, exp)
 	}
-	r := libc_ldexp(frac, int32(exp))
-	return r
+	return ldexp(frac, exp)
 }
 
 func ldexp(frac float64, exp int) float64 {

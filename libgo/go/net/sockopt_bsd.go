@@ -53,8 +53,5 @@ func setDefaultMulticastSockopts(s int) error {
 	// This option is supported only in descendants of 4.4BSD,
 	// to make an effective multicast application that requires
 	// quick draw possible.
-	if syscall.SO_REUSEPORT != 0 {
-		return os.NewSyscallError("setsockopt", syscall.SetsockoptInt(s, syscall.SOL_SOCKET, syscall.SO_REUSEPORT, 1))
-	}
-	return nil
+	return os.NewSyscallError("setsockopt", syscall.SetsockoptInt(s, syscall.SOL_SOCKET, syscall.SO_REUSEPORT, 1))
 }

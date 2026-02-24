@@ -154,10 +154,6 @@ func TestInstallationImporter(t *testing.T) {
 		t.Skip("This test needs gccgo")
 	}
 
-	// Even when we have gccgo, this doesn't work while building
-	// gccgo itself.
-	t.Skip("gccgo is not necessarily available")
-
 	var inst GccgoInstallation
 	err := inst.InitFromDriver(gpath)
 	if err != nil {

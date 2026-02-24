@@ -70,9 +70,9 @@ const (
 	aixbigafMagic   = "<big"
 )
 
-// Opens the export data file at the given path. If this is an object file,
+// Opens the export data file at the given path. If this is an ELF file,
 // searches for and opens the .go_export section. If this is an archive,
-// reads the export data from the first member, which is assumed to be an object file.
+// reads the export data from the first member, which is assumed to be an ELF file.
 // This is intended to replicate the logic in gofrontend.
 func openExportFile(fpath string) (reader io.ReadSeeker, closer io.Closer, err error) {
 	f, err := os.Open(fpath)

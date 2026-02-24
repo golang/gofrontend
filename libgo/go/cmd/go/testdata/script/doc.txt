@@ -1,5 +1,3 @@
-[gccgo] skip
-
 # go doc --help
 ! go doc --help
 stderr 'go doc'

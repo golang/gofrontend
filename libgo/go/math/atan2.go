@@ -9,6 +9,7 @@ package math
 // of the return value.
 //
 // Special cases are (in order):
+//
 //	Atan2(y, NaN) = NaN
 //	Atan2(NaN, x) = NaN
 //	Atan2(+0, x>=0) = +0
@@ -26,12 +27,11 @@ package math
 //	Atan2(y<0, -Inf) = -Pi
 //	Atan2(+Inf, x) = +Pi/2
 //	Atan2(-Inf, x) = -Pi/2
-
-//extern atan2
-func libc_atan2(float64, float64) float64
-
 func Atan2(y, x float64) float64 {
-	return libc_atan2(y, x)
+	if haveArchAtan2 {
+		return archAtan2(y, x)
+	}
+	return atan2(y, x)
 }
 
 func atan2(y, x float64) float64 {

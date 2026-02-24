@@ -5,6 +5,9 @@
 // Package ast declares the types used to represent syntax trees for Go
 // packages.
 //
+// Syntax trees may be constructed directly, but they are typically
+// produced from Go source code by the parser; see the ParseFile
+// function in package [go/parser].
 package ast
 
 import (
@@ -60,7 +63,7 @@ type Decl interface {
 //
 // The Text field contains the comment text without carriage returns (\r) that
 // may have been present in the source. Because a comment's end position is
-// computed using len(Text), the position reported by End() does not match the
+// computed using len(Text), the position reported by [Comment.End] does not match the
 // true source end position for comments containing carriage returns.
 type Comment struct {
 	Slash token.Pos // position of "/" starting the comment
@@ -72,7 +75,6 @@ func (c *Comment) End() token.Pos { return token.Pos(int(c.Slash) + len(c.Text))
 
 // A CommentGroup represents a sequence of comments
 // with no other tokens and no empty lines between.
-//
 type CommentGroup struct {
 	List []*Comment // len(List) > 0
 }
@@ -132,10 +134,10 @@ func (g *CommentGroup) Text() string {
 		}
 
 		// Split on newlines.
-		cl := strings.Split(c, "\n")
+		cl := strings.SplitSeq(c, "\n")
 
 		// Walk lines, stripping trailing white space and adding to list.
-		for _, l := range cl {
+		for l := range cl {
 			lines = append(lines, stripTrailingWhitespace(l))
 		}
 	}
@@ -160,10 +162,13 @@ func (g *CommentGroup) Text() string {
 }
 
 // isDirective reports whether c is a comment directive.
+// This code is also in go/printer.
 func isDirective(c string) bool {
 	// "//line " is a line directive.
+	// "//extern " is for gccgo.
+	// "//export " is for cgo.
 	// (The // has been removed.)
-	if strings.HasPrefix(c, "line ") {
+	if strings.HasPrefix(c, "line ") || strings.HasPrefix(c, "extern ") || strings.HasPrefix(c, "export ") {
 		return true
 	}
 
@@ -191,7 +196,7 @@ func isDirective(c string) bool {
 // A Field represents a Field declaration list in a struct type,
 // a method list in an interface type, or a parameter/result declaration
 // in a signature.
-// Field.Names is nil for unnamed parameters (parameter lists which only contain types)
+// [Field.Names] is nil for unnamed parameters (parameter lists which only contain types)
 // and embedded struct fields. In the latter case, the field name is the type name.
 type Field struct {
 	Doc     *CommentGroup // associated documentation; or nil
@@ -256,7 +261,7 @@ func (f *FieldList) End() token.Pos {
 	return token.NoPos
 }
 
-// NumFields returns the number of parameters or struct fields represented by a FieldList.
+// NumFields returns the number of parameters or struct fields represented by a [FieldList].
 func (f *FieldList) NumFields() int {
 	n := 0
 	if f != nil {
@@ -273,7 +278,6 @@ func (f *FieldList) NumFields() int {
 
 // An expression is represented by a tree consisting of one
 // or more of the following concrete expression nodes.
-//
 type (
 	// A BadExpr node is a placeholder for an expression containing
 	// syntax errors for which a correct expression node cannot be
@@ -287,7 +291,7 @@ type (
 	Ident struct {
 		NamePos token.Pos // identifier position
 		Name    string    // identifier name
-		Obj     *Object   // denoted object; or nil
+		Obj     *Object   // denoted object, or nil. Deprecated: see Object.
 	}
 
 	// An Ellipsis node stands for the "..." type in a
@@ -299,8 +303,19 @@ type (
 	}
 
 	// A BasicLit node represents a literal of basic type.
+	//
+	// Note that for the CHAR and STRING kinds, the literal is stored
+	// with its quotes. For example, for a double-quoted STRING, the
+	// first and the last rune in the Value field will be ". The
+	// [strconv.Unquote] and [strconv.UnquoteChar] functions can be
+	// used to unquote STRING and CHAR values, respectively.
+	//
+	// For raw string literals (Kind == token.STRING && Value[0] == '`'),
+	// the Value field contains the string text without carriage returns (\r) that
+	// may have been present in the source.
 	BasicLit struct {
 		ValuePos token.Pos   // literal position
+		ValueEnd token.Pos   // position immediately after the literal
 		Kind     token.Token // token.INT, token.FLOAT, token.IMAG, token.CHAR, or token.STRING
 		Value    string      // literal string; e.g. 42, 0x7f, 3.14, 1e-9, 2.4i, 'a', '\x7f', "foo" or `\m\n\o`
 	}
@@ -417,7 +432,6 @@ type (
 
 // The direction of a channel type is indicated by a bit
 // mask including one or both of the following constants.
-//
 type ChanDir int
 
 const (
@@ -428,7 +442,6 @@ const (
 // A type is represented by a tree consisting of one
 // or more of the following type-specific expression
 // nodes.
-//
 type (
 	// An ArrayType node represents an array or slice type.
 	ArrayType struct {
@@ -521,7 +534,15 @@ func (x *Ellipsis) End() token.Pos {
 	}
 	return x.Ellipsis + 3 // len("...")
 }
-func (x *BasicLit) End() token.Pos       { return token.Pos(int(x.ValuePos) + len(x.Value)) }
+func (x *BasicLit) End() token.Pos {
+	if !x.ValueEnd.IsValid() {
+		// Not from parser; use a heuristic.
+		// (Incorrect for `...` containing \r\n;
+		// see https://go.dev/issue/76031.)
+		return token.Pos(int(x.ValuePos) + len(x.Value))
+	}
+	return x.ValueEnd
+}
 func (x *FuncLit) End() token.Pos        { return x.Body.End() }
 func (x *CompositeLit) End() token.Pos   { return x.Rbrace + 1 }
 func (x *ParenExpr) End() token.Pos      { return x.Rparen + 1 }
@@ -549,7 +570,6 @@ func (x *ChanType) End() token.Pos      { return x.Value.End() }
 
 // exprNode() ensures that only expression/type nodes can be
 // assigned to an Expr.
-//
 func (*BadExpr) exprNode()        {}
 func (*Ident) exprNode()          {}
 func (*Ellipsis) exprNode()       {}
@@ -578,17 +598,14 @@ func (*ChanType) exprNode()      {}
 // ----------------------------------------------------------------------------
 // Convenience functions for Idents
 
-// NewIdent creates a new Ident without position.
+// NewIdent creates a new [Ident] without position.
 // Useful for ASTs generated by code other than the Go parser.
-//
 func NewIdent(name string) *Ident { return &Ident{token.NoPos, name, nil} }
 
 // IsExported reports whether name starts with an upper-case letter.
-//
 func IsExported(name string) bool { return token.IsExported(name) }
 
 // IsExported reports whether id starts with an upper-case letter.
-//
 func (id *Ident) IsExported() bool { return token.IsExported(id.Name) }
 
 func (id *Ident) String() string {
@@ -603,7 +620,6 @@ func (id *Ident) String() string {
 
 // A statement is represented by a tree consisting of one
 // or more of the following concrete statement nodes.
-//
 type (
 	// A BadStmt node is a placeholder for statements containing
 	// syntax errors for which no correct statement nodes can be
@@ -761,6 +777,7 @@ type (
 		Key, Value Expr        // Key, Value may be nil
 		TokPos     token.Pos   // position of Tok; invalid if Key == nil
 		Tok        token.Token // ILLEGAL if Key == nil, ASSIGN, DEFINE
+		Range      token.Pos   // position of "range" keyword
 		X          Expr        // value to range over
 		Body       *BlockStmt
 	}
@@ -854,7 +871,6 @@ func (s *RangeStmt) End() token.Pos  { return s.Body.End() }
 
 // stmtNode() ensures that only statement nodes can be
 // assigned to a Stmt.
-//
 func (*BadStmt) stmtNode()        {}
 func (*DeclStmt) stmtNode()       {}
 func (*EmptyStmt) stmtNode()      {}
@@ -882,7 +898,6 @@ func (*RangeStmt) stmtNode()      {}
 
 // A Spec node represents a single (non-parenthesized) import,
 // constant, type, or variable declaration.
-//
 type (
 	// The Spec type stands for any of *ImportSpec, *ValueSpec, and *TypeSpec.
 	Spec interface {
@@ -952,13 +967,11 @@ func (s *TypeSpec) End() token.Pos { return s.Type.End() }
 
 // specNode() ensures that only spec nodes can be
 // assigned to a Spec.
-//
 func (*ImportSpec) specNode() {}
 func (*ValueSpec) specNode()  {}
 func (*TypeSpec) specNode()   {}
 
 // A declaration is represented by one of the following declaration nodes.
-//
 type (
 	// A BadDecl node is a placeholder for a declaration containing
 	// syntax errors for which a correct declaration node cannot be
@@ -1020,7 +1033,6 @@ func (d *FuncDecl) End() token.Pos {
 
 // declNode() ensures that only declaration nodes can be
 // assigned to a Decl.
-//
 func (*BadDecl) declNode()  {}
 func (*GenDecl) declNode()  {}
 func (*FuncDecl) declNode() {}
@@ -1039,26 +1051,40 @@ func (*FuncDecl) declNode() {}
 // when a File's syntax tree is modified: For printing, comments are interspersed
 // between tokens based on their position. If syntax tree nodes are
 // removed or moved, relevant comments in their vicinity must also be removed
-// (from the File.Comments list) or moved accordingly (by updating their
-// positions). A CommentMap may be used to facilitate some of these operations.
+// (from the [File.Comments] list) or moved accordingly (by updating their
+// positions). A [CommentMap] may be used to facilitate some of these operations.
 //
 // Whether and how a comment is associated with a node depends on the
-// interpretation of the syntax tree by the manipulating program: Except for Doc
-// and Comment comments directly associated with nodes, the remaining comments
-// are "free-floating" (see also issues #18593, #20744).
+// interpretation of the syntax tree by the manipulating program: except for Doc
+// and [Comment] comments directly associated with nodes, the remaining comments
+// are "free-floating" (see also issues [#18593], [#20744]).
 //
+// [#18593]: https://go.dev/issue/18593
+// [#20744]: https://go.dev/issue/20744
 type File struct {
-	Doc        *CommentGroup   // associated documentation; or nil
-	Package    token.Pos       // position of "package" keyword
-	Name       *Ident          // package name
-	Decls      []Decl          // top-level declarations; or nil
-	Scope      *Scope          // package scope (this file only)
-	Imports    []*ImportSpec   // imports in this file
-	Unresolved []*Ident        // unresolved identifiers in this file
-	Comments   []*CommentGroup // list of all comments in the source file
+	Doc     *CommentGroup // associated documentation; or nil
+	Package token.Pos     // position of "package" keyword
+	Name    *Ident        // package name
+	Decls   []Decl        // top-level declarations; or nil
+
+	FileStart, FileEnd token.Pos       // start and end of entire file
+	Scope              *Scope          // package scope (this file only). Deprecated: see Object
+	Imports            []*ImportSpec   // imports in this file
+	Unresolved         []*Ident        // unresolved identifiers in this file. Deprecated: see Object
+	Comments           []*CommentGroup // comments in the file, in lexical order
+	GoVersion          string          // minimum Go version required by //go:build or // +build directives
 }
 
+// Pos returns the position of the package declaration.
+// It may be invalid, for example in an empty file.
+//
+// (Use FileStart for the start of the entire file. It is always valid.)
 func (f *File) Pos() token.Pos { return f.Package }
+
+// End returns the end of the last declaration in the file.
+// It may be invalid, for example in an empty file.
+//
+// (Use FileEnd for the end of the entire file. It is always valid.)
 func (f *File) End() token.Pos {
 	if n := len(f.Decls); n > 0 {
 		return f.Decls[n-1].End()
@@ -1069,6 +1095,7 @@ func (f *File) End() token.Pos {
 // A Package node represents a set of source files
 // collectively building a Go package.
 //
+// Deprecated: use the type checker [go/types] instead; see [Object].
 type Package struct {
 	Name    string             // package name
 	Scope   *Scope             // package scope across all files
@@ -1078,3 +1105,51 @@ type Package struct {
 
 func (p *Package) Pos() token.Pos { return token.NoPos }
 func (p *Package) End() token.Pos { return token.NoPos }
+
+// IsGenerated reports whether the file was generated by a program,
+// not handwritten, by detecting the special comment described
+// at https://go.dev/s/generatedcode.
+//
+// The syntax tree must have been parsed with the [parser.ParseComments] flag.
+// Example:
+//
+//	f, err := parser.ParseFile(fset, filename, src, parser.ParseComments|parser.PackageClauseOnly)
+//	if err != nil { ... }
+//	gen := ast.IsGenerated(f)
+func IsGenerated(file *File) bool {
+	_, ok := generator(file)
+	return ok
+}
+
+func generator(file *File) (string, bool) {
+	for _, group := range file.Comments {
+		for _, comment := range group.List {
+			if comment.Pos() > file.Package {
+				break // after package declaration
+			}
+			// opt: check Contains first to avoid unnecessary array allocation in Split.
+			const prefix = "// Code generated "
+			if strings.Contains(comment.Text, prefix) {
+				for line := range strings.SplitSeq(comment.Text, "\n") {
+					if rest, ok := strings.CutPrefix(line, prefix); ok {
+						if gen, ok := strings.CutSuffix(rest, " DO NOT EDIT."); ok {
+							return gen, true
+						}
+					}
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+// Unparen returns the expression with any enclosing parentheses removed.
+func Unparen(e Expr) Expr {
+	for {
+		paren, ok := e.(*ParenExpr)
+		if !ok {
+			return e
+		}
+		e = paren.X
+	}
+}

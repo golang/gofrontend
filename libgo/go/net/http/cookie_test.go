@@ -5,12 +5,13 @@
 package http
 
 import (
-	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +82,10 @@ var writeSetCookiesTests = []struct {
 		&Cookie{Name: "cookie-15", Value: "samesite-none", SameSite: SameSiteNoneMode},
 		"cookie-15=samesite-none; SameSite=None",
 	},
+	{
+		&Cookie{Name: "cookie-16", Value: "partitioned", SameSite: SameSiteNoneMode, Secure: true, Path: "/", Partitioned: true},
+		"cookie-16=partitioned; Path=/; Secure; SameSite=None; Partitioned",
+	},
 	// The "special" cookies have values containing commas or spaces which
 	// are disallowed by RFC 6265 but are common in the wild.
 	{
@@ -147,17 +152,29 @@ var writeSetCookiesTests = []struct {
 		&Cookie{Name: "a\rb", Value: "v"},
 		``,
 	},
+	// Quoted values (issue #46443)
+	{
+		&Cookie{Name: "cookie", Value: "quoted", Quoted: true},
+		`cookie="quoted"`,
+	},
+	{
+		&Cookie{Name: "cookie", Value: "quoted with spaces", Quoted: true},
+		`cookie="quoted with spaces"`,
+	},
+	{
+		&Cookie{Name: "cookie", Value: "quoted,with,commas", Quoted: true},
+		`cookie="quoted,with,commas"`,
+	},
 }
 
 func TestWriteSetCookies(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
-	var logbuf bytes.Buffer
+	var logbuf strings.Builder
 	log.SetOutput(&logbuf)
 
 	for i, tt := range writeSetCookiesTests {
 		if g, e := tt.Cookie.String(), tt.Raw; g != e {
 			t.Errorf("Test %d, expecting:\n%s\nGot:\n%s\n", i, e, g)
-			continue
 		}
 	}
 
@@ -215,6 +232,15 @@ var addCookieTests = []struct {
 		},
 		"cookie-1=v$1; cookie-2=v$2; cookie-3=v$3",
 	},
+	// Quoted values (issue #46443)
+	{
+		[]*Cookie{
+			{Name: "cookie-1", Value: "quoted", Quoted: true},
+			{Name: "cookie-2", Value: "quoted with spaces", Quoted: true},
+			{Name: "cookie-3", Value: "quoted,with,commas", Quoted: true},
+		},
+		`cookie-1="quoted"; cookie-2="quoted with spaces"; cookie-3="quoted,with,commas"`,
+	},
 }
 
 func TestAddCookie(t *testing.T) {
@@ -225,22 +251,22 @@ func TestAddCookie(t *testing.T) {
 		}
 		if g := req.Header.Get("Cookie"); g != tt.Raw {
 			t.Errorf("Test %d:\nwant: %s\n got: %s\n", i, tt.Raw, g)
-			continue
 		}
 	}
 }
 
 var readSetCookiesTests = []struct {
-	Header  Header
-	Cookies []*Cookie
+	header  Header
+	cookies []*Cookie
+	godebug string
 }{
 	{
-		Header{"Set-Cookie": {"Cookie-1=v$1"}},
-		[]*Cookie{{Name: "Cookie-1", Value: "v$1", Raw: "Cookie-1=v$1"}},
+		header:  Header{"Set-Cookie": {"Cookie-1=v$1"}},
+		cookies: []*Cookie{{Name: "Cookie-1", Value: "v$1", Raw: "Cookie-1=v$1"}},
 	},
 	{
-		Header{"Set-Cookie": {"NID=99=YsDT5i3E-CXax-; expires=Wed, 23-Nov-2011 01:05:03 GMT; path=/; domain=.google.ch; HttpOnly"}},
-		[]*Cookie{{
+		header: Header{"Set-Cookie": {"NID=99=YsDT5i3E-CXax-; expires=Wed, 23-Nov-2011 01:05:03 GMT; path=/; domain=.google.ch; HttpOnly"}},
+		cookies: []*Cookie{{
 			Name:       "NID",
 			Value:      "99=YsDT5i3E-CXax-",
 			Path:       "/",
@@ -252,8 +278,8 @@ var readSetCookiesTests = []struct {
 		}},
 	},
 	{
-		Header{"Set-Cookie": {".ASPXAUTH=7E3AA; expires=Wed, 07-Mar-2012 14:25:06 GMT; path=/; HttpOnly"}},
-		[]*Cookie{{
+		header: Header{"Set-Cookie": {".ASPXAUTH=7E3AA; expires=Wed, 07-Mar-2012 14:25:06 GMT; path=/; HttpOnly"}},
+		cookies: []*Cookie{{
 			Name:       ".ASPXAUTH",
 			Value:      "7E3AA",
 			Path:       "/",
@@ -264,8 +290,8 @@ var readSetCookiesTests = []struct {
 		}},
 	},
 	{
-		Header{"Set-Cookie": {"ASP.NET_SessionId=foo; path=/; HttpOnly"}},
-		[]*Cookie{{
+		header: Header{"Set-Cookie": {"ASP.NET_SessionId=foo; path=/; HttpOnly"}},
+		cookies: []*Cookie{{
 			Name:     "ASP.NET_SessionId",
 			Value:    "foo",
 			Path:     "/",
@@ -274,8 +300,8 @@ var readSetCookiesTests = []struct {
 		}},
 	},
 	{
-		Header{"Set-Cookie": {"samesitedefault=foo; SameSite"}},
-		[]*Cookie{{
+		header: Header{"Set-Cookie": {"samesitedefault=foo; SameSite"}},
+		cookies: []*Cookie{{
 			Name:     "samesitedefault",
 			Value:    "foo",
 			SameSite: SameSiteDefaultMode,
@@ -283,8 +309,8 @@ var readSetCookiesTests = []struct {
 		}},
 	},
 	{
-		Header{"Set-Cookie": {"samesiteinvalidisdefault=foo; SameSite=invalid"}},
-		[]*Cookie{{
+		header: Header{"Set-Cookie": {"samesiteinvalidisdefault=foo; SameSite=invalid"}},
+		cookies: []*Cookie{{
 			Name:     "samesiteinvalidisdefault",
 			Value:    "foo",
 			SameSite: SameSiteDefaultMode,
@@ -292,8 +318,8 @@ var readSetCookiesTests = []struct {
 		}},
 	},
 	{
-		Header{"Set-Cookie": {"samesitelax=foo; SameSite=Lax"}},
-		[]*Cookie{{
+		header: Header{"Set-Cookie": {"samesitelax=foo; SameSite=Lax"}},
+		cookies: []*Cookie{{
 			Name:     "samesitelax",
 			Value:    "foo",
 			SameSite: SameSiteLaxMode,
@@ -301,8 +327,8 @@ var readSetCookiesTests = []struct {
 		}},
 	},
 	{
-		Header{"Set-Cookie": {"samesitestrict=foo; SameSite=Strict"}},
-		[]*Cookie{{
+		header: Header{"Set-Cookie": {"samesitestrict=foo; SameSite=Strict"}},
+		cookies: []*Cookie{{
 			Name:     "samesitestrict",
 			Value:    "foo",
 			SameSite: SameSiteStrictMode,
@@ -310,8 +336,8 @@ var readSetCookiesTests = []struct {
 		}},
 	},
 	{
-		Header{"Set-Cookie": {"samesitenone=foo; SameSite=None"}},
-		[]*Cookie{{
+		header: Header{"Set-Cookie": {"samesitenone=foo; SameSite=None"}},
+		cookies: []*Cookie{{
 			Name:     "samesitenone",
 			Value:    "foo",
 			SameSite: SameSiteNoneMode,
@@ -321,36 +347,66 @@ var readSetCookiesTests = []struct {
 	// Make sure we can properly read back the Set-Cookie headers we create
 	// for values containing spaces or commas:
 	{
-		Header{"Set-Cookie": {`special-1=a z`}},
-		[]*Cookie{{Name: "special-1", Value: "a z", Raw: `special-1=a z`}},
+		header:  Header{"Set-Cookie": {`special-1=a z`}},
+		cookies: []*Cookie{{Name: "special-1", Value: "a z", Raw: `special-1=a z`}},
 	},
 	{
-		Header{"Set-Cookie": {`special-2=" z"`}},
-		[]*Cookie{{Name: "special-2", Value: " z", Raw: `special-2=" z"`}},
+		header:  Header{"Set-Cookie": {`special-2=" z"`}},
+		cookies: []*Cookie{{Name: "special-2", Value: " z", Quoted: true, Raw: `special-2=" z"`}},
 	},
 	{
-		Header{"Set-Cookie": {`special-3="a "`}},
-		[]*Cookie{{Name: "special-3", Value: "a ", Raw: `special-3="a "`}},
+		header:  Header{"Set-Cookie": {`special-3="a "`}},
+		cookies: []*Cookie{{Name: "special-3", Value: "a ", Quoted: true, Raw: `special-3="a "`}},
 	},
 	{
-		Header{"Set-Cookie": {`special-4=" "`}},
-		[]*Cookie{{Name: "special-4", Value: " ", Raw: `special-4=" "`}},
+		header:  Header{"Set-Cookie": {`special-4=" "`}},
+		cookies: []*Cookie{{Name: "special-4", Value: " ", Quoted: true, Raw: `special-4=" "`}},
 	},
 	{
-		Header{"Set-Cookie": {`special-5=a,z`}},
-		[]*Cookie{{Name: "special-5", Value: "a,z", Raw: `special-5=a,z`}},
+		header:  Header{"Set-Cookie": {`special-5=a,z`}},
+		cookies: []*Cookie{{Name: "special-5", Value: "a,z", Raw: `special-5=a,z`}},
 	},
 	{
-		Header{"Set-Cookie": {`special-6=",z"`}},
-		[]*Cookie{{Name: "special-6", Value: ",z", Raw: `special-6=",z"`}},
+		header:  Header{"Set-Cookie": {`special-6=",z"`}},
+		cookies: []*Cookie{{Name: "special-6", Value: ",z", Quoted: true, Raw: `special-6=",z"`}},
 	},
 	{
-		Header{"Set-Cookie": {`special-7=a,`}},
-		[]*Cookie{{Name: "special-7", Value: "a,", Raw: `special-7=a,`}},
+		header:  Header{"Set-Cookie": {`special-7=a,`}},
+		cookies: []*Cookie{{Name: "special-7", Value: "a,", Raw: `special-7=a,`}},
 	},
 	{
-		Header{"Set-Cookie": {`special-8=","`}},
-		[]*Cookie{{Name: "special-8", Value: ",", Raw: `special-8=","`}},
+		header:  Header{"Set-Cookie": {`special-8=","`}},
+		cookies: []*Cookie{{Name: "special-8", Value: ",", Quoted: true, Raw: `special-8=","`}},
+	},
+	// Make sure we can properly read back the Set-Cookie headers
+	// for names containing spaces:
+	{
+		header:  Header{"Set-Cookie": {`special-9 =","`}},
+		cookies: []*Cookie{{Name: "special-9", Value: ",", Quoted: true, Raw: `special-9 =","`}},
+	},
+	// Quoted values (issue #46443)
+	{
+		header:  Header{"Set-Cookie": {`cookie="quoted"`}},
+		cookies: []*Cookie{{Name: "cookie", Value: "quoted", Quoted: true, Raw: `cookie="quoted"`}},
+	},
+	{
+		header:  Header{"Set-Cookie": slices.Repeat([]string{"a="}, defaultCookieMaxNum+1)},
+		cookies: []*Cookie{},
+	},
+	{
+		header:  Header{"Set-Cookie": slices.Repeat([]string{"a="}, 10)},
+		cookies: []*Cookie{},
+		godebug: "httpcookiemaxnum=5",
+	},
+	{
+		header:  Header{"Set-Cookie": strings.Split(strings.Repeat(";a=", defaultCookieMaxNum+1)[1:], ";")},
+		cookies: slices.Repeat([]*Cookie{{Name: "a", Value: "", Quoted: false, Raw: "a="}}, defaultCookieMaxNum+1),
+		godebug: "httpcookiemaxnum=0",
+	},
+	{
+		header:  Header{"Set-Cookie": strings.Split(strings.Repeat(";a=", defaultCookieMaxNum+1)[1:], ";")},
+		cookies: slices.Repeat([]*Cookie{{Name: "a", Value: "", Quoted: false, Raw: "a="}}, defaultCookieMaxNum+1),
+		godebug: fmt.Sprintf("httpcookiemaxnum=%v", defaultCookieMaxNum+1),
 	},
 
 	// TODO(bradfitz): users have reported seeing this in the
@@ -370,81 +426,103 @@ func toJSON(v any) string {
 
 func TestReadSetCookies(t *testing.T) {
 	for i, tt := range readSetCookiesTests {
+		t.Setenv("GODEBUG", tt.godebug)
 		for n := 0; n < 2; n++ { // to verify readSetCookies doesn't mutate its input
-			c := readSetCookies(tt.Header)
-			if !reflect.DeepEqual(c, tt.Cookies) {
-				t.Errorf("#%d readSetCookies: have\n%s\nwant\n%s\n", i, toJSON(c), toJSON(tt.Cookies))
-				continue
+			c := readSetCookies(tt.header)
+			if !reflect.DeepEqual(c, tt.cookies) {
+				t.Errorf("#%d readSetCookies: have\n%s\nwant\n%s\n", i, toJSON(c), toJSON(tt.cookies))
 			}
 		}
 	}
 }
 
 var readCookiesTests = []struct {
-	Header  Header
-	Filter  string
-	Cookies []*Cookie
+	header  Header
+	filter  string
+	cookies []*Cookie
+	godebug string
 }{
 	{
-		Header{"Cookie": {"Cookie-1=v$1", "c2=v2"}},
-		"",
-		[]*Cookie{
+		header: Header{"Cookie": {"Cookie-1=v$1", "c2=v2"}},
+		filter: "",
+		cookies: []*Cookie{
 			{Name: "Cookie-1", Value: "v$1"},
 			{Name: "c2", Value: "v2"},
 		},
 	},
 	{
-		Header{"Cookie": {"Cookie-1=v$1", "c2=v2"}},
-		"c2",
-		[]*Cookie{
+		header: Header{"Cookie": {"Cookie-1=v$1", "c2=v2"}},
+		filter: "c2",
+		cookies: []*Cookie{
 			{Name: "c2", Value: "v2"},
 		},
 	},
 	{
-		Header{"Cookie": {"Cookie-1=v$1; c2=v2"}},
-		"",
-		[]*Cookie{
+		header: Header{"Cookie": {"Cookie-1=v$1; c2=v2"}},
+		filter: "",
+		cookies: []*Cookie{
 			{Name: "Cookie-1", Value: "v$1"},
 			{Name: "c2", Value: "v2"},
 		},
 	},
 	{
-		Header{"Cookie": {"Cookie-1=v$1; c2=v2"}},
-		"c2",
-		[]*Cookie{
+		header: Header{"Cookie": {"Cookie-1=v$1; c2=v2"}},
+		filter: "c2",
+		cookies: []*Cookie{
 			{Name: "c2", Value: "v2"},
 		},
 	},
 	{
-		Header{"Cookie": {`Cookie-1="v$1"; c2="v2"`}},
-		"",
-		[]*Cookie{
-			{Name: "Cookie-1", Value: "v$1"},
+		header: Header{"Cookie": {`Cookie-1="v$1"; c2="v2"`}},
+		filter: "",
+		cookies: []*Cookie{
+			{Name: "Cookie-1", Value: "v$1", Quoted: true},
+			{Name: "c2", Value: "v2", Quoted: true},
+		},
+	},
+	{
+		header: Header{"Cookie": {`Cookie-1="v$1"; c2=v2;`}},
+		filter: "",
+		cookies: []*Cookie{
+			{Name: "Cookie-1", Value: "v$1", Quoted: true},
 			{Name: "c2", Value: "v2"},
 		},
 	},
 	{
-		Header{"Cookie": {`Cookie-1="v$1"; c2=v2;`}},
-		"",
-		[]*Cookie{
-			{Name: "Cookie-1", Value: "v$1"},
-			{Name: "c2", Value: "v2"},
-		},
+		header:  Header{"Cookie": {``}},
+		filter:  "",
+		cookies: []*Cookie{},
+	},
+	// GODEBUG=httpcookiemaxnum should work regardless if all cookies are sent
+	// via one "Cookie" field, or multiple fields.
+	{
+		header:  Header{"Cookie": {strings.Repeat(";a=", defaultCookieMaxNum+1)[1:]}},
+		cookies: []*Cookie{},
 	},
 	{
-		Header{"Cookie": {``}},
-		"",
-		[]*Cookie{},
+		header:  Header{"Cookie": slices.Repeat([]string{"a="}, 10)},
+		cookies: []*Cookie{},
+		godebug: "httpcookiemaxnum=5",
+	},
+	{
+		header:  Header{"Cookie": {strings.Repeat(";a=", defaultCookieMaxNum+1)[1:]}},
+		cookies: slices.Repeat([]*Cookie{{Name: "a", Value: "", Quoted: false}}, defaultCookieMaxNum+1),
+		godebug: "httpcookiemaxnum=0",
+	},
+	{
+		header:  Header{"Cookie": slices.Repeat([]string{"a="}, defaultCookieMaxNum+1)},
+		cookies: slices.Repeat([]*Cookie{{Name: "a", Value: "", Quoted: false}}, defaultCookieMaxNum+1),
+		godebug: fmt.Sprintf("httpcookiemaxnum=%v", defaultCookieMaxNum+1),
 	},
 }
 
 func TestReadCookies(t *testing.T) {
 	for i, tt := range readCookiesTests {
+		t.Setenv("GODEBUG", tt.godebug)
 		for n := 0; n < 2; n++ { // to verify readCookies doesn't mutate its input
-			c := readCookies(tt.Header, tt.Filter)
-			if !reflect.DeepEqual(c, tt.Cookies) {
-				t.Errorf("#%d readCookies:\nhave: %s\nwant: %s\n", i, toJSON(c), toJSON(tt.Cookies))
-				continue
+			c := readCookies(tt.header, tt.filter)
+			if !reflect.DeepEqual(c, tt.cookies) {
+				t.Errorf("#%d readCookies:\nhave: %s\nwant: %s\n", i, toJSON(c), toJSON(tt.cookies))
 			}
 		}
 	}
@@ -476,27 +554,31 @@ func TestSetCookieDoubleQuotes(t *testing.T) {
 
 func TestCookieSanitizeValue(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
-	var logbuf bytes.Buffer
+	var logbuf strings.Builder
 	log.SetOutput(&logbuf)
 
 	tests := []struct {
-		in, want string
+		in     string
+		quoted bool
+		want   string
 	}{
-		{"foo", "foo"},
-		{"foo;bar", "foobar"},
-		{"foo\\bar", "foobar"},
-		{"foo\"bar", "foobar"},
-		{"\x00\x7e\x7f\x80", "\x7e"},
-		{`"withquotes"`, "withquotes"},
-		{"a z", `"a z"`},
-		{" z", `" z"`},
-		{"a ", `"a "`},
-		{"a,z", `"a,z"`},
-		{",z", `",z"`},
-		{"a,", `"a,"`},
+		{"foo", false, "foo"},
+		{"foo;bar", false, "foobar"},
+		{"foo\\bar", false, "foobar"},
+		{"foo\"bar", false, "foobar"},
+		{"\x00\x7e\x7f\x80", false, "\x7e"},
+		{`withquotes`, true, `"withquotes"`},
+		{`"withquotes"`, true, `"withquotes"`}, // double quotes are not valid octets
+		{"a z", false, `"a z"`},
+		{" z", false, `" z"`},
+		{"a ", false, `"a "`},
+		{"a,z", false, `"a,z"`},
+		{",z", false, `",z"`},
+		{"a,", false, `"a,"`},
+		{"", true, `""`},
 	}
 	for _, tt := range tests {
-		if got := sanitizeCookieValue(tt.in); got != tt.want {
+		if got := sanitizeCookieValue(tt.in, tt.quoted); got != tt.want {
 			t.Errorf("sanitizeCookieValue(%q) = %q; want %q", tt.in, got, tt.want)
 		}
 	}
@@ -508,7 +590,7 @@ func TestCookieSanitizeValue(t *testing.T) {
 
 func TestCookieSanitizePath(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
-	var logbuf bytes.Buffer
+	var logbuf strings.Builder
 	log.SetOutput(&logbuf)
 
 	tests := []struct {
@@ -536,11 +618,16 @@ func TestCookieValid(t *testing.T) {
 	}{
 		{nil, false},
 		{&Cookie{Name: ""}, false},
-		{&Cookie{Name: "invalid-expires"}, false},
 		{&Cookie{Name: "invalid-value", Value: "foo\"bar"}, false},
 		{&Cookie{Name: "invalid-path", Path: "/foo;bar/"}, false},
+		{&Cookie{Name: "invalid-secure-for-partitioned", Value: "foo", Path: "/", Secure: false, Partitioned: true}, false},
 		{&Cookie{Name: "invalid-domain", Domain: "example.com:80"}, false},
-		{&Cookie{Name: "valid", Value: "foo", Path: "/bar", Domain: "example.com", Expires: time.Unix(0, 0)}, true},
+		{&Cookie{Name: "invalid-expiry", Value: "", Expires: time.Date(1600, 1, 1, 1, 1, 1, 1, time.UTC)}, false},
+		{&Cookie{Name: "valid-empty"}, true},
+		{&Cookie{Name: "valid-expires", Value: "foo", Path: "/bar", Domain: "example.com", Expires: time.Unix(0, 0)}, true},
+		{&Cookie{Name: "valid-max-age", Value: "foo", Path: "/bar", Domain: "example.com", MaxAge: 60}, true},
+		{&Cookie{Name: "valid-all-fields", Value: "foo", Path: "/bar", Domain: "example.com", Expires: time.Unix(0, 0), MaxAge: 0}, true},
+		{&Cookie{Name: "valid-partitioned", Value: "foo", Path: "/", Secure: true, Partitioned: true}, true},
 	}
 
 	for _, tt := range tests {
@@ -640,5 +727,235 @@ func BenchmarkReadCookies(b *testing.B) {
 	}
 	if !reflect.DeepEqual(c, wantCookies) {
 		b.Fatalf("readCookies:\nhave: %s\nwant: %s\n", toJSON(c), toJSON(wantCookies))
+	}
+}
+
+func TestParseCookie(t *testing.T) {
+	tests := []struct {
+		line    string
+		cookies []*Cookie
+		err     error
+		godebug string
+	}{
+		{
+			line:    "Cookie-1=v$1",
+			cookies: []*Cookie{{Name: "Cookie-1", Value: "v$1"}},
+		},
+		{
+			line:    "Cookie-1=v$1;c2=v2",
+			cookies: []*Cookie{{Name: "Cookie-1", Value: "v$1"}, {Name: "c2", Value: "v2"}},
+		},
+		{
+			line:    `Cookie-1="v$1";c2="v2"`,
+			cookies: []*Cookie{{Name: "Cookie-1", Value: "v$1", Quoted: true}, {Name: "c2", Value: "v2", Quoted: true}},
+		},
+		{
+			line:    "k1=",
+			cookies: []*Cookie{{Name: "k1", Value: ""}},
+		},
+		{
+			line: "",
+			err:  errBlankCookie,
+		},
+		{
+			line: "equal-not-found",
+			err:  errEqualNotFoundInCookie,
+		},
+		{
+			line: "=v1",
+			err:  errInvalidCookieName,
+		},
+		{
+			line: "k1=\\",
+			err:  errInvalidCookieValue,
+		},
+		{
+			line: strings.Repeat(";a=", defaultCookieMaxNum+1)[1:],
+			err:  errCookieNumLimitExceeded,
+		},
+		{
+			line:    strings.Repeat(";a=", 10)[1:],
+			err:     errCookieNumLimitExceeded,
+			godebug: "httpcookiemaxnum=5",
+		},
+		{
+			line:    strings.Repeat(";a=", defaultCookieMaxNum+1)[1:],
+			cookies: slices.Repeat([]*Cookie{{Name: "a", Value: "", Quoted: false}}, defaultCookieMaxNum+1),
+			godebug: "httpcookiemaxnum=0",
+		},
+		{
+			line:    strings.Repeat(";a=", defaultCookieMaxNum+1)[1:],
+			cookies: slices.Repeat([]*Cookie{{Name: "a", Value: "", Quoted: false}}, defaultCookieMaxNum+1),
+			godebug: fmt.Sprintf("httpcookiemaxnum=%v", defaultCookieMaxNum+1),
+		},
+	}
+	for i, tt := range tests {
+		t.Setenv("GODEBUG", tt.godebug)
+		gotCookies, gotErr := ParseCookie(tt.line)
+		if !errors.Is(gotErr, tt.err) {
+			t.Errorf("#%d ParseCookie got error %v, want error %v", i, gotErr, tt.err)
+		}
+		if !reflect.DeepEqual(gotCookies, tt.cookies) {
+			t.Errorf("#%d ParseCookie:\ngot cookies: %s\nwant cookies: %s\n", i, toJSON(gotCookies), toJSON(tt.cookies))
+		}
+	}
+}
+
+func TestParseSetCookie(t *testing.T) {
+	tests := []struct {
+		line   string
+		cookie *Cookie
+		err    error
+	}{
+		{
+			line:   "Cookie-1=v$1",
+			cookie: &Cookie{Name: "Cookie-1", Value: "v$1", Raw: "Cookie-1=v$1"},
+		},
+		{
+			line: "NID=99=YsDT5i3E-CXax-; expires=Wed, 23-Nov-2011 01:05:03 GMT; path=/; domain=.google.ch; HttpOnly",
+			cookie: &Cookie{
+				Name:       "NID",
+				Value:      "99=YsDT5i3E-CXax-",
+				Path:       "/",
+				Domain:     ".google.ch",
+				HttpOnly:   true,
+				Expires:    time.Date(2011, 11, 23, 1, 5, 3, 0, time.UTC),
+				RawExpires: "Wed, 23-Nov-2011 01:05:03 GMT",
+				Raw:        "NID=99=YsDT5i3E-CXax-; expires=Wed, 23-Nov-2011 01:05:03 GMT; path=/; domain=.google.ch; HttpOnly",
+			},
+		},
+		{
+			line: ".ASPXAUTH=7E3AA; expires=Wed, 07-Mar-2012 14:25:06 GMT; path=/; HttpOnly",
+			cookie: &Cookie{
+				Name:       ".ASPXAUTH",
+				Value:      "7E3AA",
+				Path:       "/",
+				Expires:    time.Date(2012, 3, 7, 14, 25, 6, 0, time.UTC),
+				RawExpires: "Wed, 07-Mar-2012 14:25:06 GMT",
+				HttpOnly:   true,
+				Raw:        ".ASPXAUTH=7E3AA; expires=Wed, 07-Mar-2012 14:25:06 GMT; path=/; HttpOnly",
+			},
+		},
+		{
+			line: "ASP.NET_SessionId=foo; path=/; HttpOnly",
+			cookie: &Cookie{
+				Name:     "ASP.NET_SessionId",
+				Value:    "foo",
+				Path:     "/",
+				HttpOnly: true,
+				Raw:      "ASP.NET_SessionId=foo; path=/; HttpOnly",
+			},
+		},
+		{
+			line: "samesitedefault=foo; SameSite",
+			cookie: &Cookie{
+				Name:     "samesitedefault",
+				Value:    "foo",
+				SameSite: SameSiteDefaultMode,
+				Raw:      "samesitedefault=foo; SameSite",
+			},
+		},
+		{
+			line: "samesiteinvalidisdefault=foo; SameSite=invalid",
+			cookie: &Cookie{
+				Name:     "samesiteinvalidisdefault",
+				Value:    "foo",
+				SameSite: SameSiteDefaultMode,
+				Raw:      "samesiteinvalidisdefault=foo; SameSite=invalid",
+			},
+		},
+		{
+			line: "samesitelax=foo; SameSite=Lax",
+			cookie: &Cookie{
+				Name:     "samesitelax",
+				Value:    "foo",
+				SameSite: SameSiteLaxMode,
+				Raw:      "samesitelax=foo; SameSite=Lax",
+			},
+		},
+		{
+			line: "samesitestrict=foo; SameSite=Strict",
+			cookie: &Cookie{
+				Name:     "samesitestrict",
+				Value:    "foo",
+				SameSite: SameSiteStrictMode,
+				Raw:      "samesitestrict=foo; SameSite=Strict",
+			},
+		},
+		{
+			line: "samesitenone=foo; SameSite=None",
+			cookie: &Cookie{
+				Name:     "samesitenone",
+				Value:    "foo",
+				SameSite: SameSiteNoneMode,
+				Raw:      "samesitenone=foo; SameSite=None",
+			},
+		},
+		// Make sure we can properly read back the Set-Cookie headers we create
+		// for values containing spaces or commas:
+		{
+			line:   `special-1=a z`,
+			cookie: &Cookie{Name: "special-1", Value: "a z", Raw: `special-1=a z`},
+		},
+		{
+			line:   `special-2=" z"`,
+			cookie: &Cookie{Name: "special-2", Value: " z", Quoted: true, Raw: `special-2=" z"`},
+		},
+		{
+			line:   `special-3="a "`,
+			cookie: &Cookie{Name: "special-3", Value: "a ", Quoted: true, Raw: `special-3="a "`},
+		},
+		{
+			line:   `special-4=" "`,
+			cookie: &Cookie{Name: "special-4", Value: " ", Quoted: true, Raw: `special-4=" "`},
+		},
+		{
+			line:   `special-5=a,z`,
+			cookie: &Cookie{Name: "special-5", Value: "a,z", Raw: `special-5=a,z`},
+		},
+		{
+			line:   `special-6=",z"`,
+			cookie: &Cookie{Name: "special-6", Value: ",z", Quoted: true, Raw: `special-6=",z"`},
+		},
+		{
+			line:   `special-7=a,`,
+			cookie: &Cookie{Name: "special-7", Value: "a,", Raw: `special-7=a,`},
+		},
+		{
+			line:   `special-8=","`,
+			cookie: &Cookie{Name: "special-8", Value: ",", Quoted: true, Raw: `special-8=","`},
+		},
+		// Make sure we can properly read back the Set-Cookie headers
+		// for names containing spaces:
+		{
+			line:   `special-9 =","`,
+			cookie: &Cookie{Name: "special-9", Value: ",", Quoted: true, Raw: `special-9 =","`},
+		},
+		{
+			line: "",
+			err:  errBlankCookie,
+		},
+		{
+			line: "equal-not-found",
+			err:  errEqualNotFoundInCookie,
+		},
+		{
+			line: "=v1",
+			err:  errInvalidCookieName,
+		},
+		{
+			line: "k1=\\",
+			err:  errInvalidCookieValue,
+		},
+	}
+	for i, tt := range tests {
+		gotCookie, gotErr := ParseSetCookie(tt.line)
+		if !errors.Is(gotErr, tt.err) {
+			t.Errorf("#%d ParseSetCookie got error %v, want error %v", i, gotErr, tt.err)
+			continue
+		}
+		if !reflect.DeepEqual(gotCookie, tt.cookie) {
+			t.Errorf("#%d ParseSetCookie:\ngot cookie: %s\nwant cookie: %s\n", i, toJSON(gotCookie), toJSON(tt.cookie))
+		}
 	}
 }

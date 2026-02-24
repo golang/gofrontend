@@ -22,13 +22,13 @@ func TestTypeSetString(t *testing.T) {
 		"{}":            "𝓤",
 		"{int}":         "{int}",
 		"{~int}":        "{~int}",
-		"{int|string}":  "{int ∪ string}",
+		"{int|string}":  "{int | string}",
 		"{int; string}": "∅",
 
 		"{comparable}":              "{comparable}",
 		"{comparable; int}":         "{int}",
 		"{~int; comparable}":        "{~int}",
-		"{int|string; comparable}":  "{int ∪ string}",
+		"{int|string; comparable}":  "{int | string}",
 		"{comparable; int; string}": "∅",
 
 		"{m()}":                         "{func (p.T).m()}",
@@ -38,7 +38,7 @@ func TestTypeSetString(t *testing.T) {
 		"{m1(); comparable; m2() int }": "{comparable; func (p.T).m1(); func (p.T).m2() int}",
 		"{comparable; error}":           "{comparable; func (error).Error() string}",
 
-		"{m(); comparable; int|float32|string}": "{func (p.T).m(); int ∪ float32 ∪ string}",
+		"{m(); comparable; int|float32|string}": "{func (p.T).m(); int | float32 | string}",
 		"{m1(); int; m2(); comparable }":        "{func (p.T).m1(); func (p.T).m2(); int}",
 
 		"{E}; type E interface{}":           "𝓤",
@@ -65,7 +65,7 @@ func TestTypeSetString(t *testing.T) {
 		if obj == nil {
 			t.Fatalf("%s: T not found (invalid test case)", body)
 		}
-		T, ok := under(obj.Type()).(*Interface)
+		T, ok := obj.Type().Underlying().(*Interface)
 		if !ok {
 			t.Fatalf("%s: %v is not an interface (invalid test case)", body, obj)
 		}

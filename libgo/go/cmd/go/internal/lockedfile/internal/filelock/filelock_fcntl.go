@@ -32,16 +32,12 @@ const (
 	writeLock lockType = syscall.F_WRLCK
 )
 
-// type of syscall.Stat_t.Ino for 64 bits architectures.
-// For 32 bits architecture, it's easier to cast it instead.
-type inode = uint64
+type inode = uint64 // type of syscall.Stat_t.Ino
 
 type inodeLock struct {
 	owner File
 	queue []<-chan File
 }
-
-type token struct{}
 
 var (
 	mu     sync.Mutex
@@ -58,7 +54,7 @@ func lock(f File, lt lockType) (err error) {
 	if err != nil {
 		return err
 	}
-	ino := uint64(fi.Sys().(*syscall.Stat_t).Ino)
+	ino := fi.Sys().(*syscall.Stat_t).Ino
 
 	mu.Lock()
 	if i, dup := inodes[f]; dup && i != ino {
@@ -211,8 +207,4 @@ func setlkw(fd uintptr, lt lockType) error {
 			return err
 		}
 	}
-}
-
-func isNotSupported(err error) bool {
-	return err == syscall.ENOSYS || err == syscall.ENOTSUP || err == syscall.EOPNOTSUPP || err == ErrNotSupported
 }
