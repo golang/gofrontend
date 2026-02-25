@@ -88,7 +88,7 @@ var queryTests = []struct {
 		git commit -m 'after v2.5.5' status
 		git checkout master
 		zip -r ../querytest.zip
-		gsutil cp ../querytest.zip gs://vcs-test/git/querytest.zip
+		gcloud storage cp ../querytest.zip gs://vcs-test/git/querytest.zip
 		curl 'https://vcs-test.golang.org/git/querytest?go-get=1'
 	*/
 	{path: queryRepo, query: "<v0.0.0", vers: "v0.0.0-pre1"},
