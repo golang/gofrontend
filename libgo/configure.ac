@@ -15,10 +15,10 @@ AC_SUBST(libtool_VERSION)
 
 AM_ENABLE_MULTILIB(, ..)
 
-AC_CANONICAL_SYSTEM
+AC_CANONICAL_TARGET
 target_alias=${target_alias-$host_alias}
 
-AM_INIT_AUTOMAKE([1.9.3 no-define foreign no-dist subdir-objects -Wall -Wno-portability -Wno-override])
+AM_INIT_AUTOMAKE([1.15.1 no-define foreign no-dist subdir-objects -Wall -Wno-portability -Wno-override])
 AH_TEMPLATE(PACKAGE, [Name of package])
 AH_TEMPLATE(VERSION, [Version number of package])
 
@@ -45,12 +45,10 @@ esac
 
 AM_MAINTAINER_MODE
 
-AC_PROG_LD
-AC_PROG_RANLIB
+LT_PATH_LD
 AC_CHECK_TOOL(OBJCOPY, objcopy, missing-objcopy)
 
-AC_LIBTOOL_DLOPEN
-AM_PROG_LIBTOOL
+LT_INIT(dlopen)
 AC_SUBST(enable_shared)
 AC_SUBST(enable_static)
 AM_CONDITIONAL([ENABLE_DARWIN_AT_RPATH], [test x$enable_darwin_at_rpath = xyes])
@@ -74,7 +72,7 @@ glibgo_toolexeclibdir=no
 
 AC_MSG_CHECKING([for --enable-version-specific-runtime-libs])
 AC_ARG_ENABLE([version-specific-runtime-libs],
-  AC_HELP_STRING([--enable-version-specific-runtime-libs],
+  AS_HELP_STRING([--enable-version-specific-runtime-libs],
                  [Specify that runtime libraries should be installed in a compiler-specific directory]),
   [case "$enableval" in
     yes) version_specific_libs=yes ;;
